@@ -233,7 +233,7 @@ npm test
 
 ## 📄 许可证
 
-MIT License
+GNU GENERAL PUBLIC LICENSE V3
 
 ## 🙏 致谢
 
