@@ -1,4 +1,4 @@
-# Aily CLI - Arduino 快速编译工具
+# Aily Builder - Arduino 快速编译工具
 
 > 🚀 基于 Ninja + 智能缓存的高性能 Arduino 编译工具
 
@@ -30,39 +30,39 @@
 ### 安装
 
 ```bash
-npm install -g aily-cli
+npm install -g aily-builder
 ```
 
 ### 基本使用
 
 ```bash
 # 编译Arduino项目
-aily compile sketch.ino
+aily-builder compile sketch.ino
 
 # 指定开发板
-aily compile sketch.ino --board arduino:avr:uno
+aily-builder compile sketch.ino --board arduino:avr:uno
 
 # 并行编译（8个任务）
-aily compile sketch.ino --jobs 8
+aily-builder compile sketch.ino --jobs 8
 
 # 启用详细输出
-aily compile sketch.ino --verbose
+aily-builder compile sketch.ino --verbose
 ```
 
 ### 缓存管理
 
 ```bash
 # 查看缓存统计
-aily cache-stats
+aily-builder cache-stats
 
 # 清理30天前的缓存
-aily cache-clean --days 30
+aily-builder cache-clean --days 30
 
 # 清理所有缓存
-aily cache
+aily-builder cache
 
 # 禁用缓存编译
-aily compile sketch.ino --no-cache
+aily-builder compile sketch.ino --no-cache
 ```
 
 ## 📖 详细文档
@@ -70,7 +70,7 @@ aily compile sketch.ino --no-cache
 ### 编译选项
 
 ```bash
-aily compile <sketch> [options]
+aily-builder compile <sketch> [options]
 
 Options:
   -b, --board <board>         目标开发板 (默认: arduino:avr:uno)
@@ -89,16 +89,16 @@ Options:
 
 ```bash
 # 缓存统计
-aily cache-stats [--verbose]
+aily-builder cache-stats [--verbose]
 
 # 缓存清理
-aily cache-clean [options]
+aily-builder cache-clean [options]
   --days <number>    清理N天前的文件 (默认: 30)
   --pattern <pattern> 文件名模式匹配
   --dry-run          预览模式，不实际删除
 
 # 清空所有缓存
-aily cache
+aily-builder cache
 ```
 
 ## 🔧 配置
@@ -115,9 +115,9 @@ SKETCH_NAME=myproject     # 项目名称
 ### 缓存配置
 
 缓存默认存储在：
-- **Windows**: `%LOCALAPPDATA%\\aily-cli\\cache`
-- **macOS**: `~/Library/Caches/aily-cli`
-- **Linux**: `~/.cache/aily-cli`
+- **Windows**: `%LOCALAPPDATA%\\aily-builder\\cache`
+- **macOS**: `~/Library/Caches/aily-builder`
+- **Linux**: `~/.cache/aily-builder`
 
 ## 🏗️ 架构设计
 
@@ -141,25 +141,12 @@ SKETCH_NAME=myproject     # 项目名称
   依赖解析    缓存命中    并行编译    增量更新    智能存储    固件生成
 ```
 
-## 🧪 测试
-
-```bash
-# 构建项目
-npm run build
-
-# 运行缓存测试
-node dist/test/test-cache-only.js
-
-# 运行集成测试
-node dist/test/test-ninja-cache.js
-```
-
 ## 📈 性能分析
 
 ### 缓存效果示例
 
 ```bash
-$ aily compile examples/blink.ino --verbose
+$ aily-builder compile examples/blink.ino --verbose
 
 # 首次编译
 🔥 First build (cold build):
@@ -175,8 +162,8 @@ $ aily compile examples/blink.ino --verbose
 ### 优化建议
 
 1. **合理设置并行数**: 根据CPU核心数调整 `--jobs` 参数
-2. **定期维护缓存**: 使用 `aily cache-clean` 清理过期文件
-3. **监控缓存大小**: 使用 `aily cache-stats` 查看缓存状态
+2. **定期维护缓存**: 使用 `aily-builder cache-clean` 清理过期文件
+3. **监控缓存大小**: 使用 `aily-builder cache-stats` 查看缓存状态
 
 ## 🔍 故障排除
 
@@ -185,7 +172,7 @@ $ aily compile examples/blink.ino --verbose
 **问题**: 编译速度没有提升
 ```bash
 # 解决方案：检查缓存状态
-aily cache-stats
+aily-builder cache-stats
 
 # 如果缓存为空，首次编译会建立缓存
 # 后续编译将显著加速
@@ -194,27 +181,27 @@ aily cache-stats
 **问题**: 编译错误
 ```bash
 # 解决方案：清理缓存重新编译
-aily cache
-aily compile sketch.ino
+aily-builder cache
+aily-builder compile sketch.ino
 ```
 
 **问题**: 磁盘空间不足
 ```bash
 # 解决方案：清理旧缓存
-aily cache-clean --days 7
+aily-builder cache-clean --days 7
 ```
 
 ### 调试模式
 
 ```bash
 # 启用详细日志
-aily compile sketch.ino --verbose
+aily-builder compile sketch.ino --verbose
 
 # 禁用缓存（调试编译问题）
-aily compile sketch.ino --no-cache
+aily-builder compile sketch.ino --no-cache
 
 # 使用传统编译（性能对比）
-aily compile sketch.ino --use-legacy
+aily-builder compile sketch.ino --use-legacy
 ```
 
 ## 🤝 贡献

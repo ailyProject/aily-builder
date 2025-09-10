@@ -23,8 +23,8 @@ export class CacheManager {
 
     constructor(logger: Logger) {
         this.logger = logger;
-        // 使用用户的AppData\Local\aily-cli\cache作为缓存目录
-        this.cacheDir = path.join(os.homedir(), 'AppData', 'Local', 'aily-cli', 'cache');
+        // 使用用户的AppData\Local\aily-builder\cache作为缓存目录
+        this.cacheDir = path.join(os.homedir(), 'AppData', 'Local', 'aily-builder', 'cache');
         fs.ensureDirSync(this.cacheDir)
     }
 
