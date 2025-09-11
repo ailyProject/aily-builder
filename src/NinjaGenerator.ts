@@ -473,8 +473,8 @@ export class NinjaGenerator {
   }
 
   private formatCommand(argsTemplate: string, replacements: { [key: string]: string }): string {
-    console.log(argsTemplate);
-    console.log(replacements);
+    // console.log(argsTemplate);
+    // console.log(replacements);
 
     let command = argsTemplate;
 
