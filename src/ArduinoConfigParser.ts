@@ -427,11 +427,11 @@ export class ArduinoConfigParser {
         }
 
         let boardConfig: { [key: string]: string } = this.parseBoardsTxt(boardsTxtPath, fqbnObj);
-        
+
         if (!boardConfig['build.arch']) {
             boardConfig['build.arch'] = fqbnObj.platform.toUpperCase();
         }
-        
+
         if (fqbnObj.package == 'esp32') {
             // 这里要读取arduino配置菜单，还未实现
             const cpuFreq = boardConfig['build.f_cpu'] ? boardConfig['build.f_cpu'].replace('000000L', '') : '240';
@@ -466,6 +466,7 @@ export class ArduinoConfigParser {
             'build.path': process.env['BUILD_PATH'] || '%OUTPUT_PATH%',
             'archive_file': 'core.a',
             'archive_file_path': process.env['BUILD_PATH'] + '/core.a',
+            'build.core.path': path.join(process.env['SDK_PATH'], 'cores', fqbnObj.package),
         }
 
         // console.log(moreConfig);
