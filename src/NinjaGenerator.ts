@@ -57,34 +57,42 @@ export class NinjaGenerator {
   }
 
   async generateNinjaFile(options: NinjaOptions): Promise<string> {
-    this.dependencies = options.dependencies;
-    this.compileConfig = options.compileConfig;
-    this.buildPath = options.buildPath;
-    this.skipExistingObjects = options.skipExistingObjects || false;
+    try {
+      this.dependencies = options.dependencies;
+      this.compileConfig = options.compileConfig;
+      this.buildPath = options.buildPath;
+      this.skipExistingObjects = options.skipExistingObjects || false;
 
-    // 设置ninja pool限制并发数
-    this.ninjaFile.pools = {
-      sketch_pool: 1,  // sketch 专用池，单线程优先编译
-      compile_pool: options.jobs
-    };
+      // console.log(this.compileConfig);
 
-    // 设置全局变量
-    this.setupGlobalVariables();
+      // 设置ninja pool限制并发数
+      this.ninjaFile.pools = {
+        sketch_pool: 1,  // sketch 专用池，单线程优先编译
+        compile_pool: options.jobs
+      };
 
-    // 生成编译规则
-    this.generateRules();
+      // 设置全局变量
+      this.setupGlobalVariables();
 
-    // 生成构建目标
-    await this.generateBuilds();
+      // 生成编译规则
+      this.generateRules();
 
-    // 生成链接目标
-    this.generateLinkTargets();
+      // 生成构建目标
+      await this.generateBuilds();
 
-    // 写入ninja文件
-    const ninjaFilePath = path.join(this.buildPath, 'build.ninja');
-    await this.writeNinjaFile(ninjaFilePath);
+      // 生成链接目标
+      this.generateLinkTargets();
 
-    return ninjaFilePath;
+      // 写入ninja文件
+      const ninjaFilePath = path.join(this.buildPath, 'build.ninja');
+      await this.writeNinjaFile(ninjaFilePath);
+
+      return ninjaFilePath;
+
+    } catch (error) {
+      console.log(`生成Ninja文件失败: ${error.message}`);
+      return null;
+    }
   }
 
   private setupGlobalVariables(): void {
@@ -181,7 +189,9 @@ export class NinjaGenerator {
         }),
         description: 'Generating HEX $out'
       });
+    }
 
+    if (this.compileConfig.args.eep) {
       this.ninjaFile.rules.push({
         name: 'objcopy_eep',
         command: this.formatCommand(this.compileConfig.args.eep, {
@@ -437,12 +447,14 @@ export class NinjaGenerator {
     this.ninjaFile.builds.push(linkBuild);
 
     // 生成hex和eep文件（AVR）
-    if (this.compileConfig.args.hex) {
+    if (this.compileConfig.args.eep) {
       this.ninjaFile.builds.push({
         outputs: [eepFile],
         rule: 'objcopy_eep',
         inputs: [elfFile]
       });
+    }
+    if (this.compileConfig.args.hex) {
       this.ninjaFile.builds.push({
         outputs: [hexFile],
         rule: 'objcopy_hex',
@@ -461,6 +473,9 @@ export class NinjaGenerator {
   }
 
   private formatCommand(argsTemplate: string, replacements: { [key: string]: string }): string {
+    console.log(argsTemplate);
+    console.log(replacements);
+
     let command = argsTemplate;
 
     // 替换include路径
@@ -581,13 +596,19 @@ export class NinjaGenerator {
 
     // 写入默认目标
     const sketchName = process.env['SKETCH_NAME'] || 'sketch';
+    let defaultTargets: string[] = [];
     if (this.compileConfig.args.hex) {
-      content.push(`default ${sketchName}.eep ${sketchName}.hex`);
-    } else if (this.compileConfig.compiler.bin) {
-      content.push(`default ${sketchName}.bin`);
-    } else {
-      content.push(`default ${sketchName}.elf`);
+      defaultTargets.push(`${sketchName}.hex`);
     }
+    if (this.compileConfig.args.eep) {
+      defaultTargets.push(`${sketchName}.eep`);
+    }
+    if (this.compileConfig.compiler.bin) {
+      defaultTargets.push(`${sketchName}.bin`);
+    } else {
+      defaultTargets.push(`${sketchName}.elf`);
+    }
+    content.push(`default ${defaultTargets.join(' ')}`);
     content.push(''); // 确保文件末尾有换行符
 
     await fs.writeFile(filePath, content.join('\n'));

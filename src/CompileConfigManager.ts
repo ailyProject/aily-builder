@@ -15,7 +15,7 @@ export class CompileConfigManager {
    * @returns 转义后的编译参数字符串
    */
   private escapeQuotedDefines(args: string): string {
-    if(!args) return args;
+    if (!args) return args;
     // 匹配 -D<MACRO_NAME>="<VALUE>" 的模式
     const quotedDefineRegex = /-D([A-Z_][A-Z0-9_]*)="([^"]*)"/g;
 
@@ -35,23 +35,13 @@ export class CompileConfigManager {
   }
 
   parseCompileConfig(arduinoConfig: any) {
-    // console.log(arduinoConfig.platform['recipe.c.o.pattern']);
-    // console.log(arduinoConfig.platform['recipe.cpp.o.pattern']);
-    // console.log(arduinoConfig.platform['recipe.c.combine.pattern']);
-    // console.log(arduinoConfig.platform['recipe.ar.pattern']);
-    // console.log(arduinoConfig.platform['recipe.eep.o.pattern']);
-    // console.log(arduinoConfig.platform['recipe.hex.o.pattern']);
-    // console.log(arduinoConfig.platform['recipe.size.pattern']);
 
-    // 芯片适配：
-    // avr > 
-    // esp32 > recipe.objcopy.bin.pattern_args
-
-    let flag_eep, flag_hex, bin, flag_bin, ld, flag_ld;
+    let flag_eep, flag_hex, bin, flag_bin, ld, flag_ld, objcopy;
     if (arduinoConfig.platform['recipe.objcopy.eep.pattern']) {
       flag_eep = removeCompilerPath(arduinoConfig.platform['recipe.objcopy.eep.pattern'])
     }
     if (arduinoConfig.platform['recipe.objcopy.hex.pattern']) {
+      objcopy = extractToolName(arduinoConfig.platform['recipe.objcopy.hex.pattern'])
       flag_hex = removeCompilerPath(arduinoConfig.platform['recipe.objcopy.hex.pattern'])
     }
     if (arduinoConfig.platform['recipe.objcopy.bin.pattern']) {
@@ -82,7 +72,7 @@ export class CompileConfigManager {
         ar: arduinoConfig.platform['compiler.ar.cmd'],
         ld: ld,
         bin: bin,
-        objcopy: arduinoConfig.platform['compiler.objcopy.cmd'],
+        objcopy: objcopy,
         size: arduinoConfig.platform['compiler.size.cmd']
       },
       args: {
@@ -94,7 +84,6 @@ export class CompileConfigManager {
         hex: this.escapeQuotedDefines(flag_hex),
         bin: this.escapeQuotedDefines(flag_bin),
         size: this.escapeQuotedDefines(arduinoConfig.platform['recipe.size.pattern'].substring(arduinoConfig.platform['recipe.size.pattern'].indexOf(' ') + 1))
-
       },
       includes: [
         // process.env['SDK_CORE_PATH'], // core sdk

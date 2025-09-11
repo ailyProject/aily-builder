@@ -58,7 +58,7 @@ export class ArduinoCompiler {
 
     // 2. 获取开发板、平台、编译配置
     const arduinoConfig = await this.arduinoConfigParser.parseByFQBN(options.board);
-
+    console.log(arduinoConfig);
     // 3. 准备构建目录
     await this.prepareBuildDirectory(options.buildPath, options.sketchPath);
 
@@ -71,7 +71,7 @@ export class ArduinoCompiler {
     // 6. 构建编译配置
     this.logger.verbose('Generating compile configuration...');
     const compileConfig = await this.compileConfigManager.parseCompileConfig(arduinoConfig);
-    // console.log(compileConfig);
+    console.log(compileConfig);
     // 4. 依赖分析
     this.logger.info('Analyzing dependencies...');
     const dependencies = await this.analyzer.preprocess(arduinoConfig);
