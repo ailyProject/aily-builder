@@ -261,7 +261,7 @@ export class NinjaGenerator {
           // 即使跳过编译，也要将对象文件添加到归档组中
           const baseName = path.basename(file, path.extname(file));
           let objectFile: string;
-          if (dependency.type === 'library' || dependency.type === 'variant') {
+          if (dependency.type === 'library') {
             objectFile = path.join(dependency.type, dependency.name, `${baseName}.o`);
           } else {
             objectFile = path.join(dependency.type, `${baseName}.o`);
@@ -273,10 +273,21 @@ export class NinjaGenerator {
       if (dependency.type !== 'sketch' && groupObjects.length > 0) {
         // variant类型归并到core中
         if (dependency.type === 'variant') {
-          if (archiveGroups.has('core')) {
-            archiveGroups.get('core')!.push(...groupObjects);
+          // 找到core类型的依赖并将variant的对象文件添加到其中
+          const coreDependency = this.dependencies.find(d => d.type === 'core');
+          if (coreDependency) {
+            if (archiveGroups.has(coreDependency.name)) {
+              archiveGroups.get(coreDependency.name)!.push(...groupObjects);
+            } else {
+              archiveGroups.set(coreDependency.name, groupObjects);
+            }
           } else {
-            archiveGroups.set('core', groupObjects);
+            // 如果没有找到core依赖，则创建一个core归档组
+            if (archiveGroups.has('core')) {
+              archiveGroups.get('core')!.push(...groupObjects);
+            } else {
+              archiveGroups.set('core', groupObjects);
+            }
           }
         } else {
           archiveGroups.set(dependency.name, groupObjects);
@@ -348,7 +359,7 @@ export class NinjaGenerator {
     let rule: string;
 
     // 确定对象文件路径（使用相对路径）
-    if (type === 'library' || type === 'variant') {
+    if (type === 'library') {
       objectFile = path.join(type, dependencyName, `${baseName}.o`);
     } else {
       objectFile = path.join(type, `${baseName}.o`);
