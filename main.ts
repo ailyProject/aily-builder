@@ -22,6 +22,8 @@ program
   .argument('<sketch>', 'Path to Arduino sketch (.ino file)')
   .option('-b, --board <board>', 'Target board (e.g., arduino:avr:uno)', 'arduino:avr:uno')
   .option('-p, --port <port>', 'Serial port for upload')
+  .option('--sdk-path <path>', 'Path to Arduino SDK')
+  .option('--tools-path <path>', 'Path to additional tools')
   .option('--build-path <path>', 'Build output directory')
   .option('--libraries-path <path>', 'Additional libraries path')
   .option('-j, --jobs <number>', 'Number of parallel compilation jobs', (os.cpus().length + 1).toString())
