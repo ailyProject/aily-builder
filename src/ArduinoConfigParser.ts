@@ -399,31 +399,12 @@ export class ArduinoConfigParser {
 
 
         if (fqbnObj.package == 'esp32') {
-            if (process.env['TOOLS_PATH']) {
-                // 自定义工具路径
-
-            } else {
-                // console.log('使用默认工具路径');
-                // let ARDUINO15_PACKAGE_PATH = path.join(os.homedir(), 'AppData', 'Local', 'Arduino15', 'packages', fqbnObj.platform);
-                // let ARDUINO15_PACKAGE_TOOLS_PATH = path.join(ARDUINO15_PACKAGE_PATH, 'tools');
-
-                // const ESP32_ARDUINO_LIBS_PATH_Pattern = path.join(ARDUINO15_PACKAGE_TOOLS_PATH, 'esp32-arduino-libs', '*').replace(/\\/g, '/');;
-                // const ESPTOOL_PY_PATH_Pattern = path.join(ARDUINO15_PACKAGE_TOOLS_PATH, 'esptool_py', '*').replace(/\\/g, '/');;
-                // console.log(ESP32_ARDUINO_LIBS_PATH_Pattern);
-                // console.log(ESPTOOL_PY_PATH_Pattern);
-                const [ESP32_ARDUINO_LIBS_PATH, ESPTOOL_PY_PATH] = await Promise.all([
-                    this.findToolPath('esp32-arduino-libs'),
-                    this.findToolPath('esptool_py'),
-
-                ]);
-                process.env['ESP32_ARDUINO_LIBS_PATH'] = ESP32_ARDUINO_LIBS_PATH;
-                process.env['ESPTOOL_PY_PATH'] = ESPTOOL_PY_PATH;
-
-
-                // console.log(`process.env['ESPTOOL_PY_PATH']process.env['ESPTOOL_PY_PATH']`);
-                // console.log(process.env['ESP32_ARDUINO_LIBS_PATH'], process.env['ESPTOOL_PY_PATH']);
-
-            }
+            const [ESP32_ARDUINO_LIBS_PATH, ESPTOOL_PY_PATH] = await Promise.all([
+                this.findToolPath('esp32-arduino-libs'),
+                this.findToolPath('esptool_py'),
+            ]);
+            process.env['ESP32_ARDUINO_LIBS_PATH'] = ESP32_ARDUINO_LIBS_PATH;
+            process.env['ESPTOOL_PY_PATH'] = ESPTOOL_PY_PATH;
         }
 
         let boardConfig: { [key: string]: string } = this.parseBoardsTxt(boardsTxtPath, fqbnObj);
@@ -540,10 +521,36 @@ export class ArduinoConfigParser {
     }
 
     async findToolPath(toolName) {
-        let ARDUINO15_PACKAGE_PATH = path.join(os.homedir(), 'AppData', 'Local', 'Arduino15', 'packages', process.env['package']);
-        let ARDUINO15_PACKAGE_TOOLS_PATH = path.join(ARDUINO15_PACKAGE_PATH, 'tools');
-        const toolPattern = path.join(ARDUINO15_PACKAGE_TOOLS_PATH, toolName, '*').replace(/\\/g, '/');
-        let result = await glob(toolPattern, { absolute: true, });
-        return result[0]
+        let toolsBasePath: string;
+        
+        if (process.env['TOOLS_PATH']) {
+            // 使用自定义工具路径
+            toolsBasePath = process.env['TOOLS_PATH'];
+            console.log(`使用自定义工具路径: ${toolsBasePath}`);
+        } else {
+            // 使用默认 Arduino15 路径
+            let ARDUINO15_PACKAGE_PATH = path.join(os.homedir(), 'AppData', 'Local', 'Arduino15', 'packages', process.env['package']);
+            toolsBasePath = path.join(ARDUINO15_PACKAGE_PATH, 'tools');
+            console.log(`使用默认工具路径: ${toolsBasePath}`);
+        }
+        
+        // 支持两种匹配模式：
+        // 1. toolName/* (传统 Arduino 路径结构)
+        // 2. toolName@* (aily-project 工具路径结构)
+        const patterns = [
+            path.join(toolsBasePath, `${toolName}@*`).replace(/\\/g, '/'),
+            path.join(toolsBasePath, toolName, '*').replace(/\\/g, '/')
+        ];
+        
+        for (const pattern of patterns) {
+            const result = await glob(pattern, { absolute: true });
+            if (result && result.length > 0) {
+                console.log(`找到工具路径: ${result[0]}`);
+                return result[0];
+            }
+        }
+        
+        console.warn(`未找到工具: ${toolName} 在路径: ${toolsBasePath}`);
+        return null;
     }
 }
