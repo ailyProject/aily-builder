@@ -93,19 +93,26 @@ export class DependencyAnalyzer {
     //   includes: [sketchPath]
     // });
     // 2. 添加核心SDK依赖
+    let coreDependency, variantDependency;
     if (coreSDKPath) {
-      const coreDependency = await this.createDependency('core', coreSDKPath);
+      coreDependency = await this.createDependency('core', coreSDKPath);
       if (coreDependency) {
         this.dependencyList.set(`${coreDependency.name}`, coreDependency);
       }
     }
     // 3. 添加变体路径依赖
     if (variantPath) {
-      const variantDependency = await this.createDependency('variant', variantPath);
+      variantDependency = await this.createDependency('variant', variantPath);
       if (variantDependency) {
         this.dependencyList.set(`${variantDependency.name}`, variantDependency);
-      }      
+      }
+      // 将variantDependency.includes合并到coreDependency.includes中
+      if (variantDependency.includes.length > 0) {
+        coreDependency.includes = [...coreDependency.includes, ...variantDependency.includes];
+        variantDependency.includes = []
+      }
     }
+
 
     // 4. 解析路径，解出libraryMap
     this.libraryMap = await this.parserLibraryPaths([coreLibrariesPath, librariesPath]);
@@ -558,13 +565,13 @@ export class DependencyAnalyzer {
    */
   private async createDependency(type, path: string): Promise<Dependency | null> {
     try {
-      const name = 'arduino-' + type;
+      const name = type;
       const includeFiles: string[] = [];
 
       // 扫描核心SDK的源文件和头文件
       const extensions = ['.cpp', '.c', '.S', '.s'];
 
-      // SDK_CORE_PATH已经指向cores目录，直接扫描
+      // 直接扫描path
       if (await fs.pathExists(path)) {
         const files = await this.scanDirectoryRecursive(path, extensions);
         const filteredFiles = this.filterSourceFiles(files);

@@ -237,8 +237,8 @@ export class NinjaGenerator {
       this.objectFiles.push(sketchBuild.outputs[0]);
     } else {
       // 即使跳过编译，也要将对象文件添加到列表中（用于链接）
-      const sketchName = path.basename(process.env['SKETCH_PATH']!, path.extname(process.env['SKETCH_PATH']!));
-      const objectFile = path.join('sketch', `${sketchName}.o`);
+      const sketchFileName = path.basename(process.env['SKETCH_PATH']!);
+      const objectFile = path.join('sketch', `${sketchFileName}.o`);
       this.objectFiles.push(objectFile);
     }
 
@@ -259,12 +259,12 @@ export class NinjaGenerator {
           groupObjects.push(build.outputs[0]);
         } else {
           // 即使跳过编译，也要将对象文件添加到归档组中
-          const baseName = path.basename(file, path.extname(file));
+          const fileName = path.basename(file);
           let objectFile: string;
           if (dependency.type === 'library') {
-            objectFile = path.join(dependency.type, dependency.name, `${baseName}.o`);
+            objectFile = path.join(dependency.type, dependency.name, `${fileName}.o`);
           } else {
-            objectFile = path.join(dependency.type, `${baseName}.o`);
+            objectFile = path.join(dependency.type, `${fileName}.o`);
           }
           groupObjects.push(objectFile);
         }
@@ -273,22 +273,22 @@ export class NinjaGenerator {
       if (dependency.type !== 'sketch' && groupObjects.length > 0) {
         // variant类型归并到core中
         if (dependency.type === 'variant') {
-          // 找到core类型的依赖并将variant的对象文件添加到其中
-          const coreDependency = this.dependencies.find(d => d.type === 'core');
-          if (coreDependency) {
-            if (archiveGroups.has(coreDependency.name)) {
-              archiveGroups.get(coreDependency.name)!.push(...groupObjects);
-            } else {
-              archiveGroups.set(coreDependency.name, groupObjects);
-            }
+          // // 找到core类型的依赖并将variant的对象文件添加到其中
+          // const coreDependency = this.dependencies.find(d => d.type === 'core');
+          // if (coreDependency) {
+          //   if (archiveGroups.has(coreDependency.name)) {
+          //     archiveGroups.get(coreDependency.name)!.push(...groupObjects);
+          //   } else {
+          //     archiveGroups.set(coreDependency.name, groupObjects);
+          //   }
+          // } else {
+          // 如果没有找到core依赖，则创建一个core归档组
+          if (archiveGroups.has('core')) {
+            archiveGroups.get('core')!.push(...groupObjects);
           } else {
-            // 如果没有找到core依赖，则创建一个core归档组
-            if (archiveGroups.has('core')) {
-              archiveGroups.get('core')!.push(...groupObjects);
-            } else {
-              archiveGroups.set('core', groupObjects);
-            }
+            archiveGroups.set('core', groupObjects);
           }
+          // }
         } else {
           archiveGroups.set(dependency.name, groupObjects);
         }
@@ -353,16 +353,16 @@ export class NinjaGenerator {
     dependencyName: string
   ): Promise<NinjaBuild | null> {
     const ext = path.extname(sourceFile);
-    const baseName = path.basename(sourceFile, ext);
+    const fileName = path.basename(sourceFile);
 
     let objectFile: string;
     let rule: string;
 
     // 确定对象文件路径（使用相对路径）
     if (type === 'library') {
-      objectFile = path.join(type, dependencyName, `${baseName}.o`);
+      objectFile = path.join(type, dependencyName, `${fileName}.o`);
     } else {
-      objectFile = path.join(type, `${baseName}.o`);
+      objectFile = path.join(type, `${fileName}.o`);
     }
 
     // 如果启用了跳过已存在对象文件的选项，检查文件是否已存在
