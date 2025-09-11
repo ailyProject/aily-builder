@@ -26,6 +26,11 @@ program
   .option('--tools-path <path>', 'Path to additional tools')
   .option('--build-path <path>', 'Build output directory')
   .option('--libraries-path <path>', 'Additional libraries path')
+  .option('--build-property <key=value>', 'Additional build property', (val, memo) => {
+    const [key, value] = val.split('=');
+    memo[key] = value;
+    return memo;
+  }, {})
   .option('-j, --jobs <number>', 'Number of parallel compilation jobs', (os.cpus().length + 1).toString())
   .option('--verbose', 'Enable verbose output', false)
   .option('--use-sccache', 'Use sccache for compilation caching', true)
@@ -72,6 +77,7 @@ program
       board: options.board,
       buildPath: options.buildPath ? path.resolve(options.buildPath) : defaultBuildPath,
       librariesPath: options.librariesPath ? path.resolve(options.librariesPath) : '',
+      buildProperties: options.buildProperty || {},
       jobs: parseInt(options.jobs),
       verbose: options.verbose,
       useSccache: options.useSccache
@@ -80,6 +86,7 @@ program
     logger.info(chalk.blue(`🚀 Starting compilation of ${sketch}`));
     logger.info(chalk.gray(`Board: ${options.board}`));
     logger.info(chalk.gray(`Build path: ${buildOptions.buildPath}`));
+    logger.info(chalk.gray(`buildProperties: ${JSON.stringify(buildOptions.buildProperties)}`));
     logger.info(chalk.gray(`Parallel jobs: ${options.jobs}`));
     logger.info(chalk.gray(`Build system: ${useNinja ? 'ninja' : 'legacy parallel'}`));
     // logger.info(chalk.gray(`buildOptions: ${JSON.stringify(buildOptions, null, 2)}`));

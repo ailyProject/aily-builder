@@ -360,9 +360,10 @@ export class ArduinoConfigParser {
      * 根据 FQBN 解析特定板子的配置
      * @param {string} platformDir 平台目录路径
      * @param {string} fqbn FQBN 字符串
+     * @param {Object} buildProperties 额外的构建属性
      * @returns {Object} 特定板子的完整配置
      */
-    async parseByFQBN(fqbn: string): Promise<BoardParseResult> {
+    async parseByFQBN(fqbn: string, buildProperties: { [key: string]: string }): Promise<BoardParseResult> {
         // 解析 FQBN
         const fqbnObj = this.parseFQBN(fqbn);
         console.log(`解析 FQBN: ${fqbn}`);
@@ -409,6 +410,12 @@ export class ArduinoConfigParser {
 
         let boardConfig: { [key: string]: string } = this.parseBoardsTxt(boardsTxtPath, fqbnObj);
         // console.log(boardConfig);
+
+        // 替换/添加额外的构建属性
+        Object.keys(buildProperties).forEach(key => {
+            console.log(`  应用额外构建属性: ${key} = ${buildProperties[key]}`);
+            boardConfig[key] = buildProperties[key];
+        });
 
         if (!boardConfig['build.arch']) {
             boardConfig['build.arch'] = fqbnObj.platform.toUpperCase();
