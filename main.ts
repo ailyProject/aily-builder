@@ -114,6 +114,16 @@ program
     logger.info(chalk.gray(`Preprocess time: ${result.preprocessTime / 1000}s`));
     logger.info(chalk.gray(`Build time: ${result.buildTime / 1000}s`));
     logger.info(chalk.gray(`Total time: ${result.totalTime / 1000}s`));
+
+    // 执行缓存维护（在整个程序最后执行）
+    try {
+      logger.verbose('Performing cache maintenance...');
+      const cacheManager = new CacheManager(logger);
+      await cacheManager.maintainCache();
+      logger.verbose('Cache maintenance completed');
+    } catch (maintainError) {
+      logger.warn(`Cache maintenance failed: ${maintainError instanceof Error ? maintainError.message : maintainError}`);
+    }
   });
 
 program

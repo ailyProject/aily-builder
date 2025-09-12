@@ -39,18 +39,14 @@ export class NinjaCompilationPipeline {
     try {
       const startTime = Date.now();
 
-      // 1. 执行缓存维护
-      this.logger.verbose('Performing cache maintenance...');
-      await this.cacheManager.maintainCache();
-
-      // 2. 预处理：从缓存中恢复对象文件
+      // 1. 预处理：从缓存中恢复对象文件
       this.logger.verbose('Checking cache for compiled objects...');
       const cacheHits = await this.restoreFromCache(dependencies);
       if (cacheHits > 0) {
         this.logger.info(`✅ Cache hit: ${cacheHits} objects restored from cache`);
       }
 
-      // 3. 生成ninja构建文件
+      // 2. 生成ninja构建文件
       this.logger.verbose('Generating ninja build file...');
       const ninjaOptions: NinjaOptions = {
         dependencies,
@@ -63,7 +59,7 @@ export class NinjaCompilationPipeline {
       const ninjaFilePath = await this.ninjaGenerator.generateNinjaFile(ninjaOptions);
       this.logger.verbose(`Ninja file generated: ${ninjaFilePath}`);
 
-      // 4. 执行ninja构建
+      // 3. 执行ninja构建
       this.logger.info('Starting ninja build...');
       const result = await this.executeNinjaBuild(ninjaFilePath);
 
