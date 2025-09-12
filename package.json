@@ -37,8 +37,7 @@
     "iconv-lite": "^0.7.0",
     "ora": "^5.4.1",
     "tree-sitter": "^0.20.4",
-    "tree-sitter-cpp": "^0.20.0",
-    "web-tree-sitter": "^0.20.8"
+    "tree-sitter-cpp": "^0.20.0"
   },
   "devDependencies": {
     "@types/fs-extra": "^11.0.4",
