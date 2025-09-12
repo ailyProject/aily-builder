@@ -8,7 +8,7 @@
   },
   "scripts": {
     "build": "tsc",
-    "package": "npm run build && nexe --config nexe.config.js --build",
+    "package": "npm run build && node build.js",
     "start": "ts-node main.ts",
     "blink": "ts-node main.ts compile examples/blink.ino --verbose --jobs 4 ",
     "sweep": "ts-node main.ts compile examples/sweep.ino --board arduino:renesas_uno:unor4wifi --jobs 4  --verbose --libraries-path \"C:\\Users\\coloz\\AppData\\Local\\Arduino15\\libraries\"",

@@ -15,22 +15,7 @@ compile(
         cwd: process.cwd(),
         flags: [],
         configure: [],
-        make: [],
-        resources: [
-            './node_modules/chalk/**/*',
-            './node_modules/ansi-styles/**/*',
-            './node_modules/color-convert/**/*',
-            './node_modules/color-name/**/*',
-            './node_modules/supports-color/**/*',
-            './node_modules/has-flag/**/*',
-            './node_modules/commander/**/*',
-            './node_modules/fs-extra/**/*',
-            './node_modules/glob/**/*',
-            './node_modules/iconv-lite/**/*',
-            './node_modules/ora/**/*',
-            './node_modules/tree-sitter/**/*',
-            './node_modules/tree-sitter-cpp/**/*'
-        ]
+        make: []
     }
 ).then(() => {
     console.log('success')
