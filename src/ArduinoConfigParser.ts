@@ -231,11 +231,11 @@ export class ArduinoConfigParser {
     private applyWindowsOverrides(variables: { [key: string]: string }): void {
         // 查找所有以 .windows 结尾的键
         const windowsKeys = Object.keys(variables).filter(key => key.endsWith('.windows'));
-        
+
         windowsKeys.forEach(windowsKey => {
             // 获取对应的普通键名（去掉 .windows 后缀）
             const baseKey = windowsKey.slice(0, -8); // 移除 '.windows'
-            
+
             // 如果普通键存在，则用 Windows 版本覆盖它
             if (variables.hasOwnProperty(baseKey)) {
                 const windowsValue = variables[windowsKey];
@@ -409,7 +409,6 @@ export class ArduinoConfigParser {
         }
 
         let boardConfig: { [key: string]: string } = this.parseBoardsTxt(boardsTxtPath, fqbnObj);
-        // console.log(boardConfig);
 
         // 替换/添加额外的构建属性
         Object.keys(buildProperties).forEach(key => {
@@ -419,13 +418,20 @@ export class ArduinoConfigParser {
 
         if (!boardConfig['build.arch']) {
             boardConfig['build.arch'] = fqbnObj.platform.toUpperCase();
+        }
+
+        if (fqbnObj.package == 'esp32') {
             // 这里要读取arduino配置菜单，还未实现
+            const cpuFreq = boardConfig['build.f_cpu'] ? boardConfig['build.f_cpu'].replace('000000L', '') : '240';
+            const flashSize = boardConfig['build.flash_size'] || '4MB';
+
             boardConfig['build.fqbn'] = fqbn + ':' +
-                `:UploadSpeed=921600,CPUFreq=${boardConfig['build.f_cpu'].replace('000000L', '')},` +
-                `FlashFreq=80,FlashMode=qio,FlashSize=${boardConfig['build.flash_size']},` +
+                `:UploadSpeed=921600,CPUFreq=${cpuFreq},` +
+                `FlashFreq=80,FlashMode=qio,FlashSize=${flashSize},` +
                 `PartitionScheme=app3M_fat9M_16MB,DebugLevel=none,PSRAM=disabled,` +
                 `LoopCore=1,EventsCore=1,EraseFlash=none,JTAGAdapter=default,ZigbeeMode=default`
         }
+
         process.env['BUILD_MCU'] = boardConfig['build.mcu'];
 
         let moreConfig = {
@@ -434,6 +440,7 @@ export class ArduinoConfigParser {
             'runtime.tools.avr-gcc.path': process.env['COMPILER_PATH'] || await this.findToolPath('avr-gcc'),
             'runtime.tools.esp-x32.path': process.env['COMPILER_PATH'] || await this.findToolPath('esp-x32'),
             'runtime.tools.esp-rv32.path': process.env['COMPILER_PATH'] || await this.findToolPath('esp-rv32'),
+            'runtime.tools.arm-none-eabi-gcc-7-2017q4.path': process.env['COMPILER_PATH'] || await this.findToolPath('arm-none-eabi-gcc'),
             'runtime.tools.esp32-arduino-libs.path': process.env['ESP32_ARDUINO_LIBS_PATH'] || '%ESP32_ARDUINO_LIBS_PATH%',
             'runtime.tools.esptool_py.path': process.env['ESPTOOL_PY_PATH'],
             'build.project_name': process.env['SKETCH_NAME'],
@@ -447,6 +454,7 @@ export class ArduinoConfigParser {
             'build.path': process.env['BUILD_PATH'] || '%OUTPUT_PATH%',
             'archive_file': 'core.a',
             'archive_file_path': process.env['BUILD_PATH'] + '/core.a',
+            'build.core.path': path.join(process.env['SDK_PATH'], 'cores', fqbnObj.package),
         }
 
         // console.log(moreConfig);

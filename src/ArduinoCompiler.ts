@@ -77,6 +77,8 @@ export class ArduinoCompiler {
     const dependencies = await this.analyzer.preprocess(arduinoConfig);
     this.logger.success(`Dependency analysis completed.\n Found ${dependencies.length} dependencies.`);
     dependencies.map(dep => this.logger.info(` - ${dep.name}`));
+    console.log(dependencies);
+    
     // dependencies.map(dep => this.logger.info(`- ${dep.name}\n  Path:\n     ${dep.path}\n  Includes:\n     ${dep.includes.join('\n     ')}`));
     // dependencies.map(dep => this.logger.info(` - ${dep.includes}`));
 

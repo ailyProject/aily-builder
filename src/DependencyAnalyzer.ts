@@ -93,21 +93,26 @@ export class DependencyAnalyzer {
     //   includes: [sketchPath]
     // });
     // 2. 添加核心SDK依赖
+    let coreDependency, variantDependency;
     if (coreSDKPath) {
-      const coreDependency = await this.createCoreDependency(coreSDKPath);
+      coreDependency = await this.createDependency('core', coreSDKPath);
       if (coreDependency) {
         this.dependencyList.set(`${coreDependency.name}`, coreDependency);
       }
     }
     // 3. 添加变体路径依赖
     if (variantPath) {
-      this.dependencyList.set('arduino-variant', {
-        name: 'arduino-variant',
-        path: variantPath,
-        type: 'variant',
-        includes: []
-      });
+      variantDependency = await this.createDependency('variant', variantPath);
+      if (variantDependency) {
+        this.dependencyList.set(`${variantDependency.name}`, variantDependency);
+      }
+      // 将variantDependency.includes合并到coreDependency.includes中
+      if (variantDependency.includes.length > 0) {
+        coreDependency.includes = [...coreDependency.includes, ...variantDependency.includes];
+        variantDependency.includes = []
+      }
     }
+
 
     // 4. 解析路径，解出libraryMap
     this.libraryMap = await this.parserLibraryPaths([coreLibrariesPath, librariesPath]);
@@ -465,8 +470,8 @@ export class DependencyAnalyzer {
         this.dependencyList.set(libraryObject.name, libraryObject);
 
         // 读取libraryObject.path下的所有.a文件
-        if (resolveA) {          
-          const aFiles = await glob('*.a',{
+        if (resolveA) {
+          const aFiles = await glob('*.a', {
             cwd: path.join(libraryObject.path, process.env['BUILD_MCU']),
             absolute: true,
             nodir: true
@@ -558,30 +563,30 @@ export class DependencyAnalyzer {
    * @param coreSDKPath 核心SDK路径
    * @returns 返回核心SDK依赖项，如果创建失败则返回null
    */
-  private async createCoreDependency(coreSDKPath: string): Promise<Dependency | null> {
+  private async createDependency(type, path: string): Promise<Dependency | null> {
     try {
-      const coreName = 'arduino-core';
+      const name = type;
       const includeFiles: string[] = [];
 
       // 扫描核心SDK的源文件和头文件
       const extensions = ['.cpp', '.c', '.S', '.s'];
 
-      // SDK_CORE_PATH已经指向cores目录，直接扫描
-      if (await fs.pathExists(coreSDKPath)) {
-        const files = await this.scanDirectoryRecursive(coreSDKPath, extensions);
+      // 直接扫描path
+      if (await fs.pathExists(path)) {
+        const files = await this.scanDirectoryRecursive(path, extensions);
         const filteredFiles = this.filterSourceFiles(files);
         includeFiles.push(...filteredFiles);
         // this.logger.debug(`Found ${files.length} core files in ${coreSDKPath}`);
       }
 
       return {
-        name: coreName,
-        path: coreSDKPath,
-        type: 'core',
+        name,
+        path,
+        type,
         includes: includeFiles
       };
     } catch (error) {
-      this.logger.warn(`Failed to create core SDK dependency for ${coreSDKPath}: ${error instanceof Error ? error.message : error}`);
+      this.logger.warn(`Failed to create dependency for ${path}: ${error instanceof Error ? error.message : error}`);
       return null;
     }
   }
@@ -674,7 +679,7 @@ export class DependencyAnalyzer {
   private filterSourceFiles(files: string[]): string[] {
     // 首先按架构过滤库文件
     const architectureFilteredFiles = this.filterByArchitecture(files);
-    
+
     // 然后按扩展名优先级过滤
     const fileMap = new Map<string, string>();
     const precedence = ['.S', '.s', '.cpp', '.c'];
@@ -708,15 +713,15 @@ export class DependencyAnalyzer {
     const architecturePriority = ['avr', 'megaavr'];
     // 定义所有已知的架构目录（包括我们不支持的）
     const allArchitectures = ['avr', 'megaavr', 'xmc', 'samd', 'stm32f4', 'renesas', 'sam', 'nrf52', 'mbed'];
-    
+
     // 将文件按架构分组
     const architectureGroups = new Map<string, string[]>();
     const generalFiles: string[] = [];
-    
+
     for (const file of files) {
       const normalizedPath = file.replace(/\\/g, '/');
       let foundArchitecture = false;
-      
+
       // 首先检查是否匹配我们支持的架构
       for (const arch of architecturePriority) {
         if (normalizedPath.includes(`/${arch}/`)) {
@@ -728,7 +733,7 @@ export class DependencyAnalyzer {
           break;
         }
       }
-      
+
       if (!foundArchitecture) {
         // 检查是否是其他架构的文件（应该被排除）
         let isOtherArchitecture = false;
@@ -738,14 +743,14 @@ export class DependencyAnalyzer {
             break;
           }
         }
-        
+
         if (!isOtherArchitecture) {
           // 没有架构标识的文件（如根目录下的文件）
           generalFiles.push(file);
         }
       }
     }
-    
+
     // 按优先级选择架构
     for (const arch of architecturePriority) {
       if (architectureGroups.has(arch)) {
@@ -755,7 +760,7 @@ export class DependencyAnalyzer {
         return result;
       }
     }
-    
+
     // 如果没有找到任何架构特定的文件，返回通用文件
     return generalFiles;
   }
