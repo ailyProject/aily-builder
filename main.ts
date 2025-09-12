@@ -25,7 +25,10 @@ program
   .option('--sdk-path <path>', 'Path to Arduino SDK')
   .option('--tools-path <path>', 'Path to additional tools')
   .option('--build-path <path>', 'Build output directory')
-  .option('--libraries-path <path>', 'Additional libraries path')
+  .option('--libraries-path <path>', 'Additional libraries path', (val, libraries) => {
+    libraries.push(val);
+    return libraries;
+  }, [])
   .option('--build-property <key=value>', 'Additional build property', (val, memo) => {
     const [key, value] = val.split('=');
     memo[key] = value;
@@ -67,8 +70,13 @@ program
     if (options.toolsPath) {
       process.env['TOOLS_PATH'] = options.toolsPath;
     }
-    if (options.librariesPath) {
-      process.env['LIBRARIES_PATH'] = path.resolve(options.librariesPath);
+    // 修复 libraries path 处理
+    if (options.librariesPath && options.librariesPath.length > 0) {
+      console.log('Setting LIBRARIES_PATH to:', options.librariesPath);
+      // 将多个路径用分号分隔（Windows）或冒号分隔（Unix）
+      const pathSeparator = os.platform() === 'win32' ? ';' : ':';
+      const resolvedPaths = options.librariesPath.map((libPath: string) => path.resolve(libPath));
+      process.env['LIBRARIES_PATH'] = resolvedPaths.join(pathSeparator);
     }
 
     const buildOptions = {
@@ -76,7 +84,9 @@ program
       sketchDirPath,
       board: options.board,
       buildPath: options.buildPath ? path.resolve(options.buildPath) : defaultBuildPath,
-      librariesPath: options.librariesPath ? path.resolve(options.librariesPath) : '',
+      librariesPath: options.librariesPath && options.librariesPath.length > 0 
+        ? options.librariesPath.map((libPath: string) => path.resolve(libPath)) 
+        : [],
       buildProperties: options.buildProperty || {},
       jobs: parseInt(options.jobs),
       verbose: options.verbose,
@@ -86,6 +96,7 @@ program
     logger.info(chalk.blue(`🚀 Starting compilation of ${sketch}`));
     logger.info(chalk.gray(`Board: ${options.board}`));
     logger.info(chalk.gray(`Build path: ${buildOptions.buildPath}`));
+    logger.info(chalk.gray(`Libraries paths: ${JSON.stringify(buildOptions.librariesPath)}`));
     logger.info(chalk.gray(`buildProperties: ${JSON.stringify(buildOptions.buildProperties)}`));
     logger.info(chalk.gray(`Parallel jobs: ${options.jobs}`));
     logger.info(chalk.gray(`Build system: ${useNinja ? 'ninja' : 'legacy parallel'}`));

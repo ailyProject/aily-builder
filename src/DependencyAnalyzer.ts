@@ -74,13 +74,18 @@ export class DependencyAnalyzer {
     // 获取核心SDK和库路径
     const coreSDKPath = process.env['SDK_CORE_PATH'];
     const variantPath = process.env['SDK_VARIANT_PATH'];
-    const librariesPath = process.env['LIBRARIES_PATH'];
+    const librariesPathEnv = process.env['LIBRARIES_PATH'];
     const coreLibrariesPath = process.env['SDK_CORE_LIBRARIES_PATH'];
+    
+    // 处理 librariesPath，支持多个路径（用分号或冒号分隔）
+    const pathSeparator = process.platform === 'win32' ? ';' : ':';
+    const librariesPaths = librariesPathEnv ? librariesPathEnv.split(pathSeparator).filter(p => p.trim()) : [];
+    
     this.logger.debug(`Sketch Path: ${sketchPath}`)
     this.logger.debug(`Core SDK Path: ${coreSDKPath}`);
     this.logger.debug(`Variant Path: ${variantPath}`);
     this.logger.debug(`Core Libraries Path: ${coreLibrariesPath}`);
-    this.logger.debug(`Libraries Path: ${librariesPath}`);
+    this.logger.debug(`Libraries Paths: ${librariesPaths.join(', ')}`);
     this.initializeDefaultMacros(arduinoConfig);
 
     // 1. 分析主sketch文件
@@ -115,7 +120,7 @@ export class DependencyAnalyzer {
 
 
     // 4. 解析路径，解出libraryMap
-    this.libraryMap = await this.parserLibraryPaths([coreLibrariesPath, librariesPath]);
+    this.libraryMap = await this.parserLibraryPaths([coreLibrariesPath, ...librariesPaths]);
     // console.log(this.libraryMap);
 
     // 5. 递归分析依赖，resolveA用于确定是否处理预编译库
