@@ -3,7 +3,6 @@ import path from 'path';
 import { spawn } from 'child_process';
 import { Logger } from './utils/Logger';
 import { Dependency } from './DependencyAnalyzer';
-import { decodeToUtf8 } from './utils/TextEncoder';
 import { CacheManager, CacheKey } from './CacheManager';
 import { NinjaGenerator, NinjaOptions } from './NinjaGenerator';
 
@@ -133,8 +132,8 @@ export class NinjaCompilationPipeline {
       let stderr = '';
       const warnings: string[] = [];
 
-      childProcess.stdout?.on('data', (data: Buffer) => {
-        const output = decodeToUtf8(data);
+      childProcess.stdout?.on('data', (data: any) => {
+        const output = data.toString('utf8');
         stdout += output;
 
         // 实时输出编译信息
@@ -154,8 +153,8 @@ export class NinjaCompilationPipeline {
         }
       });
 
-      childProcess.stderr?.on('data', (data: Buffer) => {
-        const output = decodeToUtf8(data);
+      childProcess.stderr?.on('data', (data: any) => {
+        const output = data.toString('utf8');
         stderr += output;
 
         // 检查是否是警告

@@ -1,8 +1,6 @@
 import fs from 'fs-extra';
 import path from 'path';
 import { execSync, spawn } from 'child_process';
-import chalk from 'chalk';
-import * as iconv from 'iconv-lite';
 import { Logger } from './utils/Logger';
 import { NinjaCompilationPipeline } from './NinjaCompilationPipeline';
 import { CompileConfigManager } from './CompileConfigManager';
@@ -64,7 +62,7 @@ export class ArduinoCompiler {
 
     // 5. 预处理2：运行编译前脚本（ESP32需要 prebuild）
     if (arduinoConfig.platform['recipe.hooks.prebuild.1.pattern.windows']) {
-      console.log(chalk.blue('Running prebuild hook scripts...'));
+      console.log('Running prebuild hook scripts...');
       await this.runPrebuildHooks(arduinoConfig);
     }
 
@@ -77,11 +75,8 @@ export class ArduinoCompiler {
     const dependencies = await this.analyzer.preprocess(arduinoConfig);
     this.logger.success(`Dependency analysis completed.\n Found ${dependencies.length} dependencies.`);
     dependencies.map(dep => this.logger.info(` - ${dep.name}`));
-    console.log(dependencies);
+    // console.log(dependencies);
     
-    // dependencies.map(dep => this.logger.info(`- ${dep.name}\n  Path:\n     ${dep.path}\n  Includes:\n     ${dep.includes.join('\n     ')}`));
-    // dependencies.map(dep => this.logger.info(` - ${dep.includes}`));
-
     // 计算预处理耗时
     const preprocessTime = Date.now() - startTime;
 
@@ -113,7 +108,7 @@ export class ArduinoCompiler {
     }
 
     if (arduinoConfig.platform['recipe.hooks.objcopy.postobjcopy.1.pattern.windows']) {
-      console.log(chalk.blue('Running post-build hook scripts...'));
+      console.log('Running post-build hook scripts...');
       await this.runPostBuildHooks(arduinoConfig);
       compileResult.outFilePath = path.join(process.env['BUILD_PATH'], 'sketch.merged.bin');
     }
@@ -246,22 +241,11 @@ export class ArduinoCompiler {
         const stdoutBuffer = Buffer.concat(stdoutBuffers);
         const stderrBuffer = Buffer.concat(stderrBuffers);
 
-        // 简化编码处理：检测乱码然后用系统默认编码
-        const encoding = process.platform === 'win32' ? 'cp936' : 'utf8';
+        // 直接使用 UTF-8 解码
+        const stdout = stdoutBuffer.toString('utf8');
+        const stderr = stderrBuffer.toString('utf8');
 
-        let stdout: string;
-        let stderr: string;
-
-        // 先尝试UTF-8解码，检查是否有乱码字符
-        stdout = stdoutBuffer.toString('utf8');
-        if (stdout.includes('\uFFFD') || /[^\x00-\x7F\u4e00-\u9fff]/.test(stdout)) {
-          stdout = iconv.decode(stdoutBuffer, encoding);
-        }
-
-        stderr = stderrBuffer.toString('utf8');
-        if (stderr.includes('\uFFFD') || /[^\x00-\x7F\u4e00-\u9fff]/.test(stderr)) {
-          stderr = iconv.decode(stderrBuffer, encoding);
-        } if (code === 0) {
+        if (code === 0) {
           resolve(stdout);
         } else {
           reject(new Error(`Command failed with exit code ${code}: ${command}\nStderr: ${stderr}`));

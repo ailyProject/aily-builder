@@ -31,24 +31,3 @@ declare module 'tree-sitter-cpp' {
   const Cpp: Language;
   export default Cpp;
 }
-
-declare module 'ora' {
-  interface Options {
-    text?: string;
-    color?: string;
-    spinner?: string;
-  }
-  
-  interface Ora {
-    start(): Ora;
-    stop(): Ora;
-    succeed(text?: string): Ora;
-    fail(text?: string): Ora;
-    warn(text?: string): Ora;
-    info(text?: string): Ora;
-    text: string;
-  }
-  
-  function ora(options?: string | Options): Ora;
-  export default ora;
-}

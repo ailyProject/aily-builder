@@ -1,5 +1,3 @@
-import chalk from 'chalk';
-
 export class Logger {
   private isVerbose: boolean = false;
 
@@ -20,18 +18,18 @@ export class Logger {
   }
 
   warn(message: string): void {
-    console.warn(chalk.yellow(message));
+    console.warn(message);
   }
 
   debug(message: string): void {
     if (this.isVerbose) {
-      console.log(chalk.gray(`[DEBUG] ${message}`));
+      console.log(`[DEBUG] ${message}`);
     }
   }
 
   verbose(message: string): void {
     if (this.isVerbose) {
-      console.log(chalk.cyan(`[VERBOSE] ${message}`));
+      console.log(`[VERBOSE] ${message}`);
     }
   }
 }

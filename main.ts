@@ -1,7 +1,6 @@
 #!/usr/bin/env node
 
 import { Command } from 'commander';
-import chalk from 'chalk';
 import { ArduinoCompiler } from './src/ArduinoCompiler';
 import { Logger } from './src/utils/Logger';
 import { CacheManager } from './src/CacheManager';
@@ -93,27 +92,27 @@ program
       useSccache: options.useSccache
     };
 
-    logger.info(chalk.blue(`🚀 Starting compilation of ${sketch}`));
-    logger.info(chalk.gray(`Board: ${options.board}`));
-    logger.info(chalk.gray(`Build path: ${buildOptions.buildPath}`));
-    logger.info(chalk.gray(`Libraries paths: ${JSON.stringify(buildOptions.librariesPath)}`));
-    logger.info(chalk.gray(`buildProperties: ${JSON.stringify(buildOptions.buildProperties)}`));
-    logger.info(chalk.gray(`Parallel jobs: ${options.jobs}`));
-    logger.info(chalk.gray(`Build system: ${useNinja ? 'ninja' : 'legacy parallel'}`));
-    // logger.info(chalk.gray(`buildOptions: ${JSON.stringify(buildOptions, null, 2)}`));
+    logger.info(`🚀 Starting compilation of ${sketch}`);
+    logger.info(`Board: ${options.board}`);
+    logger.info(`Build path: ${buildOptions.buildPath}`);
+    logger.info(`Libraries paths: ${JSON.stringify(buildOptions.librariesPath)}`);
+    logger.info(`buildProperties: ${JSON.stringify(buildOptions.buildProperties)}`);
+    logger.info(`Parallel jobs: ${options.jobs}`);
+    logger.info(`Build system: ${useNinja ? 'ninja' : 'legacy parallel'}`);
+    // logger.info(`buildOptions: ${JSON.stringify(buildOptions, null, 2)}`);
 
     const result = await compiler.compile(buildOptions);
 
     if (result.success) {
-      logger.success(chalk.green(`✅ Compilation successful!`));
-      logger.info(chalk.gray(`Output File: ${result.outFilePath}`));
+      logger.success(`✅ Compilation successful!`);
+      logger.info(`Output File: ${result.outFilePath}`);
     } else {
-      logger.error(chalk.red(`❌ Compilation failed: ${result.error}`));
+      logger.error(`❌ Compilation failed: ${result.error}`);
       process.exit(1);
     }
-    logger.info(chalk.gray(`Preprocess time: ${result.preprocessTime / 1000}s`));
-    logger.info(chalk.gray(`Build time: ${result.buildTime / 1000}s`));
-    logger.info(chalk.gray(`Total time: ${result.totalTime / 1000}s`));
+    logger.info(`Preprocess time: ${result.preprocessTime / 1000}s`);
+    logger.info(`Build time: ${result.buildTime / 1000}s`);
+    logger.info(`Total time: ${result.totalTime / 1000}s`);
 
     // 执行缓存维护（在整个程序最后执行）
     try {
@@ -133,9 +132,9 @@ program
   .option('--libraries-path <path>', 'Path to Arduino libraries')
   .action(async (options) => {
     try {
-      logger.success(chalk.green('✅ Configuration initialized successfully!'));
+      logger.success('✅ Configuration initialized successfully!');
     } catch (error) {
-      logger.error(chalk.red(`❌ Error initializing config: ${error instanceof Error ? error.message : error}`));
+      logger.error(`❌ Error initializing config: ${error instanceof Error ? error.message : error}`);
       process.exit(1);
     }
   });
@@ -148,9 +147,9 @@ program
     try {
       const compiler = new ArduinoCompiler(logger);
       await compiler.clean(path.resolve(buildPath));
-      logger.success(chalk.green('✅ Build artifacts cleaned!'));
+      logger.success('✅ Build artifacts cleaned!');
     } catch (error) {
-      logger.error(chalk.red(`❌ Error cleaning: ${error instanceof Error ? error.message : error}`));
+      logger.error(`❌ Error cleaning: ${error instanceof Error ? error.message : error}`);
       process.exit(1);
     }
   });
@@ -166,16 +165,16 @@ program
           const cacheManager = new CacheManager(logger);
           const stats = await cacheManager.getCacheStats();
           
-          logger.info(chalk.blue('📊 Cache Statistics:'));
-          logger.info(chalk.gray(`Cache directory: ${stats.cacheDir}`));
-          logger.info(chalk.gray(`Total files: ${stats.totalFiles}`));
-          logger.info(chalk.gray(`Total size: ${stats.totalSizeFormatted}`));
+          logger.info('📊 Cache Statistics:');
+          logger.info(`Cache directory: ${stats.cacheDir}`);
+          logger.info(`Total files: ${stats.totalFiles}`);
+          logger.info(`Total size: ${stats.totalSizeFormatted}`);
           
           if (stats.totalFiles === 0) {
-            logger.info(chalk.yellow('No cached files found.'));
+            logger.info('No cached files found.');
           }
         } catch (error) {
-          logger.error(chalk.red(`❌ Error getting cache stats: ${error instanceof Error ? error.message : error}`));
+          logger.error(`❌ Error getting cache stats: ${error instanceof Error ? error.message : error}`);
           process.exit(1);
         }
       })
@@ -191,9 +190,9 @@ program
           const cacheManager = new CacheManager(logger);
           
           if (options.all) {
-            logger.info(chalk.blue('🗑️  Clearing all cache files...'));
+            logger.info('🗑️  Clearing all cache files...');
             await cacheManager.clearAllCache();
-            logger.success(chalk.green('✅ All cache files cleared!'));
+            logger.success('✅ All cache files cleared!');
           } else {
             const clearOptions: any = {};
             if (options.olderThan) {
@@ -203,12 +202,12 @@ program
               clearOptions.pattern = options.pattern;
             }
             
-            logger.info(chalk.blue('🗑️  Clearing cache files...'));
+            logger.info('🗑️  Clearing cache files...');
             await cacheManager.clearCache(clearOptions);
-            logger.success(chalk.green('✅ Cache files cleared!'));
+            logger.success('✅ Cache files cleared!');
           }
         } catch (error) {
-          logger.error(chalk.red(`❌ Error clearing cache: ${error instanceof Error ? error.message : error}`));
+          logger.error(`❌ Error clearing cache: ${error instanceof Error ? error.message : error}`);
           process.exit(1);
         }
       })
@@ -226,19 +225,19 @@ program
       
       const stats = await cacheManager.getCacheStats();
       
-      console.log(chalk.blue('\n📊 Cache Statistics:'));
-      console.log(`   Files: ${chalk.yellow(stats.totalFiles.toString())}`);
-      console.log(`   Size: ${chalk.yellow(stats.totalSizeFormatted)}`);
-      console.log(`   Location: ${chalk.gray(stats.cacheDir)}`);
+      console.log('\n📊 Cache Statistics:');
+      console.log(`   Files: ${stats.totalFiles.toString()}`);
+      console.log(`   Size: ${stats.totalSizeFormatted}`);
+      console.log(`   Location: ${stats.cacheDir}`);
       
       if (stats.totalFiles > 0) {
         const avgSize = stats.totalSize / stats.totalFiles;
-        console.log(`   Average file size: ${chalk.cyan((avgSize / 1024).toFixed(1))} KB`);
+        console.log(`   Average file size: ${(avgSize / 1024).toFixed(1)} KB`);
       }
       
-      console.log(chalk.green('\n✅ Cache statistics displayed successfully'));
+      console.log('\n✅ Cache statistics displayed successfully');
     } catch (error) {
-      logger.error(chalk.red(`❌ Error getting cache statistics: ${error instanceof Error ? error.message : error}`));
+      logger.error(`❌ Error getting cache statistics: ${error instanceof Error ? error.message : error}`);
       process.exit(1);
     }
   });
@@ -261,12 +260,12 @@ program
         throw new Error('Days must be a non-negative number');
       }
       
-      console.log(chalk.blue(`\n🧹 Cleaning cache files older than ${days} days...`));
+      console.log(`\n🧹 Cleaning cache files older than ${days} days...`);
       if (options.pattern) {
-        console.log(chalk.gray(`   Pattern: ${options.pattern}`));
+        console.log(`   Pattern: ${options.pattern}`);
       }
       if (options.dryRun) {
-        console.log(chalk.yellow('   (Dry run - no files will be deleted)'));
+        console.log('   (Dry run - no files will be deleted)');
       }
       
       if (!options.dryRun) {
@@ -277,24 +276,24 @@ program
       } else {
         // 对于dry run，我们只显示统计信息
         const stats = await cacheManager.getCacheStats();
-        console.log(chalk.gray(`   Would analyze ${stats.totalFiles} files in cache`));
+        console.log(`   Would analyze ${stats.totalFiles} files in cache`);
       }
       
-      console.log(chalk.green('\n✅ Cache cleaning completed'));
+      console.log('\n✅ Cache cleaning completed');
     } catch (error) {
-      logger.error(chalk.red(`❌ Error cleaning cache: ${error instanceof Error ? error.message : error}`));
+      logger.error(`❌ Error cleaning cache: ${error instanceof Error ? error.message : error}`);
       process.exit(1);
     }
   });
 
 // 错误处理
 process.on('uncaughtException', (error) => {
-  logger.error(chalk.red(`❌ Uncaught exception: ${error.message}`));
+  logger.error(`❌ Uncaught exception: ${error.message}`);
   process.exit(1);
 });
 
 process.on('unhandledRejection', (reason) => {
-  logger.error(chalk.red(`❌ Unhandled rejection: ${reason}`));
+  logger.error(`❌ Unhandled rejection: ${reason}`);
   process.exit(1);
 });
 
