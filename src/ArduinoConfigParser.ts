@@ -165,6 +165,10 @@ export class ArduinoConfigParser {
                 }
             });
 
+            // 检测并处理 platform 与 boardConfig 中的重复键
+            // 当存在相同 key 时，使用 boardConfig 的值覆盖 platform 的值
+            this.applyBoardConfigOverrides(variables, boardConfig);
+
             // 处理 Windows 特定配置覆盖（在变量展开前进行）
             this.applyWindowsOverrides(variables);
 
@@ -243,6 +247,33 @@ export class ArduinoConfigParser {
                 variables[baseKey] = windowsValue;
             }
         });
+    }
+
+    /**
+     * 应用 boardConfig 的配置覆盖
+     * 当 platform 配置和 boardConfig 中有相同的 key 时，使用 boardConfig 的值覆盖 platform 的值
+     * @param {Object} variables 变量映射（包含 platform 配置）
+     * @param {Object} boardConfig 板子配置
+     */
+    private applyBoardConfigOverrides(variables: { [key: string]: string }, boardConfig: any): void {
+        const overrides: string[] = [];
+        
+        Object.keys(boardConfig).forEach(key => {
+            // 检查 platform 配置中是否已存在相同的 key
+            if (variables.hasOwnProperty(key) && variables[key] !== boardConfig[key]) {
+                const originalValue = variables[key];
+                variables[key] = boardConfig[key];
+                overrides.push(`${key}: "${originalValue}" -> "${boardConfig[key]}"`);
+            }
+        });
+
+        // 记录覆盖信息
+        if (overrides.length > 0) {
+            console.log(`  检测到 ${overrides.length} 个重复键，应用 boardConfig 覆盖:`);
+            overrides.forEach(override => {
+                console.log(`    ${override}`);
+            });
+        }
     }
 
     /**
