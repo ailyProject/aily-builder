@@ -144,6 +144,7 @@ export class DependencyAnalyzer {
     // 从 arduinoConfig.platform['recipe.cpp.o.pattern'] 中提取宏定义
     const macros = extractMacroDefinitions(arduinoConfig.platform['recipe.cpp.o.pattern'])
     // console.log('提取的宏定义:', macros);
+    // console.log('提取的宏定义:', macros);
     macros.forEach(macro => {
       let [key, value] = macro.split('=')
       // console.log(`提取的宏定义:${JSON.stringify([key, value])}`);
@@ -563,9 +564,10 @@ export class DependencyAnalyzer {
   }
 
   /**
-   * 创建核心SDK依赖项
-   * 扫描核心SDK路径下的所有源文件和头文件
-   * @param coreSDKPath 核心SDK路径
+   * 创建依赖项
+   * 扫描指定路径下的所有源文件和头文件
+   * @param type 依赖项类型，如 'core' 或 'variant'
+   * @param path 核心SDK路径
    * @returns 返回核心SDK依赖项，如果创建失败则返回null
    */
   private async createDependency(type, path: string): Promise<Dependency | null> {
@@ -607,9 +609,11 @@ export class DependencyAnalyzer {
     try {
       const extensions = ['.cpp', '.c', '.S', '.s'];
       // 直接扫描传入的路径（可能是库根目录或src目录）
-      const files = await this.scanDirectoryRecursive(libraryObject.path, extensions);
-      const filteredFiles = this.filterSourceFiles(files);
-      libraryObject.includes.push(...filteredFiles);
+      const files = await this.scanDirectoryRecursive(libraryObject.path, extensions);      
+      // const filteredFiles = this.filterSourceFiles(files);
+      console.log(files);
+      
+      libraryObject.includes.push(...files);
       return true
     } catch (error) {
       this.logger.warn(`Failed to create library dependency for ${libraryObject.name}: ${error instanceof Error ? error.message : error}`);

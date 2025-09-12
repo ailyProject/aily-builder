@@ -360,7 +360,19 @@ export class NinjaGenerator {
 
     // 确定对象文件路径（使用相对路径）
     if (type === 'library') {
-      objectFile = path.join(type, dependencyName, `${fileName}.o`);
+      // 检查是否需要添加上级目录名称以避免同名文件冲突
+      const sourceDir = path.dirname(sourceFile);
+      const parentDirName = path.basename(sourceDir);
+      
+      // 如果上级目录不是库的根目录（即存在架构或其他子目录），则添加目录前缀
+      const dep = this.dependencies.find(d => d.name === dependencyName);
+      if (dep && sourceDir !== dep.path && parentDirName !== dependencyName) {
+        // 使用上级目录名称作为前缀，避免同名文件冲突
+        const prefixedFileName = `${parentDirName}_${fileName}`;
+        objectFile = path.join(type, dependencyName, `${prefixedFileName}.o`);
+      } else {
+        objectFile = path.join(type, dependencyName, `${fileName}.o`);
+      }
     } else {
       objectFile = path.join(type, `${fileName}.o`);
     }

@@ -32,10 +32,6 @@ declare module 'tree-sitter-cpp' {
   export default Cpp;
 }
 
-declare module 'web-tree-sitter' {
-  export * from 'tree-sitter';
-}
-
 declare module 'ora' {
   interface Options {
     text?: string;

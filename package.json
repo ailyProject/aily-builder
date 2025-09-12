@@ -8,10 +8,10 @@
   },
   "scripts": {
     "build": "tsc",
-    "package": "npm run build && nexe dist/main.js --verbose --output aily.exe --target windows-x64-20.18.3",
+    "package": "npm run build && nexe --config nexe.config.js --build",
     "start": "ts-node main.ts",
     "blink": "ts-node main.ts compile examples/blink.ino --verbose --jobs 4 ",
-    "sweep": "ts-node main.ts compile examples/sweep.ino --jobs 4  --verbose --libraries-path \"C:\\Users\\coloz\\AppData\\Local\\Arduino15\\libraries\"",
+    "sweep": "ts-node main.ts compile examples/sweep.ino --board arduino:renesas_uno:unor4wifi --jobs 4  --verbose --libraries-path \"C:\\Users\\coloz\\AppData\\Local\\Arduino15\\libraries\"",
     "tft": "ts-node main.ts compile examples/tft.ino --verbose --jobs 4 --libraries-path \"C:\\Users\\coloz\\AppData\\Local\\Arduino15\\libraries\"",
     "esp32": "ts-node main.ts compile examples/esp32-http.ino --jobs 4 --verbose --board esp32:esp32:esp32",
     "blink-r4": "ts-node main.ts compile examples/blink.ino --verbose --board arduino:renesas_uno:unor4wifi",
@@ -37,8 +37,7 @@
     "iconv-lite": "^0.7.0",
     "ora": "^5.4.1",
     "tree-sitter": "^0.20.4",
-    "tree-sitter-cpp": "^0.20.0",
-    "web-tree-sitter": "^0.20.8"
+    "tree-sitter-cpp": "^0.20.0"
   },
   "devDependencies": {
     "@types/fs-extra": "^11.0.4",
