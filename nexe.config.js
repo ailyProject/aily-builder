@@ -1,10 +1,10 @@
 module.exports = {
   input: './dist/main.js',
-  output: './dist/aily.exe',
-  target: 'windows-x64-18.20.4',
-  name: 'aily',
+  output: './aily-builder.exe',
+  target: 'windows-x64-22.19.0',
+  name: 'aily-builder',
   ico: undefined,
-  build: false,
+  build: true,
   temp: './nexe-cache',
   enableNodeCli: false,
   verbose: true,
@@ -12,5 +12,20 @@ module.exports = {
   cwd: process.cwd(),
   flags: [],
   configure: [],
-  make: []
+  make: [],
+  resources: [
+    './node_modules/chalk/**/*',
+    './node_modules/ansi-styles/**/*',
+    './node_modules/color-convert/**/*',
+    './node_modules/color-name/**/*',
+    './node_modules/supports-color/**/*',
+    './node_modules/has-flag/**/*',
+    './node_modules/commander/**/*',
+    './node_modules/fs-extra/**/*',
+    './node_modules/glob/**/*',
+    './node_modules/iconv-lite/**/*',
+    './node_modules/ora/**/*',
+    './node_modules/tree-sitter/**/*',
+    './node_modules/tree-sitter-cpp/**/*'
+  ]
 }
