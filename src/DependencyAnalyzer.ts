@@ -125,7 +125,7 @@ export class DependencyAnalyzer {
 
     // 5. 递归分析依赖，resolveA用于确定是否处理预编译库
     let resolveA = arduinoConfig.platform['compiler.libraries.ldflags'] ? true : false;
-    console.log(`resolveA: ${resolveA}`);
+    // console.log(`resolveA: ${resolveA}`);
     await this.resolveDependencies(mainIncludeFiles, resolveA);
     // this.dependencyList = this.deduplicateDependencies(this.dependencyList);
     // console.log(this.dependencyList);

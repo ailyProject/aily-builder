@@ -42,7 +42,7 @@ export class NinjaCompilationPipeline {
       this.logger.verbose('Checking cache for compiled objects...');
       const cacheHits = await this.restoreFromCache(dependencies);
       if (cacheHits > 0) {
-        this.logger.info(`✅ Cache hit: ${cacheHits} objects restored from cache`);
+        this.logger.info(`Cache hit: ${cacheHits} objects restored from cache`);
       }
 
       // 2. 生成ninja构建文件
@@ -173,7 +173,7 @@ export class NinjaCompilationPipeline {
 
       childProcess.on('close', (code) => {
         if (code === 0) {
-          this.logger.success('✅ Ninja build completed successfully');
+          this.logger.success('Ninja build completed successfully');
           resolve({ success: true, warnings: warnings.length > 0 ? warnings : undefined });
         } else {
           this.logger.error(`❌ Ninja build failed with exit code ${code}`);

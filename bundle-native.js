@@ -248,6 +248,7 @@ async function bundleWithNativeMinified() {
     
     // 复制原生模块（与标准版本相同）
     await fs.copy('./dist/bundle/node_modules', path.join(bundleDir, 'node_modules'));
+    await fs.copy('./dist/bundle/ninja', path.join(bundleDir, 'ninja'));
     await fs.copy('./dist/bundle/index.js', path.join(bundleDir, 'index.js'));
     await fs.copy('./dist/bundle/package.json', path.join(bundleDir, 'package.json'));
     await fs.copy('./dist/bundle/README.md', path.join(bundleDir, 'README.md'));

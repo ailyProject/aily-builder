@@ -104,7 +104,7 @@ program
     const result = await compiler.compile(buildOptions);
 
     if (result.success) {
-      logger.success(`✅ Compilation successful!`);
+      logger.success(`Compilation successful!`);
       logger.info(`Output File: ${result.outFilePath}`);
     } else {
       logger.error(`❌ Compilation failed: ${result.error}`);
@@ -132,7 +132,7 @@ program
   .option('--libraries-path <path>', 'Path to Arduino libraries')
   .action(async (options) => {
     try {
-      logger.success('✅ Configuration initialized successfully!');
+      logger.success('Configuration initialized successfully!');
     } catch (error) {
       logger.error(`❌ Error initializing config: ${error instanceof Error ? error.message : error}`);
       process.exit(1);
@@ -147,7 +147,7 @@ program
     try {
       const compiler = new ArduinoCompiler(logger);
       await compiler.clean(path.resolve(buildPath));
-      logger.success('✅ Build artifacts cleaned!');
+      logger.success('Build artifacts cleaned!');
     } catch (error) {
       logger.error(`❌ Error cleaning: ${error instanceof Error ? error.message : error}`);
       process.exit(1);
@@ -192,7 +192,7 @@ program
           if (options.all) {
             logger.info('🗑️  Clearing all cache files...');
             await cacheManager.clearAllCache();
-            logger.success('✅ All cache files cleared!');
+            logger.success('All cache files cleared!');
           } else {
             const clearOptions: any = {};
             if (options.olderThan) {
@@ -204,7 +204,7 @@ program
             
             logger.info('🗑️  Clearing cache files...');
             await cacheManager.clearCache(clearOptions);
-            logger.success('✅ Cache files cleared!');
+            logger.success('Cache files cleared!');
           }
         } catch (error) {
           logger.error(`❌ Error clearing cache: ${error instanceof Error ? error.message : error}`);
@@ -235,7 +235,7 @@ program
         console.log(`   Average file size: ${(avgSize / 1024).toFixed(1)} KB`);
       }
       
-      console.log('\n✅ Cache statistics displayed successfully');
+      console.log('\nCache statistics displayed successfully');
     } catch (error) {
       logger.error(`❌ Error getting cache statistics: ${error instanceof Error ? error.message : error}`);
       process.exit(1);
@@ -279,7 +279,7 @@ program
         console.log(`   Would analyze ${stats.totalFiles} files in cache`);
       }
       
-      console.log('\n✅ Cache cleaning completed');
+      console.log('\nCache cleaning completed');
     } catch (error) {
       logger.error(`❌ Error cleaning cache: ${error instanceof Error ? error.message : error}`);
       process.exit(1);
