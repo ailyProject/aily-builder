@@ -287,21 +287,74 @@ export class CacheManager {
     }
 
     /**
+     * 获取上次缓存维护时间戳文件路径
+     */
+    private getLastMaintenanceFilePath(): string {
+        return path.join(this.cacheDir, '.last_maintenance');
+    }
+
+    /**
+     * 获取上次缓存维护时间
+     */
+    private async getLastMaintenanceTime(): Promise<Date | null> {
+        try {
+            const filePath = this.getLastMaintenanceFilePath();
+            if (!await fs.pathExists(filePath)) {
+                return null;
+            }
+            const timestamp = await fs.readFile(filePath, 'utf-8');
+            return new Date(parseInt(timestamp));
+        } catch (error) {
+            this.logger.debug(`Failed to read last maintenance time: ${error}`);
+            return null;
+        }
+    }
+
+    /**
+     * 更新上次缓存维护时间
+     */
+    private async updateLastMaintenanceTime(): Promise<void> {
+        try {
+            const filePath = this.getLastMaintenanceFilePath();
+            await fs.writeFile(filePath, Date.now().toString());
+        } catch (error) {
+            this.logger.debug(`Failed to update last maintenance time: ${error}`);
+        }
+    }
+
+    /**
      * 缓存维护：检查缓存大小并自动清理
      */
     async maintainCache(): Promise<void> {
         try {
+            // 检查是否需要进行缓存维护
+            const lastMaintenanceTime = await this.getLastMaintenanceTime();
+            const now = new Date();
+            const daysSinceLastMaintenance = lastMaintenanceTime 
+                ? (now.getTime() - lastMaintenanceTime.getTime()) / (1000 * 60 * 60 * 24)
+                : Infinity; // 如果没有记录，则认为需要维护
+
+            if (daysSinceLastMaintenance < 30) {
+                this.logger.debug(`Cache maintenance skipped: last maintenance was ${daysSinceLastMaintenance.toFixed(1)} days ago (< 30 days)`);
+                return;
+            }
+
+            this.logger.debug(`Performing cache maintenance: last maintenance was ${lastMaintenanceTime ? daysSinceLastMaintenance.toFixed(1) + ' days ago' : 'never'}`);
+
             const stats = await this.getCacheStats();
             const maxFiles = 50000; // 最大文件数量
             const maxSizeMB = 1000; // 最大缓存大小 1GB
 
             this.logger.debug(`Current cache stats: ${stats.totalFiles} files, ${stats.totalSizeFormatted}`);
 
+            let cleanupPerformed = false;
+
             if (stats.totalFiles > maxFiles || stats.totalSize > maxSizeMB * 1024 * 1024) {
                 this.logger.info(`Cache size limit exceeded (${stats.totalFiles} files, ${stats.totalSizeFormatted}), performing cleanup...`);
 
                 // 清理超过30天的缓存
                 await this.clearCache({ olderThanDays: 30 });
+                cleanupPerformed = true;
 
                 // 再次检查，如果还是超过限制，清理超过7天的缓存
                 const newStats = await this.getCacheStats();
@@ -312,6 +365,17 @@ export class CacheManager {
 
                 const finalStats = await this.getCacheStats();
                 this.logger.info(`Cache cleanup finished: ${finalStats.totalFiles} files, ${finalStats.totalSizeFormatted}`);
+            } else {
+                this.logger.debug('Cache size within limits, no cleanup needed');
+            }
+
+            // 更新维护时间戳（无论是否执行了清理）
+            await this.updateLastMaintenanceTime();
+            
+            if (cleanupPerformed) {
+                this.logger.info('Cache maintenance completed with cleanup');
+            } else {
+                this.logger.debug('Cache maintenance completed without cleanup');
             }
         } catch (error) {
             this.logger.error(`Failed to maintain cache: ${error instanceof Error ? error.message : error}`);

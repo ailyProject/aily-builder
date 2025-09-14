@@ -197,21 +197,22 @@ export class NinjaCompilationPipeline {
   private async handleCompilationProgress(progressLine: string, buildDir: string): Promise<void> {
     // 解析ninja的进度信息，查找编译完成的文件
 
-    let objectFileName: string | null = null;
+    let objectFileName: string | null = null; // 輸出的文件
+    let sourceFileName: string | null = null; // 源文件
+    let compileCommand: string | null = null; // 编译命令
 
     // 匹配 -o <path>.o 格式，这表示编译器的输出文件
     const outputMatch = progressLine.match(/-o\s+([^\s]+\.o)/);
     if (outputMatch) {
       objectFileName = outputMatch[1];
-    }
+      if (objectFileName) {
+        const objectFilePath = path.join(buildDir, objectFileName);
 
-    if (objectFileName) {
-      const objectFilePath = path.join(buildDir, objectFileName);
-
-      // 检查对象文件是否确实存在
-      if (await fs.pathExists(objectFilePath)) {
-        // 根据对象文件路径找到对应的源文件和依赖信息
-        await this.storeSingleFileToCache(objectFileName, objectFilePath);
+        // 检查对象文件是否确实存在
+        if (await fs.pathExists(objectFilePath)) {
+          // 根据对象文件路径找到对应的源文件和依赖信息
+          await this.storeSingleFileToCache(objectFileName, objectFilePath);
+        }
       }
     }
   }
