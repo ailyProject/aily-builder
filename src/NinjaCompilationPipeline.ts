@@ -229,17 +229,33 @@ export class NinjaCompilationPipeline {
       let baseName: string;
 
       if (pathParts.length === 3) {
-        // library/libraryName/file.o 或 variant/variantName/file.o
+        // library/libraryName/file.ext.o 或 variant/variantName/file.ext.o
         [dependencyType, dependencyName, baseName] = pathParts;
-        baseName = baseName.replace('.o', '');
+        // 移除 .o 扩展名，保留原始文件的扩展名
+        if (baseName.endsWith('.o')) {
+          baseName = baseName.slice(0, -2); // 移除 '.o'
+        }
+        // 再移除原始文件的扩展名以获得基本名称
+        baseName = path.basename(baseName, path.extname(baseName));
       } else if (pathParts.length === 2) {
-        // core/file.o 或 sketch/file.o
+        // core/file.ext.o 或 sketch/file.ext.o
         [dependencyType, baseName] = pathParts;
-        baseName = baseName.replace('.o', '');
+        // 移除 .o 扩展名，保留原始文件的扩展名
+        if (baseName.endsWith('.o')) {
+          baseName = baseName.slice(0, -2); // 移除 '.o'
+        }
+        // 再移除原始文件的扩展名以获得基本名称
+        baseName = path.basename(baseName, path.extname(baseName));
         dependencyName = dependencyType;
       } else {
-        // file.o (直接在构建根目录)
-        baseName = pathParts[0].replace('.o', '');
+        // file.ext.o (直接在构建根目录)
+        baseName = pathParts[0];
+        // 移除 .o 扩展名
+        if (baseName.endsWith('.o')) {
+          baseName = baseName.slice(0, -2); // 移除 '.o'
+        }
+        // 再移除原始文件的扩展名以获得基本名称
+        baseName = path.basename(baseName, path.extname(baseName));
         dependencyType = 'sketch';
         dependencyName = 'sketch';
       }
@@ -262,13 +278,15 @@ export class NinjaCompilationPipeline {
       }
 
       // 查找对应的源文件
-      const sourceFile = dependency.includes.find(file => {
+      const sourceFile = dependency.includes?.find(file => {
         const sourceBaseName = path.basename(file, path.extname(file));
         return sourceBaseName === baseName;
       });
 
       if (!sourceFile) {
-        this.logger.debug(`Cannot find source file for object: ${objectFileName}`);
+        this.logger.debug(`Cannot find source file for object: ${objectFileName} in dependency ${dependency.name}`);
+        this.logger.debug(`Looking for baseName: ${baseName}`);
+        this.logger.debug(`Available source files: ${dependency.includes?.map(f => path.basename(f, path.extname(f))).join(', ')}`);
         return;
       }
 
