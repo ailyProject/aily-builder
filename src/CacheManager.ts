@@ -9,6 +9,8 @@ export interface CacheStats {
     totalSize: number;
     totalSizeFormatted: string;
     cacheDir: string;
+    hardLinksUsed?: number;
+    copiesUsed?: number;
 }
 
 export interface CacheKey {
@@ -20,12 +22,16 @@ export interface CacheKey {
 export class CacheManager {
     private cacheDir: string;
     private logger: Logger;
+    private hardLinksUsed: number = 0;
+    private copiesUsed: number = 0;
 
     constructor(logger: Logger) {
         this.logger = logger;
         // 使用用户的AppData\Local\aily-builder\cache作为缓存目录
         this.cacheDir = path.join(os.homedir(), 'AppData', 'Local', 'aily-builder', 'cache');
-        fs.ensureDirSync(this.cacheDir)
+        fs.ensureDirSync(this.cacheDir);
+        
+        this.logger.debug(`Cache directory: ${this.cacheDir}`);
     }
 
     /**
@@ -104,7 +110,7 @@ export class CacheManager {
     }
 
     /**
-     * 从缓存中提取对象文件
+     * 从缓存中提取对象文件（优化：使用硬链接或软链接代替复制）
      */
     async extractFromCache(cacheKey: CacheKey, targetPath: string): Promise<boolean> {
         try {
@@ -117,11 +123,31 @@ export class CacheManager {
             // 确保目标目录存在
             await fs.ensureDir(path.dirname(targetPath));
 
-            // 复制缓存文件到目标路径
-            await fs.copy(cacheFilePath, targetPath);
+            // 如果目标文件已存在，先删除
+            if (await fs.pathExists(targetPath)) {
+                await fs.remove(targetPath);
+            }
 
-            this.logger.debug(`Extracted from cache: ${path.basename(targetPath)}`);
-            return true;
+            // 尝试使用硬链接（最快）
+            try {
+                await fs.link(cacheFilePath, targetPath);
+                this.hardLinksUsed++;
+                this.logger.debug(`Extracted from cache via hard link: ${path.basename(targetPath)}`);
+                return true;
+            } catch (hardLinkError) {
+                // 硬链接失败，回退到复制模式
+                this.logger.debug(`Hard link failed (${hardLinkError instanceof Error ? hardLinkError.message : hardLinkError}), falling back to copy...`);
+                
+                try {
+                    await fs.copy(cacheFilePath, targetPath);
+                    this.copiesUsed++;
+                    this.logger.debug(`Extracted from cache via copy: ${path.basename(targetPath)}`);
+                    return true;
+                } catch (copyError) {
+                    this.logger.error(`Failed to copy from cache: ${copyError instanceof Error ? copyError.message : copyError}`);
+                    return false;
+                }
+            }
         } catch (error) {
             this.logger.error(`Failed to extract from cache: ${error instanceof Error ? error.message : error}`);
             return false;
@@ -129,7 +155,7 @@ export class CacheManager {
     }
 
     /**
-     * 将编译好的对象文件存储到缓存
+     * 将编译好的对象文件存储到缓存（优化：使用硬链接或软链接代替复制）
      */
     async storeToCache(cacheKey: CacheKey, objectFilePath: string): Promise<void> {
         try {
@@ -144,8 +170,28 @@ export class CacheManager {
                 throw new Error(`Object file does not exist: ${objectFilePath}`);
             }
 
-            // 复制对象文件到缓存
-            await fs.copy(objectFilePath, cacheFilePath);
+            // 如果缓存文件已存在，先删除
+            if (await fs.pathExists(cacheFilePath)) {
+                await fs.remove(cacheFilePath);
+            }
+
+            // 尝试使用硬链接（最快，节省空间）
+            try {
+                await fs.link(objectFilePath, cacheFilePath);
+                this.hardLinksUsed++;
+                this.logger.debug(`Stored to cache via hard link: ${path.basename(objectFilePath)}`);
+            } catch (hardLinkError) {
+                // 硬链接失败，回退到复制模式
+                this.logger.debug(`Hard link failed (${hardLinkError instanceof Error ? hardLinkError.message : hardLinkError}), falling back to copy...`);
+                
+                try {
+                    await fs.copy(objectFilePath, cacheFilePath);
+                    this.copiesUsed++;
+                    this.logger.debug(`Stored to cache via copy: ${path.basename(objectFilePath)}`);
+                } catch (copyError) {
+                    throw new Error(`Failed to store to cache via copy: ${copyError instanceof Error ? copyError.message : copyError}`);
+                }
+            }
 
             // 创建元数据文件
             const metadata = {
@@ -158,7 +204,6 @@ export class CacheManager {
 
             await fs.writeJSON(metaFilePath, metadata, { spaces: 2 });
 
-            this.logger.debug(`Stored to cache: ${path.basename(objectFilePath)}`);
         } catch (error) {
             this.logger.error(`Failed to store to cache: ${error instanceof Error ? error.message : error}`);
             throw error;
@@ -200,7 +245,9 @@ export class CacheManager {
                 totalFiles,
                 totalSize,
                 totalSizeFormatted: this.formatFileSize(totalSize),
-                cacheDir: this.cacheDir
+                cacheDir: this.cacheDir,
+                hardLinksUsed: this.hardLinksUsed,
+                copiesUsed: this.copiesUsed
             };
         } catch (error) {
             this.logger.error(`Failed to get cache stats: ${error instanceof Error ? error.message : error}`);
@@ -208,7 +255,9 @@ export class CacheManager {
                 totalFiles: 0,
                 totalSize: 0,
                 totalSizeFormatted: '0 B',
-                cacheDir: this.cacheDir
+                cacheDir: this.cacheDir,
+                hardLinksUsed: this.hardLinksUsed,
+                copiesUsed: this.copiesUsed
             };
         }
     }
@@ -403,5 +452,33 @@ export class CacheManager {
      */
     getCacheDir(): string {
         return this.cacheDir;
+    }
+
+    /**
+     * 重置性能计数器
+     */
+    resetPerformanceCounters(): void {
+        this.hardLinksUsed = 0;
+        this.copiesUsed = 0;
+    }
+
+    /**
+     * 获取性能统计信息
+     */
+    getPerformanceStats(): { 
+        hardLinksUsed: number; 
+        copiesUsed: number; 
+        linkSuccessRate: number;
+        totalOperations: number;
+    } {
+        const total = this.hardLinksUsed + this.copiesUsed;
+        const linkSuccessRate = total > 0 ? (this.hardLinksUsed / total) * 100 : 0;
+        
+        return {
+            hardLinksUsed: this.hardLinksUsed,
+            copiesUsed: this.copiesUsed,
+            linkSuccessRate: parseFloat(linkSuccessRate.toFixed(1)),
+            totalOperations: total
+        };
     }
 }

@@ -66,6 +66,9 @@ export class NinjaCompilationPipeline {
 
       if (result.success) {
 
+        // 显示缓存统计信息
+        await this.showCacheStats();
+
         // 确定输出文件路径
         const sketchName = process.env['SKETCH_NAME'] || 'sketch';
         const buildPath = process.env['BUILD_PATH'] || '';
@@ -387,6 +390,19 @@ export class NinjaCompilationPipeline {
     this.logger.info(`   Files: ${stats.totalFiles}`);
     this.logger.info(`   Size: ${stats.totalSizeFormatted}`);
     this.logger.info(`   Location: ${stats.cacheDir}`);
+    
+    const totalOps = (stats.hardLinksUsed || 0) + (stats.copiesUsed || 0);
+    if (totalOps > 0) {
+      const hardPercent = (((stats.hardLinksUsed || 0) / totalOps) * 100).toFixed(1);
+      const copyPercent = (((stats.copiesUsed || 0) / totalOps) * 100).toFixed(1);
+      
+      this.logger.info(`   Performance:`);
+      this.logger.info(`     Hard links: ${stats.hardLinksUsed || 0} (${hardPercent}%)`);
+      this.logger.info(`     File copies: ${stats.copiesUsed || 0} (${copyPercent}%)`);
+      
+      const linkRate = ((stats.hardLinksUsed || 0) / totalOps * 100).toFixed(1);
+      this.logger.info(`     Hard link success rate: ${linkRate}%`);
+    }
   }
 
   /**

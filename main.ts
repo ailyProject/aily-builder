@@ -4,6 +4,7 @@ import { Command } from 'commander';
 import { ArduinoCompiler } from './src/ArduinoCompiler';
 import { Logger } from './src/utils/Logger';
 import { CacheManager } from './src/CacheManager';
+import { calculateMD5 } from './src/utils/md5';
 import path from 'path';
 import os from 'os';
 
@@ -50,12 +51,17 @@ program
 
     const compiler = new ArduinoCompiler(logger, { useNinja });
 
-    // 设置默认的 build 路径为 sketch 所在目录下的 build 目录
+    // 设置默认的 build 路径到 AppData\Local\aily-builder\project\<sketchname>_<md5>
     const sketchPath = path.resolve(sketch);
     const sketchDirPath = path.dirname(sketchPath);
-    const defaultBuildPath = path.join(sketchDirPath, 'build');
+    const sketchName = path.basename(sketchPath, '.ino');
+    
+    // 为了避免不同项目的同名sketch冲突，使用项目路径的MD5哈希值
+    const projectPathMD5 = calculateMD5(sketchDirPath).substring(0, 8); // 只取前8位MD5值
+    const uniqueSketchName = `${sketchName}_${projectPathMD5}`;
+    const defaultBuildPath = path.join(os.homedir(), 'AppData', 'Local', 'aily-builder', 'project', uniqueSketchName);
 
-    process.env['SKETCH_NAME'] = path.basename(sketchPath, '.ino');
+    process.env['SKETCH_NAME'] = sketchName;
     process.env['SKETCH_PATH'] = sketchPath;
     process.env['SKETCH_DIR_PATH'] = sketchDirPath;
     process.env['BUILD_PATH'] = options.buildPath ? path.resolve(options.buildPath) : defaultBuildPath;
