@@ -483,7 +483,7 @@ export class ArduinoConfigParser {
 
 
             boardConfig['build.fqbn'] = fqbn + ':' +
-                `:UploadSpeed=921600,CPUFreq=${cpuFreq},` +
+                `UploadSpeed=921600,CPUFreq=${cpuFreq},` +
                 `FlashFreq=${flashFreq},FlashMode=${flashMode},FlashSize=${flashSize},` +
                 `PartitionScheme=${PartitionScheme},DebugLevel=none,PSRAM=${psram},` +
                 `LoopCore=${loopCore},EventsCore=${eventsCore},EraseFlash=${eraseFlash},JTAGAdapter=default,ZigbeeMode=default`
