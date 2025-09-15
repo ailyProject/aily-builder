@@ -252,18 +252,28 @@ export class ArduinoConfigParser {
     /**
      * 应用 boardConfig 的配置覆盖
      * 当 platform 配置和 boardConfig 中有相同的 key 时，使用 boardConfig 的值覆盖 platform 的值
+     * 如果原值是 {} 包裹的变量形式，则不进行覆盖
      * @param {Object} variables 变量映射（包含 platform 配置）
      * @param {Object} boardConfig 板子配置
      */
     private applyBoardConfigOverrides(variables: { [key: string]: string }, boardConfig: any): void {
         const overrides: string[] = [];
+        const skipped: string[] = [];
         
         Object.keys(boardConfig).forEach(key => {
             // 检查 platform 配置中是否已存在相同的 key
             if (variables.hasOwnProperty(key) && variables[key] !== boardConfig[key]) {
                 const originalValue = variables[key];
-                variables[key] = boardConfig[key];
-                overrides.push(`${key}: "${originalValue}" -> "${boardConfig[key]}"`);
+                
+                // 检查原值是否为 {} 包裹的变量形式
+                if (originalValue && originalValue.match(/^\{[^}]+\}$/)) {
+                    // 如果是变量形式，跳过覆盖
+                    skipped.push(`${key}: 保持变量 "${originalValue}"，跳过覆盖 "${boardConfig[key]}"`);
+                } else {
+                    // 正常覆盖
+                    variables[key] = boardConfig[key];
+                    overrides.push(`${key}: "${originalValue}" -> "${boardConfig[key]}"`);
+                }
             }
         });
 
@@ -272,6 +282,14 @@ export class ArduinoConfigParser {
             console.log(`  检测到 ${overrides.length} 个重复键，应用 boardConfig 覆盖:`);
             overrides.forEach(override => {
                 console.log(`    ${override}`);
+            });
+        }
+        
+        // 记录跳过的变量覆盖
+        if (skipped.length > 0) {
+            console.log(`  检测到 ${skipped.length} 个变量形式的键，跳过覆盖:`);
+            skipped.forEach(skip => {
+                console.log(`    ${skip}`);
             });
         }
     }
@@ -455,12 +473,20 @@ export class ArduinoConfigParser {
             // 这里要读取arduino配置菜单，还未实现
             const cpuFreq = boardConfig['build.f_cpu'] ? boardConfig['build.f_cpu'].replace('000000L', '') : '240';
             const flashSize = boardConfig['build.flash_size'] || '4MB';
+            const flashFreq = boardConfig['build.flash_freq'] || '80';
+            const flashMode = boardConfig['build.flash_mode'] || 'qio';
+            const psram = boardConfig['build.psram'] || 'disabled';
+            const PartitionScheme = boardConfig['build.partitions'] || 'default';
+            const loopCore = boardConfig['build.loop_core'] || 1;
+            const eventsCore = boardConfig['build.events_core'] || 1;
+            const eraseFlash = boardConfig['build.erase_cmd'] || 'none';
+
 
             boardConfig['build.fqbn'] = fqbn + ':' +
                 `:UploadSpeed=921600,CPUFreq=${cpuFreq},` +
-                `FlashFreq=80,FlashMode=qio,FlashSize=${flashSize},` +
-                `PartitionScheme=app3M_fat9M_16MB,DebugLevel=none,PSRAM=disabled,` +
-                `LoopCore=1,EventsCore=1,EraseFlash=none,JTAGAdapter=default,ZigbeeMode=default`
+                `FlashFreq=${flashFreq},FlashMode=${flashMode},FlashSize=${flashSize},` +
+                `PartitionScheme=${PartitionScheme},DebugLevel=none,PSRAM=${psram},` +
+                `LoopCore=${loopCore},EventsCore=${eventsCore},EraseFlash=${eraseFlash},JTAGAdapter=default,ZigbeeMode=default`
         }
 
         process.env['BUILD_MCU'] = boardConfig['build.mcu'];
