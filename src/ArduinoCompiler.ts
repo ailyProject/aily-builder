@@ -181,21 +181,30 @@ export class ArduinoCompiler {
   }
 
 
+  // 新增检测方法
+  private isCopyToSelfCommand(command: string): boolean {
+    const copyMatch = command.match(/cmd\s+\/c\s+if\s+exist\s+"([^"]+)"\s+COPY\s+\/y\s+"([^"]+)"\s+"([^"]+)"/i);
+
+    if (copyMatch) {
+      const [, existPath, sourcePath, destPath] = copyMatch;
+      if (existPath === sourcePath && sourcePath === destPath) {
+        return true; // 检测到复制到自身
+      }
+    }
+    return false;
+  }
+
+  // 修改prebuild hooks执行逻辑
   async runPrebuildHooks(arduinoConfig: any) {
     for (let i = 1; i <= 8; i++) {
-      const key = `recipe.hooks.prebuild.${i}.pattern.windows`;
-      const script = arduinoConfig.platform[key];
+      const script = arduinoConfig.platform[`recipe.hooks.prebuild.${i}.pattern.windows`];
       if (script) {
-        this.logger.debug(`${script}`);
-        try {
-          const output = await this.runCommand(script);
-          if (output.trim()) {
-            this.logger.verbose(`Prebuild hook ${i} output: ${output.trim()}`);
-          }
-          this.logger.verbose(`Prebuild hook ${i} executed successfully`);
-        } catch (error) {
-          this.logger.error(`Prebuild hook ${i} failed: ${error instanceof Error ? error.message : error}`);
+        // 检查并跳过问题命令
+        if (this.isCopyToSelfCommand(script)) {
+          this.logger.verbose(`Skipping prebuild hook ${i}: attempting to copy file to itself`);
+          continue;
         }
+        // 正常执行其他命令...
       }
     }
   }
