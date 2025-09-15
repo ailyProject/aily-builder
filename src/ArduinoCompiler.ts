@@ -75,7 +75,7 @@ export class ArduinoCompiler {
     const dependencies = await this.analyzer.preprocess(arduinoConfig);
     this.logger.success(`Dependency analysis completed.\n Found ${dependencies.length} dependencies.`);
     dependencies.map(dep => this.logger.info(` - ${dep.name}`));
-    // console.log(dependencies);
+    // console.log(JSON.stringify(dependencies) );
     
     // 计算预处理耗时
     const preprocessTime = Date.now() - startTime;

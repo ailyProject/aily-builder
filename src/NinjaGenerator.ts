@@ -259,13 +259,7 @@ export class NinjaGenerator {
           groupObjects.push(build.outputs[0]);
         } else {
           // 即使跳过编译，也要将对象文件添加到归档组中
-          const fileName = path.basename(file);
-          let objectFile: string;
-          if (dependency.type === 'library') {
-            objectFile = path.join(dependency.type, dependency.name, `${fileName}.o`);
-          } else {
-            objectFile = path.join(dependency.type, `${fileName}.o`);
-          }
+          const objectFile = this.calculateObjectFilePath(file, dependency.type, dependency.name);
           groupObjects.push(objectFile);
         }
       }
@@ -347,6 +341,32 @@ export class NinjaGenerator {
     }
   }
 
+  private calculateObjectFilePath(
+    sourceFile: string,
+    type: 'sketch' | 'library' | 'core' | 'variant',
+    dependencyName: string
+  ): string {
+    const fileName = path.basename(sourceFile);
+
+    if (type === 'library') {
+      // 检查是否需要添加上级目录名称以避免同名文件冲突
+      const sourceDir = path.dirname(sourceFile);
+      const parentDirName = path.basename(sourceDir);
+
+      // 如果上级目录不是库的根目录（即存在架构或其他子目录），则添加目录前缀
+      const dep = this.dependencies.find(d => d.name === dependencyName);
+      if (dep && sourceDir !== dep.path && parentDirName !== dependencyName) {
+        // 使用上级目录名称作为前缀，避免同名文件冲突
+        const prefixedFileName = `${parentDirName}_${fileName}`;
+        return path.join(type, dependencyName, `${prefixedFileName}.o`);
+      } else {
+        return path.join(type, dependencyName, `${fileName}.o`);
+      }
+    } else {
+      return path.join(type, `${fileName}.o`);
+    }
+  }
+
   private async createCompileBuild(
     sourceFile: string,
     type: 'sketch' | 'library' | 'core' | 'variant',
@@ -355,29 +375,8 @@ export class NinjaGenerator {
     const ext = path.extname(sourceFile);
     const fileName = path.basename(sourceFile);
 
-    let objectFile: string;
+    const objectFile = this.calculateObjectFilePath(sourceFile, type, dependencyName);
     let rule: string;
-
-    // 确定对象文件路径（使用相对路径）
-    if (type === 'library') {
-      // 检查是否需要添加上级目录名称以避免同名文件冲突
-      const sourceDir = path.dirname(sourceFile);
-      const parentDirName = path.basename(sourceDir);
-      
-      // 如果上级目录不是库的根目录（即存在架构或其他子目录），则添加目录前缀
-      const dep = this.dependencies.find(d => d.name === dependencyName);
-      if (dep && sourceDir !== dep.path && parentDirName !== dependencyName) {
-        // 使用上级目录名称作为前缀，避免同名文件冲突
-        const prefixedFileName = `${parentDirName}_${fileName}`;
-        objectFile = path.join(type, dependencyName, `${prefixedFileName}.o`);
-      } else {
-        objectFile = path.join(type, dependencyName, `${fileName}.o`);
-      }
-    } else {
-      objectFile = path.join(type, `${fileName}.o`);
-    }
-
-    // 如果启用了跳过已存在对象文件的选项，检查文件是否已存在
     if (this.skipExistingObjects) {
       const fullObjectPath = path.join(this.buildPath, objectFile);
       if (await fs.pathExists(fullObjectPath)) {

@@ -287,9 +287,9 @@ export class NinjaCompilationPipeline {
       });
 
       if (!sourceFile) {
-        this.logger.debug(`Cannot find source file for object: ${objectFileName} in dependency ${dependency.name}`);
-        this.logger.debug(`Looking for baseName: ${baseName}`);
-        this.logger.debug(`Available source files: ${dependency.includes?.map(f => path.basename(f, path.extname(f))).join(', ')}`);
+        // this.logger.debug(`Cannot find source file for object: ${objectFileName} in dependency ${dependency.name}`);
+        // this.logger.debug(`Looking for baseName: ${baseName}`);
+        // this.logger.debug(`Available source files: ${dependency.includes?.map(f => path.basename(f, path.extname(f))).join(', ')}`);
         return;
       }
 
