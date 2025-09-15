@@ -259,12 +259,12 @@ export class ArduinoConfigParser {
     private applyBoardConfigOverrides(variables: { [key: string]: string }, boardConfig: any): void {
         const overrides: string[] = [];
         const skipped: string[] = [];
-        
+
         Object.keys(boardConfig).forEach(key => {
             // 检查 platform 配置中是否已存在相同的 key
             if (variables.hasOwnProperty(key) && variables[key] !== boardConfig[key]) {
                 const originalValue = variables[key];
-                
+
                 // 检查原值是否为 {} 包裹的变量形式
                 if (originalValue && originalValue.match(/^\{[^}]+\}$/)) {
                     // 如果是变量形式，跳过覆盖
@@ -284,7 +284,7 @@ export class ArduinoConfigParser {
                 console.log(`    ${override}`);
             });
         }
-        
+
         // 记录跳过的变量覆盖
         if (skipped.length > 0) {
             console.log(`  检测到 ${skipped.length} 个变量形式的键，跳过覆盖:`);
@@ -319,19 +319,19 @@ export class ArduinoConfigParser {
      */
     private applyPartitionSchemeSettings(boardConfig: { [key: string]: string }, partitionValue: string): void {
         console.log(`  检测到分区方案设置: ${partitionValue}`);
-        
+
         // 查找匹配的分区方案配置
         const matchingScheme = this.findPartitionScheme(boardConfig, partitionValue);
-        
+
         if (matchingScheme) {
             console.log(`  找到匹配的分区方案: ${matchingScheme.schemeName}`);
-            
+
             // 应用相关的参数
             if (matchingScheme.uploadMaxSize) {
                 boardConfig['upload.maximum_size'] = matchingScheme.uploadMaxSize;
                 console.log(`    自动设置 upload.maximum_size = ${matchingScheme.uploadMaxSize}`);
             }
-            
+
             if (matchingScheme.uploadExtraFlags) {
                 boardConfig['upload.extra_flags'] = matchingScheme.uploadExtraFlags;
                 console.log(`    自动设置 upload.extra_flags = ${matchingScheme.uploadExtraFlags}`);
@@ -352,15 +352,15 @@ export class ArduinoConfigParser {
         for (const key in boardConfig) {
             if (key.startsWith('menu.PartitionScheme.') && key.endsWith('.build.partitions')) {
                 const schemeValue = boardConfig[key];
-                
+
                 if (schemeValue === partitionValue) {
                     // 提取方案名称（去掉前缀和后缀）
                     const schemeName = key.replace('menu.PartitionScheme.', '').replace('.build.partitions', '');
-                    
+
                     // 查找相关的配置项
                     const uploadMaxSizeKey = `menu.PartitionScheme.${schemeName}.upload.maximum_size`;
                     const uploadExtraFlagsKey = `menu.PartitionScheme.${schemeName}.upload.extra_flags`;
-                    
+
                     return {
                         schemeName: schemeName,
                         partitionValue: schemeValue,
@@ -370,7 +370,7 @@ export class ArduinoConfigParser {
                 }
             }
         }
-        
+
         return null;
     }
 
@@ -547,23 +547,32 @@ export class ArduinoConfigParser {
         }
 
         if (fqbnObj.package == 'esp32') {
-            // 这里要读取arduino配置菜单，还未实现
             const cpuFreq = boardConfig['build.f_cpu'] ? boardConfig['build.f_cpu'].replace('000000L', '') : '240';
-            const flashSize = boardConfig['build.flash_size'] || '4MB';
-            const flashFreq = boardConfig['build.flash_freq'] || '80';
+            const flashSize = boardConfig['build.flash_size'] ? boardConfig['build.flash_size'].replace(/MB$/i, 'M') : '4M';
+            const flashFreq = boardConfig['build.flash_freq'] || '80m';
             const flashMode = boardConfig['build.flash_mode'] || 'qio';
             const psram = boardConfig['build.psram'] || 'disabled';
             const PartitionScheme = boardConfig['build.partitions'] || 'default';
-            const loopCore = boardConfig['build.loop_core'] || 1;
-            const eventsCore = boardConfig['build.events_core'] || 1;
+            const loopCore = boardConfig['build.loop_core'] || '1';
+            const eventsCore = boardConfig['build.events_core'] || '1';
             const eraseFlash = boardConfig['build.erase_cmd'] || 'none';
-
+            const uploadSpeed = boardConfig['upload.speed'] || '921600';
+            const usbMode = boardConfig['build.usb_mode'] || 'hwcdc';
+            const cdcOnBoot = boardConfig['build.cdc_on_boot'] || 'default';
+            const mscOnBoot = boardConfig['build.msc_on_boot'] || 'default';
+            const dfuOnBoot = boardConfig['build.dfu_on_boot'] || 'default';
+            const uploadMode = boardConfig['upload.mode'] || 'default';
+            const debugLevel = boardConfig['build.debug_level'] || 'none';
+            const jtagAdapter = boardConfig['debug.tool'] || 'default';
+            const zigbeeMode = boardConfig['build.zigbee_mode'] || 'default';
 
             boardConfig['build.fqbn'] = fqbn + ':' +
-                `UploadSpeed=921600,CPUFreq=${cpuFreq},` +
-                `FlashFreq=${flashFreq},FlashMode=${flashMode},FlashSize=${flashSize},` +
-                `PartitionScheme=${PartitionScheme},DebugLevel=none,PSRAM=${psram},` +
-                `LoopCore=${loopCore},EventsCore=${eventsCore},EraseFlash=${eraseFlash},JTAGAdapter=default,ZigbeeMode=default`
+                `UploadSpeed=${uploadSpeed},USBMode=${usbMode},CDCOnBoot=${cdcOnBoot},` +
+                `MSCOnBoot=${mscOnBoot},DFUOnBoot=${dfuOnBoot},UploadMode=${uploadMode},` +
+                `CPUFreq=${cpuFreq},FlashMode=${flashMode},FlashSize=${flashSize},` +
+                `PartitionScheme=${PartitionScheme},DebugLevel=${debugLevel},PSRAM=${psram},` +
+                `LoopCore=${loopCore},EventsCore=${eventsCore},EraseFlash=${eraseFlash},` +
+                `JTAGAdapter=${jtagAdapter},ZigbeeMode=${zigbeeMode}`
         }
 
         process.env['BUILD_MCU'] = boardConfig['build.mcu'];
@@ -673,7 +682,7 @@ export class ArduinoConfigParser {
 
     async findToolPath(toolName) {
         let toolsBasePath: string;
-        
+
         if (process.env['TOOLS_PATH']) {
             // 使用自定义工具路径
             toolsBasePath = process.env['TOOLS_PATH'];
@@ -684,7 +693,7 @@ export class ArduinoConfigParser {
             toolsBasePath = path.join(ARDUINO15_PACKAGE_PATH, 'tools');
             console.log(`使用默认工具路径: ${toolsBasePath}`);
         }
-        
+
         // 支持两种匹配模式：
         // 1. toolName/* (传统 Arduino 路径结构)
         // 2. toolName@* (aily-project 工具路径结构)
@@ -692,7 +701,7 @@ export class ArduinoConfigParser {
             path.join(toolsBasePath, `${toolName}@*`).replace(/\\/g, '/'),
             path.join(toolsBasePath, toolName, '*').replace(/\\/g, '/')
         ];
-        
+
         for (const pattern of patterns) {
             const result = await glob(pattern, { absolute: true });
             if (result && result.length > 0) {
@@ -700,7 +709,7 @@ export class ArduinoConfigParser {
                 return result[0];
             }
         }
-        
+
         console.warn(`未找到工具: ${toolName} 在路径: ${toolsBasePath}`);
         return null;
     }
