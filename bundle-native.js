@@ -53,12 +53,18 @@ async function bundleWithNative() {
     await fs.copy(path.join(treeSitterSrc, 'package.json'), path.join(treeSitterDest, 'package.json'));
     await fs.copy(path.join(treeSitterSrc, 'tree-sitter.d.ts'), path.join(treeSitterDest, 'tree-sitter.d.ts'));
     
-    // 复制编译后的 .node 文件
-    const treeSitterBuildSrc = path.join(treeSitterSrc, 'build');
-    const treeSitterBuildDest = path.join(treeSitterDest, 'build');
+    // 只复制编译后的 .node 文件
+    const treeSitterBuildSrc = path.join(treeSitterSrc, 'build', 'Release');
+    const treeSitterBuildDest = path.join(treeSitterDest, 'build', 'Release');
+    await fs.ensureDir(treeSitterBuildDest);
     if (await fs.pathExists(treeSitterBuildSrc)) {
-      await fs.copy(treeSitterBuildSrc, treeSitterBuildDest);
-      console.log('✅ Copied tree-sitter build files');
+      const files = await fs.readdir(treeSitterBuildSrc);
+      for (const file of files) {
+        if (file.endsWith('.node')) {
+          await fs.copy(path.join(treeSitterBuildSrc, file), path.join(treeSitterBuildDest, file));
+        }
+      }
+      console.log('✅ Copied tree-sitter native files');
     }
 
     // 复制 tree-sitter-cpp 模块
@@ -69,20 +75,30 @@ async function bundleWithNative() {
     // 复制主要文件
     await fs.copy(path.join(treeSitterCppSrc, 'package.json'), path.join(treeSitterCppDest, 'package.json'));
     
-    // 复制 bindings 目录
-    const bindingsSrc = path.join(treeSitterCppSrc, 'bindings');
-    const bindingsDest = path.join(treeSitterCppDest, 'bindings');
+    // 只复制 bindings/node 目录
+    const bindingsSrc = path.join(treeSitterCppSrc, 'bindings', 'node');
+    const bindingsDest = path.join(treeSitterCppDest, 'bindings', 'node');
+    await fs.ensureDir(bindingsDest);
     if (await fs.pathExists(bindingsSrc)) {
-      await fs.copy(bindingsSrc, bindingsDest);
+      const files = await fs.readdir(bindingsSrc);
+      for (const file of files) {
+        await fs.copy(path.join(bindingsSrc, file), path.join(bindingsDest, file));
+      }
       console.log('✅ Copied tree-sitter-cpp bindings');
     }
     
-    // 复制 tree-sitter-cpp 编译文件
-    const treeSitterCppBuildSrc = path.join(treeSitterCppSrc, 'build');
-    const treeSitterCppBuildDest = path.join(treeSitterCppDest, 'build');
+    // 只复制编译后的 .node 文件
+    const treeSitterCppBuildSrc = path.join(treeSitterCppSrc, 'build', 'Release');
+    const treeSitterCppBuildDest = path.join(treeSitterCppDest, 'build', 'Release');
+    await fs.ensureDir(treeSitterCppBuildDest);
     if (await fs.pathExists(treeSitterCppBuildSrc)) {
-      await fs.copy(treeSitterCppBuildSrc, treeSitterCppBuildDest);
-      console.log('✅ Copied tree-sitter-cpp build files');
+      const files = await fs.readdir(treeSitterCppBuildSrc);
+      for (const file of files) {
+        if (file.endsWith('.node')) {
+          await fs.copy(path.join(treeSitterCppBuildSrc, file), path.join(treeSitterCppBuildDest, file));
+        }
+      }
+      console.log('✅ Copied tree-sitter-cpp native files');
     }
 
     // 复制 grammar.js（可能需要）
