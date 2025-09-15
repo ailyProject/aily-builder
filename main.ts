@@ -2,6 +2,7 @@
 
 import { Command } from 'commander';
 import { ArduinoCompiler } from './src/ArduinoCompiler';
+import { ArduinoUploader } from './src/ArduinoUploader';
 import { Logger } from './src/utils/Logger';
 import { CacheManager } from './src/CacheManager';
 import { calculateMD5 } from './src/utils/md5';
@@ -156,6 +157,66 @@ program
       logger.success('Build artifacts cleaned!');
     } catch (error) {
       logger.error(`❌ Error cleaning: ${error instanceof Error ? error.message : error}`);
+      process.exit(1);
+    }
+  });
+
+program
+  .command('upload')
+  .description('Upload firmware to Arduino board')
+  .option('-b, --board <board>', 'Target board (e.g., arduino:avr:uno)', 'arduino:avr:uno')
+  .option('-p, --port <port>', 'Serial port for upload (e.g., COM3 or /dev/ttyUSB0)', undefined)
+  .option('-f, --file <file>', 'Firmware file path to upload (.hex or .bin)', undefined)
+  .option('--verbose', 'Enable verbose output', false)
+  .option('--build-property <key=value>', 'Additional build property', (val, memo) => {
+    const [key, value] = val.split('=');
+    memo[key] = value;
+    return memo;
+  }, {})
+  .action(async (options) => {
+    logger.setVerbose(options.verbose);
+
+    // 验证必需参数
+    if (!options.port) {
+      logger.error('❌ Port parameter is required. Use -p or --port to specify the serial port.');
+      process.exit(1);
+    }
+
+    if (!options.file) {
+      logger.error('❌ File parameter is required. Use -f or --file to specify the firmware file path.');
+      process.exit(1);
+    }
+
+    const uploader = new ArduinoUploader(logger);
+
+    const uploadOptions = {
+      board: options.board,
+      port: options.port,
+      filePath: path.resolve(options.file),
+      buildProperties: options.buildProperty || {},
+      verbose: options.verbose
+    };
+
+    logger.info(`🚀 Starting upload to ${options.board}`);
+    logger.info(`Port: ${options.port}`);
+    logger.info(`File: ${uploadOptions.filePath}`);
+    if (Object.keys(uploadOptions.buildProperties).length > 0) {
+      logger.info(`Build properties: ${JSON.stringify(uploadOptions.buildProperties)}`);
+    }
+
+    const result = await uploader.upload(uploadOptions);
+
+    if (result.success) {
+      logger.success(`Upload completed successfully!`);
+      logger.info(`Upload time: ${result.uploadTime / 1000}s`);
+      if (result.output && options.verbose) {
+        logger.verbose(`Upload output: ${result.output}`);
+      }
+    } else {
+      logger.error(`❌ Upload failed: ${result.error}`);
+      if (result.output && options.verbose) {
+        logger.verbose(`Upload output: ${result.output}`);
+      }
       process.exit(1);
     }
   });
