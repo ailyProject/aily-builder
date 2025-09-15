@@ -549,21 +549,31 @@ export class ArduinoConfigParser {
         if (fqbnObj.package == 'esp32') {
             // 这里要读取arduino配置菜单，还未实现
             const cpuFreq = boardConfig['build.f_cpu'] ? boardConfig['build.f_cpu'].replace('000000L', '') : '240';
-            const flashSize = boardConfig['build.flash_size'] || '4MB';
-            const flashFreq = boardConfig['build.flash_freq'] || '80';
+            const flashSize = boardConfig['build.flash_size'] ? boardConfig['build.flash_size'].replace(/MB$/i, 'M') : '4M';
+            const flashFreq = boardConfig['build.flash_freq'] || '80m';
             const flashMode = boardConfig['build.flash_mode'] || 'qio';
             const psram = boardConfig['build.psram'] || 'disabled';
             const PartitionScheme = boardConfig['build.partitions'] || 'default';
-            const loopCore = boardConfig['build.loop_core'] || 1;
-            const eventsCore = boardConfig['build.events_core'] || 1;
+            const loopCore = boardConfig['build.loop_core'] || '1';
+            const eventsCore = boardConfig['build.events_core'] || '1';
             const eraseFlash = boardConfig['build.erase_cmd'] || 'none';
-
+            const uploadSpeed = boardConfig['upload.speed'] || '921600';
+            const usbMode = boardConfig['build.usb_mode'] || 'hwcdc';
+            const cdcOnBoot = boardConfig['build.cdc_on_boot'] || 'default';
+            const mscOnBoot = boardConfig['build.msc_on_boot'] || 'default';
+            const dfuOnBoot = boardConfig['build.dfu_on_boot'] || 'default';
+            const uploadMode = boardConfig['upload.mode'] || 'default';
+            const debugLevel = boardConfig['build.debug_level'] || 'none';
+            const jtagAdapter = boardConfig['debug.tool'] || 'default';
+            const zigbeeMode = boardConfig['build.zigbee_mode'] || 'default';
 
             boardConfig['build.fqbn'] = fqbn + ':' +
-                `UploadSpeed=921600,CPUFreq=${cpuFreq},` +
-                `FlashFreq=${flashFreq},FlashMode=${flashMode},FlashSize=${flashSize},` +
-                `PartitionScheme=${PartitionScheme},DebugLevel=none,PSRAM=${psram},` +
-                `LoopCore=${loopCore},EventsCore=${eventsCore},EraseFlash=${eraseFlash},JTAGAdapter=default,ZigbeeMode=default`
+                `UploadSpeed=${uploadSpeed},USBMode=${usbMode},CDCOnBoot=${cdcOnBoot},` +
+                `MSCOnBoot=${mscOnBoot},DFUOnBoot=${dfuOnBoot},UploadMode=${uploadMode},` +
+                `CPUFreq=${cpuFreq},FlashMode=${flashMode},FlashSize=${flashSize},` +
+                `PartitionScheme=${PartitionScheme},DebugLevel=${debugLevel},PSRAM=${psram},` +
+                `LoopCore=${loopCore},EventsCore=${eventsCore},EraseFlash=${eraseFlash},` +
+                `JTAGAdapter=${jtagAdapter},ZigbeeMode=${zigbeeMode}`
         }
 
         process.env['BUILD_MCU'] = boardConfig['build.mcu'];
@@ -620,7 +630,7 @@ export class ArduinoConfigParser {
             board: boardConfig,
         };
 
-        console.log("Result: ", result);
+        // console.log("Result: ", result);
 
         return result;
 
