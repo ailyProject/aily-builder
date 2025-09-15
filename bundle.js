@@ -25,6 +25,7 @@ async function bundle() {
         // 排除一些 Node.js 原生模块和二进制依赖
         'tree-sitter',
         'tree-sitter-cpp',
+        'test'
       ],
       banner: {
         js: process.platform === 'win32' ? '' : '#!/usr/bin/env node\n'
