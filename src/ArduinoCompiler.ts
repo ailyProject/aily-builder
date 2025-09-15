@@ -186,7 +186,14 @@ export class ArduinoCompiler {
       const key = `recipe.hooks.prebuild.${i}.pattern.windows`;
       const script = arduinoConfig.platform[key];
       if (script) {
-        this.logger.debug(`${script}`);
+        this.logger.debug(`Prebuild hook ${i} command: ${script}`);
+        
+        // 检查是否是自我复制命令 (COPY命令源文件和目标文件相同)
+        if (script.includes('COPY') && this.isSelfCopyCommand(script)) {
+          this.logger.warn(`Prebuild hook ${i} skipped: self-copy detected in command: ${script}`);
+          continue;
+        }
+        
         try {
           const output = await this.runCommand(script);
           if (output.trim()) {
@@ -195,9 +202,27 @@ export class ArduinoCompiler {
           this.logger.verbose(`Prebuild hook ${i} executed successfully`);
         } catch (error) {
           this.logger.error(`Prebuild hook ${i} failed: ${error instanceof Error ? error.message : error}`);
+          // 对于partitions.csv相关的错误，我们可以继续执行，因为这通常不是致命错误
+          if (script.includes('partitions.csv')) {
+            this.logger.warn(`Continuing despite partitions.csv copy error...`);
+          } else {
+            throw error; // 对于其他错误，重新抛出
+          }
         }
       }
     }
+  }
+
+  // 检查是否是自我复制命令的辅助方法
+  private isSelfCopyCommand(command: string): boolean {
+    // 匹配COPY命令格式: COPY /y "source" "target"
+    const copyMatch = command.match(/COPY\s+\/y\s+"([^"]+)"\s+"([^"]+)"/i);
+    if (copyMatch) {
+      const source = copyMatch[1];
+      const target = copyMatch[2];
+      return source === target;
+    }
+    return false;
   }
 
   async runPostBuildHooks(arduinoConfig) {
