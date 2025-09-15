@@ -295,6 +295,86 @@ export class ArduinoConfigParser {
     }
 
     /**
+     * 应用额外的构建属性，并处理分区方案的智能匹配
+     * 当设置 build.partitions 时，自动应用对应的相关参数（如 upload.maximum_size）
+     * @param {Object} boardConfig 板子配置对象
+     * @param {Object} buildProperties 要应用的构建属性
+     */
+    private applyBuildProperties(boardConfig: { [key: string]: string }, buildProperties: { [key: string]: string }): void {
+        Object.keys(buildProperties).forEach(key => {
+            console.log(`  应用额外构建属性: ${key} = ${buildProperties[key]}`);
+            boardConfig[key] = buildProperties[key];
+        });
+
+        // 处理分区方案的智能匹配
+        if (buildProperties['build.partitions']) {
+            this.applyPartitionSchemeSettings(boardConfig, buildProperties['build.partitions']);
+        }
+    }
+
+    /**
+     * 根据分区方案自动应用相关的配置参数
+     * @param {Object} boardConfig 板子配置对象
+     * @param {string} partitionValue 分区方案值
+     */
+    private applyPartitionSchemeSettings(boardConfig: { [key: string]: string }, partitionValue: string): void {
+        console.log(`  检测到分区方案设置: ${partitionValue}`);
+        
+        // 查找匹配的分区方案配置
+        const matchingScheme = this.findPartitionScheme(boardConfig, partitionValue);
+        
+        if (matchingScheme) {
+            console.log(`  找到匹配的分区方案: ${matchingScheme.schemeName}`);
+            
+            // 应用相关的参数
+            if (matchingScheme.uploadMaxSize) {
+                boardConfig['upload.maximum_size'] = matchingScheme.uploadMaxSize;
+                console.log(`    自动设置 upload.maximum_size = ${matchingScheme.uploadMaxSize}`);
+            }
+            
+            if (matchingScheme.uploadExtraFlags) {
+                boardConfig['upload.extra_flags'] = matchingScheme.uploadExtraFlags;
+                console.log(`    自动设置 upload.extra_flags = ${matchingScheme.uploadExtraFlags}`);
+            }
+        } else {
+            console.log(`  ⚠️  未找到匹配的分区方案配置: ${partitionValue}`);
+        }
+    }
+
+    /**
+     * 在 boardConfig 中查找与指定分区值匹配的分区方案
+     * @param {Object} boardConfig 板子配置对象
+     * @param {string} partitionValue 要查找的分区值
+     * @returns {Object|null} 匹配的分区方案信息或 null
+     */
+    private findPartitionScheme(boardConfig: { [key: string]: string }, partitionValue: string): any {
+        // 遍历所有以 menu.PartitionScheme. 开头的配置项
+        for (const key in boardConfig) {
+            if (key.startsWith('menu.PartitionScheme.') && key.endsWith('.build.partitions')) {
+                const schemeValue = boardConfig[key];
+                
+                if (schemeValue === partitionValue) {
+                    // 提取方案名称（去掉前缀和后缀）
+                    const schemeName = key.replace('menu.PartitionScheme.', '').replace('.build.partitions', '');
+                    
+                    // 查找相关的配置项
+                    const uploadMaxSizeKey = `menu.PartitionScheme.${schemeName}.upload.maximum_size`;
+                    const uploadExtraFlagsKey = `menu.PartitionScheme.${schemeName}.upload.extra_flags`;
+                    
+                    return {
+                        schemeName: schemeName,
+                        partitionValue: schemeValue,
+                        uploadMaxSize: boardConfig[uploadMaxSizeKey],
+                        uploadExtraFlags: boardConfig[uploadExtraFlagsKey]
+                    };
+                }
+            }
+        }
+        
+        return null;
+    }
+
+    /**
      * 优化的变量扩展方法
      * 支持嵌套变量展开，如 {tools.{build.tarch}-esp-elf-gdb.path}
      * 先展开内层变量，再展开外层变量
@@ -460,10 +540,7 @@ export class ArduinoConfigParser {
         let boardConfig: { [key: string]: string } = this.parseBoardsTxt(boardsTxtPath, fqbnObj);
 
         // 替换/添加额外的构建属性
-        Object.keys(buildProperties).forEach(key => {
-            console.log(`  应用额外构建属性: ${key} = ${buildProperties[key]}`);
-            boardConfig[key] = buildProperties[key];
-        });
+        this.applyBuildProperties(boardConfig, buildProperties);
 
         if (!boardConfig['build.arch']) {
             boardConfig['build.arch'] = fqbnObj.platform.toUpperCase();
@@ -542,6 +619,8 @@ export class ArduinoConfigParser {
             platform: platformConfig,
             board: boardConfig,
         };
+
+        console.log("Result: ", result);
 
         return result;
 
