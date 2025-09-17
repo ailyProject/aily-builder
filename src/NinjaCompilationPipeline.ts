@@ -41,9 +41,9 @@ export class NinjaCompilationPipeline {
       // 1. 预处理：从缓存中恢复对象文件
       this.logger.verbose('Checking cache for compiled objects...');
       const cacheHits = await this.restoreFromCache(dependencies);
-      if (cacheHits > 0) {
-        this.logger.info(`Cache hit: ${cacheHits} objects restored from cache`);
-      }
+      // if (cacheHits > 0) {
+      //   this.logger.info(`Cache hit: ${cacheHits} objects restored from cache`);
+      // }
 
       // 2. 生成ninja构建文件
       this.logger.verbose('Generating ninja build file...');
@@ -67,7 +67,7 @@ export class NinjaCompilationPipeline {
       if (result.success) {
 
         // 显示缓存统计信息
-        await this.showCacheStats();
+        // await this.showCacheStats();
 
         // 确定输出文件路径
         const sketchName = process.env['SKETCH_NAME'] || 'sketch';
@@ -134,6 +134,7 @@ export class NinjaCompilationPipeline {
       let stdout = '';
       let stderr = '';
       const warnings: string[] = [];
+      let isInFailureMode = false; // 标识是否处于失败模式
 
       childProcess.stdout?.on('data', (data: any) => {
         const output = data.toString('utf8');
@@ -143,13 +144,27 @@ export class NinjaCompilationPipeline {
         const lines = output.split('\n');
         for (const line of lines) {
           if (line.trim()) {
-            if (line.includes('[') && line.includes(']')) {
-              // 这是ninja的进度信息
+            if (/\[\d+\/\d+\]/.test(line)) {
+              // 这是ninja的进度信息，重置失败模式
+              isInFailureMode = false;
               this.logger.info(line.trim());
               // 检查是否是编译完成的消息，立即存储到缓存
               this.handleCompilationProgress(line.trim(), buildDir);
+            } else if (line.startsWith('FAILED:')) {
+              // 编译失败信息，进入失败模式
+              isInFailureMode = true;
+              this.logger.error(line.trim());
+            } else if (isInFailureMode) {
+              // 在失败模式下，所有后续行都作为错误信息
+              // 但隐藏 ninja 的构建停止消息
+              if (line.includes('ninja: build stopped') || line.includes('subcommand failed')) {
+                isInFailureMode = false;
+                // 不输出这个消息，只是退出失败模式
+              } else {
+                this.logger.error(line.trim());
+              }
             } else {
-              // 这是编译器输出
+              // 其他输出
               this.logger.verbose(line.trim());
             }
           }
@@ -176,13 +191,13 @@ export class NinjaCompilationPipeline {
 
       childProcess.on('close', (code) => {
         if (code === 0) {
-          this.logger.success('Ninja build completed successfully');
+          this.logger.info('Ninja build completed successfully');
           resolve({ success: true, warnings: warnings.length > 0 ? warnings : undefined });
         } else {
-          this.logger.error(`❌ Ninja build failed with exit code ${code}`);
-          if (stderr) {
-            this.logger.error(`stderr: ${stderr}`);
-          }
+          // this.logger.error(`Ninja build failed with exit code ${code}`);
+          // if (stderr) {
+          //   this.logger.error(`stderr: ${stderr}`);
+          // }
           resolve({ success: false, warnings: warnings.length > 0 ? warnings : undefined });
         }
       });
@@ -390,16 +405,16 @@ export class NinjaCompilationPipeline {
     this.logger.info(`   Files: ${stats.totalFiles}`);
     this.logger.info(`   Size: ${stats.totalSizeFormatted}`);
     this.logger.info(`   Location: ${stats.cacheDir}`);
-    
+
     const totalOps = (stats.hardLinksUsed || 0) + (stats.copiesUsed || 0);
     if (totalOps > 0) {
       const hardPercent = (((stats.hardLinksUsed || 0) / totalOps) * 100).toFixed(1);
       const copyPercent = (((stats.copiesUsed || 0) / totalOps) * 100).toFixed(1);
-      
+
       this.logger.info(`   Performance:`);
       this.logger.info(`     Hard links: ${stats.hardLinksUsed || 0} (${hardPercent}%)`);
       this.logger.info(`     File copies: ${stats.copiesUsed || 0} (${copyPercent}%)`);
-      
+
       const linkRate = ((stats.hardLinksUsed || 0) / totalOps * 100).toFixed(1);
       this.logger.info(`     Hard link success rate: ${linkRate}%`);
     }

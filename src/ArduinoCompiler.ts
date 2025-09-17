@@ -49,7 +49,7 @@ export class ArduinoCompiler {
     const startTime = Date.now();
 
     // try {
-    this.logger.verbose(`Starting compilation process...`);
+    this.logger.info(`Starting compilation process...`);
 
     // 1. 验证sketch文件
     await this.validateSketch(options.sketchPath);
@@ -60,23 +60,40 @@ export class ArduinoCompiler {
     // 3. 准备构建目录
     await this.prepareBuildDirectory(options.buildPath, options.sketchPath);
 
-    // 5. 预处理2：运行编译前脚本（ESP32需要 prebuild）
-    if (arduinoConfig.platform['recipe.hooks.prebuild.1.pattern.windows']) {
-      console.log('Running prebuild hook scripts...');
-      await this.runPrebuildHooks(arduinoConfig);
-    }
+    // 4-6. 并行执行：预处理钩子、构建编译配置、依赖分析
+    this.logger.info('Starting parallel preprocessing tasks...');
+    const [compileConfig, dependencies] = await Promise.all([
+      // 6. 构建编译配置
+      (async () => {
+        this.logger.info('Generating compile configuration...');
+        return await this.compileConfigManager.parseCompileConfig(arduinoConfig);
+      })(),
+      
+      // 4. 依赖分析
+      (async () => {
+        this.logger.info('Analyzing dependencies...');
+        const deps = await this.analyzer.preprocess(arduinoConfig);
+        this.logger.info(`Dependency analysis completed.`);
+        return deps;
+      })(),
+      
+      // 5. 预处理2：运行编译前钩子（ESP32需要）
+      (async () => {
+        if (arduinoConfig.platform['recipe.hooks.prebuild.1.pattern']) {
+          this.logger.info('Running prebuild hook scripts...');
+          await this.runPreBuildHooks(arduinoConfig);
+        }
+      })()
+    ]);
 
-    // 6. 构建编译配置
-    this.logger.verbose('Generating compile configuration...');
-    const compileConfig = await this.compileConfigManager.parseCompileConfig(arduinoConfig);
-    // console.log(compileConfig);
-    // 4. 依赖分析
-    this.logger.info('Analyzing dependencies...');
-    const dependencies = await this.analyzer.preprocess(arduinoConfig);
-    this.logger.success(`Dependency analysis completed.\n Found ${dependencies.length} dependencies.`);
-    dependencies.map(dep => this.logger.info(` - ${dep.name}`));
-    // console.log(JSON.stringify(dependencies) );
-    
+
+    // 输出分析
+    this.logger.info(`Found ${dependencies.length} dependencies.`);
+    dependencies.map((dep, index) => {
+      this.logger.info(`|- ${dep.name}`)
+    });
+
+
     // 计算预处理耗时
     const preprocessTime = Date.now() - startTime;
 
@@ -96,22 +113,17 @@ export class ArduinoCompiler {
       };
     }
 
-    // 运行esp32后处理钩子
+    // 运行编译后钩子（ESP32需要）
     if (arduinoConfig.platform['recipe.objcopy.partitions.bin.pattern']) {
-      //windows
-      let command = arduinoConfig.platform['recipe.objcopy.partitions.bin.pattern'].replace(
-        arduinoConfig.platform['tools.gen_esp32part.cmd'],
-        arduinoConfig.platform['tools.gen_esp32part.cmd.windows']
-      );
-      // console.log('partitions bin command:', command);
-      await this.runCommand(command);
+      this.logger.info(arduinoConfig.platform['recipe.objcopy.partitions.bin.pattern']);
+      await this.runCommand(arduinoConfig.platform['recipe.objcopy.partitions.bin.pattern']);
     }
-
-    if (arduinoConfig.platform['recipe.hooks.objcopy.postobjcopy.1.pattern.windows']) {
-      console.log('Running post-build hook scripts...');
+    if (arduinoConfig.platform['recipe.hooks.objcopy.postobjcopy.1.pattern']) {
+      this.logger.info('Running post-build hook scripts...');
       await this.runPostBuildHooks(arduinoConfig);
       compileResult.outFilePath = path.join(process.env['BUILD_PATH'], 'sketch.merged.bin');
     }
+
     const totalTime = Date.now() - startTime;
     const buildTime = totalTime - preprocessTime;
     // 6. 计算固件大小信息
@@ -181,48 +193,23 @@ export class ArduinoCompiler {
   }
 
 
-  async runPrebuildHooks(arduinoConfig: any) {
+  async runPreBuildHooks(arduinoConfig: any) {
     for (let i = 1; i <= 8; i++) {
-      const key = `recipe.hooks.prebuild.${i}.pattern.windows`;
+      const key = `recipe.hooks.prebuild.${i}.pattern`;
       const script = arduinoConfig.platform[key];
       if (script) {
-        this.logger.debug(`Prebuild hook ${i} command: ${script}`);
-        
-        // 检查是否是自我复制命令 (COPY命令源文件和目标文件相同)
-        if (script.includes('COPY') && this.isSelfCopyCommand(script)) {
-          this.logger.warn(`Prebuild hook ${i} skipped: self-copy detected in command: ${script}`);
-          continue;
-        }
-        
+        this.logger.info(`Pre-build hook ${i}: ${script}`);
         try {
           const output = await this.runCommand(script);
           if (output.trim()) {
-            this.logger.verbose(`Prebuild hook ${i} output: ${output.trim()}`);
+            this.logger.verbose(`Pre-build hook ${i} output: ${output.trim()}`);
           }
-          this.logger.verbose(`Prebuild hook ${i} executed successfully`);
+          this.logger.verbose(`Pre-build hook ${i} executed successfully`);
         } catch (error) {
-          this.logger.error(`Prebuild hook ${i} failed: ${error instanceof Error ? error.message : error}`);
-          // 对于partitions.csv相关的错误，我们可以继续执行，因为这通常不是致命错误
-          if (script.includes('partitions.csv')) {
-            this.logger.warn(`Continuing despite partitions.csv copy error...`);
-          } else {
-            throw error; // 对于其他错误，重新抛出
-          }
+          this.logger.error(`Pre-build hook ${i} failed: ${error instanceof Error ? error.message : error}`);
         }
       }
     }
-  }
-
-  // 检查是否是自我复制命令的辅助方法
-  private isSelfCopyCommand(command: string): boolean {
-    // 匹配COPY命令格式: COPY /y "source" "target"
-    const copyMatch = command.match(/COPY\s+\/y\s+"([^"]+)"\s+"([^"]+)"/i);
-    if (copyMatch) {
-      const source = copyMatch[1];
-      const target = copyMatch[2];
-      return source === target;
-    }
-    return false;
   }
 
   async runPostBuildHooks(arduinoConfig) {
@@ -230,7 +217,7 @@ export class ArduinoCompiler {
       const key = `recipe.hooks.objcopy.postobjcopy.${i}.pattern.windows`;
       let script = arduinoConfig.platform[key] ? arduinoConfig.platform[key] : arduinoConfig.platform[`recipe.hooks.objcopy.postobjcopy.${i}.pattern`];
       if (script) {
-        this.logger.debug(`${script}`);
+        this.logger.info(`Post-build hook ${i}: ${script}`);
         try {
           const output = await this.runCommand(script);
           if (output.trim()) {

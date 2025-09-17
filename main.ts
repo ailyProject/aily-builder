@@ -1,7 +1,6 @@
-#!/usr/bin/env node
-
 import { Command } from 'commander';
 import { ArduinoCompiler } from './src/ArduinoCompiler';
+import { ArduinoUploader } from './src/ArduinoUploader';
 import { Logger } from './src/utils/Logger';
 import { CacheManager } from './src/CacheManager';
 import { calculateMD5 } from './src/utils/md5';
@@ -36,14 +35,10 @@ program
   }, {})
   .option('-j, --jobs <number>', 'Number of parallel compilation jobs', (os.cpus().length + 1).toString())
   .option('--verbose', 'Enable verbose output', false)
-  .option('--use-sccache', 'Use sccache for compilation caching', true)
-  .option('--use-ninja', 'Use ninja build system (default: true)', true)
-  .option('--use-legacy', 'Use legacy parallel compilation instead of ninja', false)
   .option('--no-cache', 'Disable compilation cache', false)
   .option('--clean-cache', 'Clean cache before compilation', false)
   .action(async (sketch, options) => {
-    console.log('options:', options);
-
+    // console.log('options:', options);
     logger.setVerbose(options.verbose);
 
     // 确定使用的编译方式
@@ -77,7 +72,7 @@ program
     }
     // 修复 libraries path 处理
     if (options.librariesPath && options.librariesPath.length > 0) {
-      console.log('Setting LIBRARIES_PATH to:', options.librariesPath);
+      // console.log('Setting LIBRARIES_PATH to:', options.librariesPath);
       // 将多个路径用分号分隔（Windows）或冒号分隔（Unix）
       const pathSeparator = os.platform() === 'win32' ? ';' : ':';
       const resolvedPaths = options.librariesPath.map((libPath: string) => path.resolve(libPath));
@@ -98,14 +93,13 @@ program
       useSccache: options.useSccache
     };
 
-    logger.info(`🚀 Starting compilation of ${sketch}`);
+    logger.info(`Starting compilation of ${sketch}`);
     logger.info(`Board: ${options.board}`);
     logger.info(`Build path: ${buildOptions.buildPath}`);
-    logger.info(`Libraries paths: ${JSON.stringify(buildOptions.librariesPath)}`);
+    logger.info(`Libraries paths: ${buildOptions.librariesPath}`);
     logger.info(`buildProperties: ${JSON.stringify(buildOptions.buildProperties)}`);
     logger.info(`Parallel jobs: ${options.jobs}`);
     logger.info(`Build system: ${useNinja ? 'ninja' : 'legacy parallel'}`);
-    // logger.info(`buildOptions: ${JSON.stringify(buildOptions, null, 2)}`);
 
     const result = await compiler.compile(buildOptions);
 
@@ -113,7 +107,7 @@ program
       logger.success(`Compilation successful!`);
       logger.info(`Output File: ${result.outFilePath}`);
     } else {
-      logger.error(`❌ Compilation failed: ${result.error}`);
+      logger.error(`Compilation failed: ${result.error}`);
       process.exit(1);
     }
     logger.info(`Preprocess time: ${result.preprocessTime / 1000}s`);
@@ -140,7 +134,7 @@ program
     try {
       logger.success('Configuration initialized successfully!');
     } catch (error) {
-      logger.error(`❌ Error initializing config: ${error instanceof Error ? error.message : error}`);
+      logger.error(`Error initializing config: ${error instanceof Error ? error.message : error}`);
       process.exit(1);
     }
   });
@@ -155,7 +149,67 @@ program
       await compiler.clean(path.resolve(buildPath));
       logger.success('Build artifacts cleaned!');
     } catch (error) {
-      logger.error(`❌ Error cleaning: ${error instanceof Error ? error.message : error}`);
+      logger.error(`Error cleaning: ${error instanceof Error ? error.message : error}`);
+      process.exit(1);
+    }
+  });
+
+program
+  .command('upload')
+  .description('Upload firmware to Arduino board')
+  .option('-b, --board <board>', 'Target board (e.g., arduino:avr:uno)', 'arduino:avr:uno')
+  .option('-p, --port <port>', 'Serial port for upload (e.g., COM3 or /dev/ttyUSB0)', undefined)
+  .option('-f, --file <file>', 'Firmware file path to upload (.hex or .bin)', undefined)
+  .option('--verbose', 'Enable verbose output', false)
+  .option('--build-property <key=value>', 'Additional build property', (val, memo) => {
+    const [key, value] = val.split('=');
+    memo[key] = value;
+    return memo;
+  }, {})
+  .action(async (options) => {
+    logger.setVerbose(options.verbose);
+
+    // 验证必需参数
+    if (!options.port) {
+      logger.error('Port parameter is required. Use -p or --port to specify the serial port.');
+      process.exit(1);
+    }
+
+    if (!options.file) {
+      logger.error('File parameter is required. Use -f or --file to specify the firmware file path.');
+      process.exit(1);
+    }
+
+    const uploader = new ArduinoUploader(logger);
+
+    const uploadOptions = {
+      board: options.board,
+      port: options.port,
+      filePath: path.resolve(options.file),
+      buildProperties: options.buildProperty || {},
+      verbose: options.verbose
+    };
+
+    logger.info(`Starting upload to ${options.board}`);
+    logger.info(`Port: ${options.port}`);
+    logger.info(`File: ${uploadOptions.filePath}`);
+    if (Object.keys(uploadOptions.buildProperties).length > 0) {
+      logger.info(`Build properties: ${JSON.stringify(uploadOptions.buildProperties)}`);
+    }
+
+    const result = await uploader.upload(uploadOptions);
+
+    if (result.success) {
+      logger.success(`Upload completed successfully!`);
+      logger.info(`Upload time: ${result.uploadTime / 1000}s`);
+      if (result.output && options.verbose) {
+        logger.verbose(`Upload output: ${result.output}`);
+      }
+    } else {
+      logger.error(`Upload failed: ${result.error}`);
+      if (result.output && options.verbose) {
+        logger.verbose(`Upload output: ${result.output}`);
+      }
       process.exit(1);
     }
   });
@@ -180,7 +234,7 @@ program
             logger.info('No cached files found.');
           }
         } catch (error) {
-          logger.error(`❌ Error getting cache stats: ${error instanceof Error ? error.message : error}`);
+          logger.error(`Error getting cache stats: ${error instanceof Error ? error.message : error}`);
           process.exit(1);
         }
       })
@@ -213,7 +267,7 @@ program
             logger.success('Cache files cleared!');
           }
         } catch (error) {
-          logger.error(`❌ Error clearing cache: ${error instanceof Error ? error.message : error}`);
+          logger.error(`Error clearing cache: ${error instanceof Error ? error.message : error}`);
           process.exit(1);
         }
       })
@@ -243,7 +297,7 @@ program
       
       console.log('\nCache statistics displayed successfully');
     } catch (error) {
-      logger.error(`❌ Error getting cache statistics: ${error instanceof Error ? error.message : error}`);
+      logger.error(`Error getting cache statistics: ${error instanceof Error ? error.message : error}`);
       process.exit(1);
     }
   });
@@ -287,19 +341,19 @@ program
       
       console.log('\nCache cleaning completed');
     } catch (error) {
-      logger.error(`❌ Error cleaning cache: ${error instanceof Error ? error.message : error}`);
+      logger.error(`Error cleaning cache: ${error instanceof Error ? error.message : error}`);
       process.exit(1);
     }
   });
 
 // 错误处理
 process.on('uncaughtException', (error) => {
-  logger.error(`❌ Uncaught exception: ${error.message}`);
+  logger.error(`Uncaught exception: ${error.message}`);
   process.exit(1);
 });
 
 process.on('unhandledRejection', (reason) => {
-  logger.error(`❌ Unhandled rejection: ${reason}`);
+  logger.error(`Unhandled rejection: ${reason}`);
   process.exit(1);
 });
 

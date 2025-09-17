@@ -25,16 +25,6 @@ interface DebugConfig {
     [key: string]: any;
 }
 
-interface PlatformConfig {
-    name: string;
-    version: string;
-    properties: { [key: string]: any };
-    tools: { [key: string]: ToolConfig };
-    compiler: CompilerConfig;
-    recipe: RecipeConfig;
-    debug: DebugConfig;
-}
-
 interface BoardUploadConfig {
     [key: string]: any;
 }
@@ -117,7 +107,7 @@ export class ArduinoConfigParser {
      */
     parsePlatformTxt(platformPath: string, fqbnObj: FQBNObject, boardConfig: any = {}, moreConfig: any = {}): any {
         const platform = fqbnObj.platform;
-        console.log(`  解析平台 ${platform} 的配置...`);
+        // console.log(`  解析平台 ${platform} 的配置...`);
         // console.log(boardConfig);
 
 
@@ -259,12 +249,12 @@ export class ArduinoConfigParser {
     private applyBoardConfigOverrides(variables: { [key: string]: string }, boardConfig: any): void {
         const overrides: string[] = [];
         const skipped: string[] = [];
-        
+
         Object.keys(boardConfig).forEach(key => {
             // 检查 platform 配置中是否已存在相同的 key
             if (variables.hasOwnProperty(key) && variables[key] !== boardConfig[key]) {
                 const originalValue = variables[key];
-                
+
                 // 检查原值是否为 {} 包裹的变量形式
                 if (originalValue && originalValue.match(/^\{[^}]+\}$/)) {
                     // 如果是变量形式，跳过覆盖
@@ -276,22 +266,21 @@ export class ArduinoConfigParser {
                 }
             }
         });
+        // // 记录覆盖信息
+        // if (overrides.length > 0) {
+        //     // console.log(`  检测到 ${overrides.length} 个重复键，应用 boardConfig 覆盖:`);
+        //     overrides.forEach(override => {
+        //         console.log(`    ${override}`);
+        //     });
+        // }
 
-        // 记录覆盖信息
-        if (overrides.length > 0) {
-            console.log(`  检测到 ${overrides.length} 个重复键，应用 boardConfig 覆盖:`);
-            overrides.forEach(override => {
-                console.log(`    ${override}`);
-            });
-        }
-        
-        // 记录跳过的变量覆盖
-        if (skipped.length > 0) {
-            console.log(`  检测到 ${skipped.length} 个变量形式的键，跳过覆盖:`);
-            skipped.forEach(skip => {
-                console.log(`    ${skip}`);
-            });
-        }
+        // // 记录跳过的变量覆盖
+        // if (skipped.length > 0) {
+        //     // console.log(`  检测到 ${skipped.length} 个变量形式的键，跳过覆盖:`);
+        //     skipped.forEach(skip => {
+        //         console.log(`    ${skip}`);
+        //     });
+        // }
     }
 
     /**
@@ -302,7 +291,7 @@ export class ArduinoConfigParser {
      */
     private applyBuildProperties(boardConfig: { [key: string]: string }, buildProperties: { [key: string]: string }): void {
         Object.keys(buildProperties).forEach(key => {
-            console.log(`  应用额外构建属性: ${key} = ${buildProperties[key]}`);
+            // console.log(`  应用额外构建属性: ${key} = ${buildProperties[key]}`);
             boardConfig[key] = buildProperties[key];
         });
 
@@ -318,26 +307,26 @@ export class ArduinoConfigParser {
      * @param {string} partitionValue 分区方案值
      */
     private applyPartitionSchemeSettings(boardConfig: { [key: string]: string }, partitionValue: string): void {
-        console.log(`  检测到分区方案设置: ${partitionValue}`);
-        
+        // console.log(`  检测到分区方案设置: ${partitionValue}`);
+
         // 查找匹配的分区方案配置
         const matchingScheme = this.findPartitionScheme(boardConfig, partitionValue);
-        
+
         if (matchingScheme) {
-            console.log(`  找到匹配的分区方案: ${matchingScheme.schemeName}`);
-            
+            // console.log(`  找到匹配的分区方案: ${matchingScheme.schemeName}`);
+
             // 应用相关的参数
             if (matchingScheme.uploadMaxSize) {
                 boardConfig['upload.maximum_size'] = matchingScheme.uploadMaxSize;
-                console.log(`    自动设置 upload.maximum_size = ${matchingScheme.uploadMaxSize}`);
+                // console.log(`    自动设置 upload.maximum_size = ${matchingScheme.uploadMaxSize}`);
             }
-            
+
             if (matchingScheme.uploadExtraFlags) {
                 boardConfig['upload.extra_flags'] = matchingScheme.uploadExtraFlags;
-                console.log(`    自动设置 upload.extra_flags = ${matchingScheme.uploadExtraFlags}`);
+                // console.log(`    自动设置 upload.extra_flags = ${matchingScheme.uploadExtraFlags}`);
             }
         } else {
-            console.log(`  ⚠️  未找到匹配的分区方案配置: ${partitionValue}`);
+            // console.log(`  ⚠️  未找到匹配的分区方案配置: ${partitionValue}`);
         }
     }
 
@@ -352,15 +341,15 @@ export class ArduinoConfigParser {
         for (const key in boardConfig) {
             if (key.startsWith('menu.PartitionScheme.') && key.endsWith('.build.partitions')) {
                 const schemeValue = boardConfig[key];
-                
+
                 if (schemeValue === partitionValue) {
                     // 提取方案名称（去掉前缀和后缀）
                     const schemeName = key.replace('menu.PartitionScheme.', '').replace('.build.partitions', '');
-                    
+
                     // 查找相关的配置项
                     const uploadMaxSizeKey = `menu.PartitionScheme.${schemeName}.upload.maximum_size`;
                     const uploadExtraFlagsKey = `menu.PartitionScheme.${schemeName}.upload.extra_flags`;
-                    
+
                     return {
                         schemeName: schemeName,
                         partitionValue: schemeValue,
@@ -370,7 +359,7 @@ export class ArduinoConfigParser {
                 }
             }
         }
-        
+
         return null;
     }
 
@@ -467,12 +456,12 @@ export class ArduinoConfigParser {
         console.log('\n=== 平台变量解析分析报告 ===');
 
         if (unresolvedVars.size > 0) {
-            console.log(`❌ 发现 ${unresolvedVars.size} 个未解析的变量:`);
+            console.log(`发现 ${unresolvedVars.size} 个未解析的变量:`);
             Array.from(unresolvedVars).forEach(v => {
                 console.log(`  {${v}}`);
             });
 
-            console.log(`\n📝 共有 ${unresolvedEntries.length} 个条目包含未解析变量:`);
+            console.log(`\n共有 ${unresolvedEntries.length} 个条目包含未解析变量:`);
             unresolvedEntries.forEach(entry => {
                 console.log(`  ${entry.key} = ${entry.value}`);
             });
@@ -495,10 +484,10 @@ export class ArduinoConfigParser {
     async parseByFQBN(fqbn: string, buildProperties: { [key: string]: string }): Promise<BoardParseResult> {
         // 解析 FQBN
         const fqbnObj = this.parseFQBN(fqbn);
-        console.log(`解析 FQBN: ${fqbn}`);
-        console.log(`  包: ${fqbnObj.package}`);
-        console.log(`  平台: ${fqbnObj.platform}`);
-        console.log(`  板子ID: ${fqbnObj.boardId}`);
+        // console.log(`解析 FQBN: ${fqbn}`);
+        // console.log(`  包: ${fqbnObj.package}`);
+        // console.log(`  平台: ${fqbnObj.platform}`);
+        // console.log(`  板子ID: ${fqbnObj.boardId}`);
         process.env['package'] = fqbnObj.package;
         process.env['platform'] = fqbnObj.platform;
 
@@ -547,7 +536,6 @@ export class ArduinoConfigParser {
         }
 
         if (fqbnObj.package == 'esp32') {
-            // 这里要读取arduino配置菜单，还未实现
             const cpuFreq = boardConfig['build.f_cpu'] ? boardConfig['build.f_cpu'].replace('000000L', '') : '240';
             const flashSize = boardConfig['build.flash_size'] ? boardConfig['build.flash_size'].replace(/MB$/i, 'M') : '4M';
             const flashFreq = boardConfig['build.flash_freq'] || '80m';
@@ -590,7 +578,7 @@ export class ArduinoConfigParser {
             'build.project_name': process.env['SKETCH_NAME'],
             'includes': '%INCLUDE_PATHS%',
             'source_file': '%SOURCE_FILE_PATH%',
-            'build.source.path': process.env['BUILD_PATH'],
+            'build.source.path': process.env['SKETCH_DIR_PATH'],
             'build.variant.path': path.join(process.env['SDK_PATH'], 'variants', boardConfig['build.variant']),
             'runtime.platform.path': process.env['SDK_PATH'],
             'object_file': '%OBJECT_FILE_PATH%',
@@ -644,7 +632,7 @@ export class ArduinoConfigParser {
      */
     parseBoardsTxt(boardsPath: string, fqbnObj: FQBNObject) {
         const boardId = fqbnObj.boardId;
-        console.log(`  解析开发板 ${boardId} 的配置...`);
+        // console.log(`  解析开发板 ${boardId} 的配置...`);
         // console.log(boardsPath);
 
         try {
@@ -683,18 +671,18 @@ export class ArduinoConfigParser {
 
     async findToolPath(toolName) {
         let toolsBasePath: string;
-        
+
         if (process.env['TOOLS_PATH']) {
             // 使用自定义工具路径
             toolsBasePath = process.env['TOOLS_PATH'];
-            console.log(`使用自定义工具路径: ${toolsBasePath}`);
+            // console.log(`使用自定义工具路径: ${toolsBasePath}`);
         } else {
             // 使用默认 Arduino15 路径
             let ARDUINO15_PACKAGE_PATH = path.join(os.homedir(), 'AppData', 'Local', 'Arduino15', 'packages', process.env['package']);
             toolsBasePath = path.join(ARDUINO15_PACKAGE_PATH, 'tools');
-            console.log(`使用默认工具路径: ${toolsBasePath}`);
+            // console.log(`使用默认工具路径: ${toolsBasePath}`);
         }
-        
+
         // 支持两种匹配模式：
         // 1. toolName/* (传统 Arduino 路径结构)
         // 2. toolName@* (aily-project 工具路径结构)
@@ -702,16 +690,15 @@ export class ArduinoConfigParser {
             path.join(toolsBasePath, `${toolName}@*`).replace(/\\/g, '/'),
             path.join(toolsBasePath, toolName, '*').replace(/\\/g, '/')
         ];
-        
+
         for (const pattern of patterns) {
             const result = await glob(pattern, { absolute: true });
             if (result && result.length > 0) {
-                console.log(`找到工具路径: ${result[0]}`);
+                // console.log(`找到工具路径: ${result[0]}`);
                 return result[0];
             }
         }
-        
-        console.warn(`未找到工具: ${toolName} 在路径: ${toolsBasePath}`);
+        // console.warn(`未找到工具: ${toolName} 在路径: ${toolsBasePath}`);
         return null;
     }
 }

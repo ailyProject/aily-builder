@@ -1,22 +1,21 @@
-# Aily Builder - Arduino Lightning Compilation Tool
+# Aily Builder - Arduino 闪电编译工具
 
-[中文](README-ZH.md) | English
+> Arduino闪电编译工具  
+> 编译速度远超arduino cli，更优于platformIO  
+> 让Arduino再次伟大！  
 
-> Arduino Lightning Compilation Tool  
-> Compilation speed far exceeds Arduino CLI, superior to PlatformIO  
-> Make Arduino Great Again!  
+如果这个工具对你有帮助，请给个 ⭐️ 支持一下！
 
-If this tool helps you, please give it a ⭐️ for support!
+## 核心特性
 
-## Core Features
+### 极速编译
+- **超快分析**: 使用Tree-sitter语法解析，精确进行依赖检测
+- **构建系统**: 使用Ninja构建系统，并行编译，最大化CPU利用率
+- **智能缓存**: 避免重复编译，显著减少构建时间
+- **增量构建**: 只编译修改过的文件
 
-### Lightning-Fast Compilation
-- **Ultra-Fast Analysis**: Uses Tree-sitter syntax parsing for precise dependency detection
-- **Build System**: Uses Ninja build system with parallel compilation to maximize CPU utilization
-- **Smart Caching**: Avoids redundant compilation, significantly reducing build time
-- **Incremental Builds**: Only compiles modified files
 
-## Quick Start
+## 快速开始
 
 ```
 npm i -g ts-node
@@ -26,41 +25,41 @@ npm i
 npm run blink
 ```
 
-### Basic Usage
+### 基本使用
 
 ```bash
-# Compile Arduino project
+# 编译Arduino项目
 ts-node main.ts compile sketch.ino
 
-# Specify board
+# 指定开发板
 ts-node main.ts compile sketch.ino --board arduino:avr:uno
 
-# Parallel compilation (8 tasks)
+# 并行编译（8个任务）
 ts-node main.ts compile sketch.ino --jobs 8
 
-# Enable verbose output
+# 启用详细输出
 ts-node main.ts compile sketch.ino --verbose
 ```
 
-### Cache Management
+### 缓存管理
 
 ```bash
-# View cache statistics
+# 查看缓存统计
 ts-node main.ts cache-stats
 
-# Clean cache older than 30 days
+# 清理30天前的缓存
 ts-node main.ts cache-clean --days 30
 
-# Clear all cache
+# 清理所有缓存
 ts-node main.ts cache
 
-# Compile without cache
+# 禁用缓存编译
 ts-node main.ts compile sketch.ino --no-cache
 ```
 
-## Detailed Documentation
+## 详细文档
 
-### Compilation Options
+### 编译选项
 
 ```bash
 Arguments:
@@ -81,38 +80,40 @@ Options:
   -h, --help                    display help for command
 ```
 
-### Cache Commands
+### 缓存命令
 
 ```bash
-# Cache statistics
+# 缓存统计
 aily-builder cache-stats [--verbose]
 
-# Cache cleanup
+# 缓存清理
 aily-builder cache-clean [options]
-  --days <number>    Clean files older than N days (default: 30)
-  --pattern <pattern> File name pattern matching
-  --dry-run          Preview mode, don't actually delete
+  --days <number>    清理N天前的文件 (默认: 30)
+  --pattern <pattern> 文件名模式匹配
+  --dry-run          预览模式，不实际删除
 
-# Clear all cache
+# 清空所有缓存
 aily-builder cache
 ```
 
-### Cache Configuration
+### 缓存配置
 
-Cache is stored by default in:
+缓存默认存储在：
 - **Windows**: `%LOCALAPPDATA%\\aily-builder\\cache`
 - **macOS**: `~/Library/Caches/aily-builder`
 - **Linux**: `~/.cache/aily-builder`
 
-## Contributing
-Issues and Pull Requests are welcome!
 
-## License
+
+## 贡献
+欢迎提交 Issue 和 Pull Request！
+
+## 许可证
 
 GNU GENERAL PUBLIC LICENSE V3
 
-## Acknowledgments
+## 致谢
 
-- [Ninja Build System](https://ninja-build.org/) - High-performance build system
-- [Tree-sitter](https://tree-sitter.github.io/) - Syntax parser
-- [Arduino CLI](https://arduino.github.io/arduino-cli/) - Arduino development tools
+- [Ninja Build System](https://ninja-build.org/) - 高性能构建系统
+- [Tree-sitter](https://tree-sitter.github.io/) - 语法解析器
+- [Arduino CLI](https://arduino.github.io/arduino-cli/) - Arduino开发工具
