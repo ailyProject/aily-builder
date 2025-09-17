@@ -60,25 +60,39 @@ export class ArduinoCompiler {
     // 3. 准备构建目录
     await this.prepareBuildDirectory(options.buildPath, options.sketchPath);
 
-    // 5. 预处理2：运行编译前钩子（ESP32需要）
-    if (arduinoConfig.platform['recipe.hooks.prebuild.1.pattern.windows']) {
-      this.logger.info('Running prebuild hook scripts...');
-      await this.runPreBuildHooks(arduinoConfig);
-    }
+    // 4-6. 并行执行：预处理钩子、构建编译配置、依赖分析
+    this.logger.info('Starting parallel preprocessing tasks...');
+    const [compileConfig, dependencies] = await Promise.all([
+      // 6. 构建编译配置
+      (async () => {
+        this.logger.info('Generating compile configuration...');
+        return await this.compileConfigManager.parseCompileConfig(arduinoConfig);
+      })(),
+      
+      // 4. 依赖分析
+      (async () => {
+        this.logger.info('Analyzing dependencies...');
+        const deps = await this.analyzer.preprocess(arduinoConfig);
+        this.logger.info(`Dependency analysis completed.`);
+        return deps;
+      })(),
+      
+      // 5. 预处理2：运行编译前钩子（ESP32需要）
+      (async () => {
+        if (arduinoConfig.platform['recipe.hooks.prebuild.1.pattern']) {
+          this.logger.info('Running prebuild hook scripts...');
+          await this.runPreBuildHooks(arduinoConfig);
+        }
+      })()
+    ]);
 
-    // 6. 构建编译配置
-    this.logger.verbose('Generating compile configuration...');
-    const compileConfig = await this.compileConfigManager.parseCompileConfig(arduinoConfig);
-    // console.log(compileConfig);
-    // 4. 依赖分析
-    this.logger.info('Analyzing dependencies...');
-    const dependencies = await this.analyzer.preprocess(arduinoConfig);
-    this.logger.info(`Dependency analysis completed.`);
+
     // 输出分析
     this.logger.info(`Found ${dependencies.length} dependencies.`);
     dependencies.map((dep, index) => {
       this.logger.info(`|- ${dep.name}`)
     });
+
 
     // 计算预处理耗时
     const preprocessTime = Date.now() - startTime;
