@@ -1,7 +1,7 @@
 // 简单的Arduino Blink示例
 // 用于测试aily编译器
-#include <Arduino.h>1112
-void setup() {12
+#include <Arduino.h>
+void setup() {
   // 初始化内置LED引脚为输出模式
   pinMode(LED_BUILTIN, OUTPUT);
 }
