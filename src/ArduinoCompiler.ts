@@ -49,7 +49,7 @@ export class ArduinoCompiler {
     const startTime = Date.now();
 
     // try {
-    this.logger.verbose(`Starting compilation process...`);
+    this.logger.info(`Starting compilation process...`);
 
     // 1. 验证sketch文件
     await this.validateSketch(options.sketchPath);
@@ -62,7 +62,7 @@ export class ArduinoCompiler {
 
     // 5. 预处理2：运行编译前脚本（ESP32需要 prebuild）
     if (arduinoConfig.platform['recipe.hooks.prebuild.1.pattern.windows']) {
-      console.log('Running prebuild hook scripts...');
+      this.logger.info('Running prebuild hook scripts...');
       await this.runPrebuildHooks(arduinoConfig);
     }
 
@@ -73,10 +73,13 @@ export class ArduinoCompiler {
     // 4. 依赖分析
     this.logger.info('Analyzing dependencies...');
     const dependencies = await this.analyzer.preprocess(arduinoConfig);
-    this.logger.success(`Dependency analysis completed.\n Found ${dependencies.length} dependencies.`);
-    dependencies.map(dep => this.logger.info(` - ${dep.name}`));
-    // console.log(JSON.stringify(dependencies) );
-    
+    this.logger.info(`Dependency analysis completed.`);
+    // 输出分析
+    this.logger.info(`Found ${dependencies.length} dependencies.`);
+    dependencies.map((dep, index) => {
+      this.logger.info(`|- ${dep.name}`)
+    });
+
     // 计算预处理耗时
     const preprocessTime = Date.now() - startTime;
 
@@ -108,7 +111,7 @@ export class ArduinoCompiler {
     }
 
     if (arduinoConfig.platform['recipe.hooks.objcopy.postobjcopy.1.pattern.windows']) {
-      console.log('Running post-build hook scripts...');
+      this.logger.info('Running post-build hook scripts...');
       await this.runPostBuildHooks(arduinoConfig);
       compileResult.outFilePath = path.join(process.env['BUILD_PATH'], 'sketch.merged.bin');
     }
@@ -186,14 +189,7 @@ export class ArduinoCompiler {
       const key = `recipe.hooks.prebuild.${i}.pattern.windows`;
       const script = arduinoConfig.platform[key];
       if (script) {
-        this.logger.debug(`Prebuild hook ${i} command: ${script}`);
-        
-        // 检查是否是自我复制命令 (COPY命令源文件和目标文件相同)
-        if (script.includes('COPY') && this.isSelfCopyCommand(script)) {
-          this.logger.warn(`Prebuild hook ${i} skipped: self-copy detected in command: ${script}`);
-          continue;
-        }
-        
+        this.logger.info(`Prebuild hook command ${i}: ${script}`);
         try {
           const output = await this.runCommand(script);
           if (output.trim()) {

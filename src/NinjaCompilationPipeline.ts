@@ -41,9 +41,9 @@ export class NinjaCompilationPipeline {
       // 1. 预处理：从缓存中恢复对象文件
       this.logger.verbose('Checking cache for compiled objects...');
       const cacheHits = await this.restoreFromCache(dependencies);
-      if (cacheHits > 0) {
-        this.logger.info(`Cache hit: ${cacheHits} objects restored from cache`);
-      }
+      // if (cacheHits > 0) {
+      //   this.logger.info(`Cache hit: ${cacheHits} objects restored from cache`);
+      // }
 
       // 2. 生成ninja构建文件
       this.logger.verbose('Generating ninja build file...');
@@ -67,7 +67,7 @@ export class NinjaCompilationPipeline {
       if (result.success) {
 
         // 显示缓存统计信息
-        await this.showCacheStats();
+        // await this.showCacheStats();
 
         // 确定输出文件路径
         const sketchName = process.env['SKETCH_NAME'] || 'sketch';
@@ -176,7 +176,7 @@ export class NinjaCompilationPipeline {
 
       childProcess.on('close', (code) => {
         if (code === 0) {
-          this.logger.success('Ninja build completed successfully');
+          this.logger.info('Ninja build completed successfully');
           resolve({ success: true, warnings: warnings.length > 0 ? warnings : undefined });
         } else {
           this.logger.error(`❌ Ninja build failed with exit code ${code}`);

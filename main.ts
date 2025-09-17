@@ -43,8 +43,7 @@ program
   .option('--no-cache', 'Disable compilation cache', false)
   .option('--clean-cache', 'Clean cache before compilation', false)
   .action(async (sketch, options) => {
-    console.log('options:', options);
-
+    // console.log('options:', options);
     logger.setVerbose(options.verbose);
 
     // 确定使用的编译方式
@@ -78,7 +77,7 @@ program
     }
     // 修复 libraries path 处理
     if (options.librariesPath && options.librariesPath.length > 0) {
-      console.log('Setting LIBRARIES_PATH to:', options.librariesPath);
+      // console.log('Setting LIBRARIES_PATH to:', options.librariesPath);
       // 将多个路径用分号分隔（Windows）或冒号分隔（Unix）
       const pathSeparator = os.platform() === 'win32' ? ';' : ':';
       const resolvedPaths = options.librariesPath.map((libPath: string) => path.resolve(libPath));

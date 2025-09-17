@@ -611,7 +611,7 @@ export class DependencyAnalyzer {
       // 直接扫描传入的路径（可能是库根目录或src目录）
       const files = await this.scanDirectoryRecursive(libraryObject.path, extensions);      
       // const filteredFiles = this.filterSourceFiles(files);
-      console.log(files);
+      // console.log(files);
       
       libraryObject.includes.push(...files);
       return true
