@@ -31,7 +31,7 @@ interface TestConfig {
   board: string;
   jobs: number;
   verbose: boolean;
-  librariesPath?: string;
+  librariesPath?: string[];
   platformioPath?: string; // PlatformIO项目路径
   buildProperties?: string[]; // 构建属性参数
 }
@@ -263,8 +263,8 @@ class ArduinoCompileTest {
       }
       
       const args = [
-        // 'D:\\codes\\aily-builder\\dist\\bundle-min\\index.js', 'compile', `"${inoFile}"`,
-        'D:\\codes\\aily-builder\\main.ts', 'compile', `"${inoFile}"`,
+        'D:\\codes\\aily-builder\\dist\\bundle-min\\index.js', 'compile', `"${inoFile}"`,
+        // 'D:\\codes\\aily-builder\\main.ts', 'compile', `"${inoFile}"`,
         '--board', fqbnWithProperties,
         '--jobs', this.config.jobs.toString()
       ];
@@ -272,8 +272,10 @@ class ArduinoCompileTest {
       args.push('--verbose');
       
       // 添加库路径支持
-      if (this.config.librariesPath) {
-        args.push('--libraries-path', `"${this.config.librariesPath}"`);
+      if (this.config.librariesPath && this.config.librariesPath.length > 0) {
+        for (const libPath of this.config.librariesPath) {
+          args.push('--libraries-path', `"${libPath}"`);
+        }
       }
       
       // 添加构建属性支持
@@ -287,7 +289,7 @@ class ArduinoCompileTest {
       
       const result = await this.executeCommand('ts-node', args, {
         cwd: process.cwd(),
-        timeout: 200000 // 3分钟20秒超时
+        timeout: 1800000 // 30分钟超时
       });
       
       const duration = (Date.now() - startTime) / 1000;
@@ -383,8 +385,10 @@ class ArduinoCompileTest {
       args.push('--verbose');
       
       // 添加库路径支持
-      if (this.config.librariesPath) {
-        args.push('--libraries', `"${this.config.librariesPath}"`);
+      if (this.config.librariesPath && this.config.librariesPath.length > 0) {
+        for (const libPath of this.config.librariesPath) {
+          args.push('--libraries', `"${libPath}"`);
+        }
       }
       
       // 添加构建属性支持
@@ -478,7 +482,7 @@ class ArduinoCompileTest {
       
       const result = await this.executeCommand('C:\\Users\\LENOVO\\.platformio\\penv\\Scripts\\platformio.exe', args, {
         cwd: platformioProject,
-        timeout: 300000 // 5分钟超时
+        timeout: 1800000 // 30分钟超时
       });
       
       const duration = (Date.now() - startTime) / 1000;
@@ -813,7 +817,7 @@ function parseArgs(): TestConfig {
     // board: 'arduino:renesas_uno:unor4wifi',
     jobs: 4,
     verbose: false,
-    librariesPath: 'C:\\Users\\LENOVO\\AppData\\Local\\Arduino15\\libraries',
+    librariesPath: ['C:\\Users\\LENOVO\\AppData\\Local\\Arduino15\\libraries'],
     platformioPath: 'D:\\platformio\\blink_sketch',
     buildProperties: []
   };
@@ -840,7 +844,8 @@ function parseArgs(): TestConfig {
         break;
       case '--libraries':
       case '-l':
-        config.librariesPath = args[++i];
+        if (!config.librariesPath) config.librariesPath = [];
+        config.librariesPath.push(args[++i]);
         break;
       case '--build-property':
         if (!config.buildProperties) config.buildProperties = [];
@@ -862,7 +867,7 @@ Arduino编译性能测试工具
   -p, --platformio <路径>   PlatformIO项目路径 (默认: D:\\platformio\\blink_sketch)
   -b, --board <fqbn>        开发板FQBN (默认: arduino:avr:uno)
   -j, --jobs <数量>         并行任务数 (默认: 4)
-  -l, --libraries <路径>    库文件路径 (默认: C:\\Users\\LENOVO\\AppData\\Local\\Arduino15\\libraries)
+  -l, --libraries <路径>    库文件路径 (可多次使用，添加多个库目录)
   --build-property <属性>   构建属性 (可多次使用)
   -v, --verbose             启用详细输出
   -h, --help                显示此帮助信息
@@ -872,6 +877,7 @@ Arduino编译性能测试工具
   ts-node compile-test.ts --sketch examples/sweep_sketch --platformio D:\\platformio\\servo_test
   ts-node compile-test.ts --sketch /path/to/my/project --board esp32:esp32:esp32
   ts-node compile-test.ts --board esp32:esp32:esp32 --build-property build.flash_mode=dio --build-property build.flash_freq=80m
+  ts-node compile-test.ts --libraries "C:\\Users\\User\\Documents\\Arduino\\libraries" --libraries "C:\\Arduino\\libraries"
 
 注意: PlatformIO使用固定项目路径。您可以手动替换PlatformIO项目中的代码来测试不同的sketch文件，
       然后运行测试。
