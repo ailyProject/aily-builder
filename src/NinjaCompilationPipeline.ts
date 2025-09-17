@@ -143,13 +143,16 @@ export class NinjaCompilationPipeline {
         const lines = output.split('\n');
         for (const line of lines) {
           if (line.trim()) {
-            if (line.includes('[') && line.includes(']')) {
+            if (/\[\d+\/\d+\]/.test(line)) {
               // 这是ninja的进度信息
               this.logger.info(line.trim());
               // 检查是否是编译完成的消息，立即存储到缓存
               this.handleCompilationProgress(line.trim(), buildDir);
+            } else if (line.startsWith('FAILED:')) {
+              // 编译失败信息
+              this.logger.error(line.trim());
             } else {
-              // 这是编译器输出
+              // 其他输出
               this.logger.verbose(line.trim());
             }
           }
@@ -179,7 +182,7 @@ export class NinjaCompilationPipeline {
           this.logger.info('Ninja build completed successfully');
           resolve({ success: true, warnings: warnings.length > 0 ? warnings : undefined });
         } else {
-          this.logger.error(`❌ Ninja build failed with exit code ${code}`);
+          this.logger.error(`Ninja build failed with exit code ${code}`);
           if (stderr) {
             this.logger.error(`stderr: ${stderr}`);
           }
@@ -390,16 +393,16 @@ export class NinjaCompilationPipeline {
     this.logger.info(`   Files: ${stats.totalFiles}`);
     this.logger.info(`   Size: ${stats.totalSizeFormatted}`);
     this.logger.info(`   Location: ${stats.cacheDir}`);
-    
+
     const totalOps = (stats.hardLinksUsed || 0) + (stats.copiesUsed || 0);
     if (totalOps > 0) {
       const hardPercent = (((stats.hardLinksUsed || 0) / totalOps) * 100).toFixed(1);
       const copyPercent = (((stats.copiesUsed || 0) / totalOps) * 100).toFixed(1);
-      
+
       this.logger.info(`   Performance:`);
       this.logger.info(`     Hard links: ${stats.hardLinksUsed || 0} (${hardPercent}%)`);
       this.logger.info(`     File copies: ${stats.copiesUsed || 0} (${copyPercent}%)`);
-      
+
       const linkRate = ((stats.hardLinksUsed || 0) / totalOps * 100).toFixed(1);
       this.logger.info(`     Hard link success rate: ${linkRate}%`);
     }

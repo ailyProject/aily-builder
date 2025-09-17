@@ -113,7 +113,7 @@ program
       logger.success(`Compilation successful!`);
       logger.info(`Output File: ${result.outFilePath}`);
     } else {
-      logger.error(`❌ Compilation failed: ${result.error}`);
+      logger.error(`Compilation failed: ${result.error}`);
       process.exit(1);
     }
     logger.info(`Preprocess time: ${result.preprocessTime / 1000}s`);
@@ -140,7 +140,7 @@ program
     try {
       logger.success('Configuration initialized successfully!');
     } catch (error) {
-      logger.error(`❌ Error initializing config: ${error instanceof Error ? error.message : error}`);
+      logger.error(`Error initializing config: ${error instanceof Error ? error.message : error}`);
       process.exit(1);
     }
   });
@@ -155,7 +155,7 @@ program
       await compiler.clean(path.resolve(buildPath));
       logger.success('Build artifacts cleaned!');
     } catch (error) {
-      logger.error(`❌ Error cleaning: ${error instanceof Error ? error.message : error}`);
+      logger.error(`Error cleaning: ${error instanceof Error ? error.message : error}`);
       process.exit(1);
     }
   });
@@ -177,12 +177,12 @@ program
 
     // 验证必需参数
     if (!options.port) {
-      logger.error('❌ Port parameter is required. Use -p or --port to specify the serial port.');
+      logger.error('Port parameter is required. Use -p or --port to specify the serial port.');
       process.exit(1);
     }
 
     if (!options.file) {
-      logger.error('❌ File parameter is required. Use -f or --file to specify the firmware file path.');
+      logger.error('File parameter is required. Use -f or --file to specify the firmware file path.');
       process.exit(1);
     }
 
@@ -212,7 +212,7 @@ program
         logger.verbose(`Upload output: ${result.output}`);
       }
     } else {
-      logger.error(`❌ Upload failed: ${result.error}`);
+      logger.error(`Upload failed: ${result.error}`);
       if (result.output && options.verbose) {
         logger.verbose(`Upload output: ${result.output}`);
       }
@@ -240,7 +240,7 @@ program
             logger.info('No cached files found.');
           }
         } catch (error) {
-          logger.error(`❌ Error getting cache stats: ${error instanceof Error ? error.message : error}`);
+          logger.error(`Error getting cache stats: ${error instanceof Error ? error.message : error}`);
           process.exit(1);
         }
       })
@@ -273,7 +273,7 @@ program
             logger.success('Cache files cleared!');
           }
         } catch (error) {
-          logger.error(`❌ Error clearing cache: ${error instanceof Error ? error.message : error}`);
+          logger.error(`Error clearing cache: ${error instanceof Error ? error.message : error}`);
           process.exit(1);
         }
       })
@@ -303,7 +303,7 @@ program
       
       console.log('\nCache statistics displayed successfully');
     } catch (error) {
-      logger.error(`❌ Error getting cache statistics: ${error instanceof Error ? error.message : error}`);
+      logger.error(`Error getting cache statistics: ${error instanceof Error ? error.message : error}`);
       process.exit(1);
     }
   });
@@ -347,19 +347,19 @@ program
       
       console.log('\nCache cleaning completed');
     } catch (error) {
-      logger.error(`❌ Error cleaning cache: ${error instanceof Error ? error.message : error}`);
+      logger.error(`Error cleaning cache: ${error instanceof Error ? error.message : error}`);
       process.exit(1);
     }
   });
 
 // 错误处理
 process.on('uncaughtException', (error) => {
-  logger.error(`❌ Uncaught exception: ${error.message}`);
+  logger.error(`Uncaught exception: ${error.message}`);
   process.exit(1);
 });
 
 process.on('unhandledRejection', (reason) => {
-  logger.error(`❌ Unhandled rejection: ${reason}`);
+  logger.error(`Unhandled rejection: ${reason}`);
   process.exit(1);
 });
 

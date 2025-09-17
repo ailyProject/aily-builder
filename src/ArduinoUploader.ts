@@ -110,7 +110,7 @@ export class ArduinoUploader {
             const uploadTime = Date.now() - startTime;
             const errorMessage = error instanceof Error ? error.message : String(error);
 
-            this.logger.error(`❌ Upload failed: ${errorMessage}`);
+            this.logger.error(`Upload failed: ${errorMessage}`);
 
             return {
                 success: false,

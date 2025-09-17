@@ -456,12 +456,12 @@ export class ArduinoConfigParser {
         console.log('\n=== 平台变量解析分析报告 ===');
 
         if (unresolvedVars.size > 0) {
-            console.log(`❌ 发现 ${unresolvedVars.size} 个未解析的变量:`);
+            console.log(`发现 ${unresolvedVars.size} 个未解析的变量:`);
             Array.from(unresolvedVars).forEach(v => {
                 console.log(`  {${v}}`);
             });
 
-            console.log(`\n📝 共有 ${unresolvedEntries.length} 个条目包含未解析变量:`);
+            console.log(`\n共有 ${unresolvedEntries.length} 个条目包含未解析变量:`);
             unresolvedEntries.forEach(entry => {
                 console.log(`  ${entry.key} = ${entry.value}`);
             });
