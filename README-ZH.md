@@ -1,8 +1,8 @@
 # Aily Builder - Arduino 闪电编译工具
 
-> Arduino闪电编译工具
-> 编译速度远超arduino cli，更优于platformIO
-> 让Arduino再次伟大！
+> Arduino闪电编译工具  
+> 编译速度远超arduino cli，更优于platformIO  
+> 让Arduino再次伟大！  
 
 如果这个工具对你有帮助，请给个 ⭐️ 支持一下！
 

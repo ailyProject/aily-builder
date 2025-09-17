@@ -2,9 +2,9 @@
 
 [中文](README-ZH.md) | English
 
-> Arduino Lightning Compilation Tool
-> Compilation speed far exceeds Arduino CLI, superior to PlatformIO
-> Make Arduino Great Again!
+> Arduino Lightning Compilation Tool  
+> Compilation speed far exceeds Arduino CLI, superior to PlatformIO  
+> Make Arduino Great Again!  
 
 If this tool helps you, please give it a ⭐️ for support!
 
