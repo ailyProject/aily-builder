@@ -1,5 +1,3 @@
-#!/usr/bin/env node
-
 import { Command } from 'commander';
 import { ArduinoCompiler } from './src/ArduinoCompiler';
 import { ArduinoUploader } from './src/ArduinoUploader';
@@ -37,9 +35,6 @@ program
   }, {})
   .option('-j, --jobs <number>', 'Number of parallel compilation jobs', (os.cpus().length + 1).toString())
   .option('--verbose', 'Enable verbose output', false)
-  .option('--use-sccache', 'Use sccache for compilation caching', true)
-  .option('--use-ninja', 'Use ninja build system (default: true)', true)
-  .option('--use-legacy', 'Use legacy parallel compilation instead of ninja', false)
   .option('--no-cache', 'Disable compilation cache', false)
   .option('--clean-cache', 'Clean cache before compilation', false)
   .action(async (sketch, options) => {
