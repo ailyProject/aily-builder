@@ -76,11 +76,11 @@ export class DependencyAnalyzer {
     const variantPath = process.env['SDK_VARIANT_PATH'];
     const librariesPathEnv = process.env['LIBRARIES_PATH'];
     const coreLibrariesPath = process.env['SDK_CORE_LIBRARIES_PATH'];
-    
+
     // 处理 librariesPath，支持多个路径（用分号或冒号分隔）
     const pathSeparator = process.platform === 'win32' ? ';' : ':';
     const librariesPaths = librariesPathEnv ? librariesPathEnv.split(pathSeparator).filter(p => p.trim()) : [];
-    
+
     this.logger.debug(`Sketch Path: ${sketchPath}`)
     this.logger.debug(`Core SDK Path: ${coreSDKPath}`);
     this.logger.debug(`Variant Path: ${variantPath}`);
@@ -147,7 +147,6 @@ export class DependencyAnalyzer {
     // console.log('提取的宏定义:', macros);
     macros.forEach(macro => {
       let [key, value] = macro.split('=')
-      // console.log(`提取的宏定义:${JSON.stringify([key, value])}`);
       this.setMacro(key.trim(), value ? value.trim() : '1');
     })
 
@@ -232,7 +231,7 @@ export class DependencyAnalyzer {
       const conditionalIncludes: ConditionalInclude[] = [];
       let conditionStack: Array<{ condition: string, isActive: boolean }> = [];
 
-      this.traverseTreeWithContext(tree.rootNode, (node) => {
+      this.traverseTree(tree.rootNode, (node) => {
         switch (node.type) {
           case 'preproc_ifdef':
           case 'preproc_ifndef':
@@ -421,17 +420,6 @@ export class DependencyAnalyzer {
     }
   }
 
-  /**
-   * 递归遍历语法树节点，带有上下文信息
-   * @param node 当前语法树节点
-   * @param callback 对每个节点执行的回调函数
-   */
-  private traverseTreeWithContext(node: Parser.SyntaxNode, callback: (node: Parser.SyntaxNode) => void): void {
-    callback(node);
-    for (let i = 0; i < node.childCount; i++) {
-      this.traverseTreeWithContext(node.child(i)!, callback);
-    }
-  }
 
   /**
    * 递归遍历语法树节点
@@ -488,22 +476,21 @@ export class DependencyAnalyzer {
           }
         }
 
-        // 读取libraryObject.path下的所有.h文件
+        // 读取libraryObject.path下的所有源文件
         let includeFilePaths: string[] = [];
         try {
-          const headerFiles = await glob('*.h', {
+          const libraryFiles = await glob('*.{h,cpp,c}', {
             cwd: libraryObject.path,
             absolute: true,
             nodir: true
           });
-          includeFilePaths = headerFiles;
+          includeFilePaths = libraryFiles;
           // console.log('includeFilePaths:', includeFilePaths);
-
         } catch (error) {
           this.logger.warn(`Failed to read header files in ${libraryObject.path}: ${error instanceof Error ? error.message : error}`);
         }
 
-        // 分析每个头文件
+        // 分析每个源文件
         const libraryIncludeHeaderFiles: string[] = [];
         for (const includeFilePath of includeFilePaths) {
           const headerIncludes = await this.analyzeFile(includeFilePath);
@@ -609,10 +596,10 @@ export class DependencyAnalyzer {
     try {
       const extensions = ['.cpp', '.c', '.S', '.s'];
       // 直接扫描传入的路径（可能是库根目录或src目录）
-      const files = await this.scanDirectoryRecursive(libraryObject.path, extensions);      
+      const files = await this.scanDirectoryRecursive(libraryObject.path, extensions);
       // const filteredFiles = this.filterSourceFiles(files);
       // console.log(files);
-      
+
       libraryObject.includes.push(...files);
       return true
     } catch (error) {

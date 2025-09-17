@@ -23,7 +23,7 @@
     "blink-r4": "ts-node main.ts compile examples/blink.ino --verbose --board arduino:renesas_uno:unor4wifi",
     "aivox": "ts-node main.ts compile \"C:\\Users\\coloz\\Documents\\aily-project\\AIVOXControlLed_aug28a\\.temp\\sketch\\sketch.ino\" --jobs 4 --board esp32:esp32:esp32s3 --libraries-path \"C:\\Users\\coloz\\Documents\\aily-project\\AIVOXControlLed_aug28a\\.temp\\libraries\"",
     "aivox2": "ts-node main.ts compile \"C:\\Users\\coloz\\Documents\\aily-project\\AIVOXSensor_sep03a\\.temp\\sketch\\sketch.ino\" --jobs 4 --verbose --board esp32:esp32:esp32s3 --libraries-path \"C:\\Users\\coloz\\Documents\\aily-project\\AIVOXSensor_sep03a\\.temp\\libraries\"",
-    "test-blinker": "ts-node main.ts compile examples/Hello_WiFi.ino --verbose --board esp32:esp32:esp32s3 --libraries-path \"C:\\Users\\coloz\\Documents\\Arduino\\libraries\"",
+    "test": "ts-node main.ts compile \"C:\\Users\\coloz\\Desktop\\aily_blockly_new\\.temp\\sketch\\sketch.ino\" --verbose --libraries-path \"C:\\Users\\coloz\\Desktop\\aily_blockly_new\\.temp\\libraries\"",
     "clean": "rimraf dist"
   },
   "keywords": [
