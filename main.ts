@@ -98,14 +98,13 @@ program
       useSccache: options.useSccache
     };
 
-    logger.info(`🚀 Starting compilation of ${sketch}`);
+    logger.info(`Starting compilation of ${sketch}`);
     logger.info(`Board: ${options.board}`);
     logger.info(`Build path: ${buildOptions.buildPath}`);
-    logger.info(`Libraries paths: ${JSON.stringify(buildOptions.librariesPath)}`);
+    logger.info(`Libraries paths: ${buildOptions.librariesPath}`);
     logger.info(`buildProperties: ${JSON.stringify(buildOptions.buildProperties)}`);
     logger.info(`Parallel jobs: ${options.jobs}`);
     logger.info(`Build system: ${useNinja ? 'ninja' : 'legacy parallel'}`);
-    // logger.info(`buildOptions: ${JSON.stringify(buildOptions, null, 2)}`);
 
     const result = await compiler.compile(buildOptions);
 
@@ -196,7 +195,7 @@ program
       verbose: options.verbose
     };
 
-    logger.info(`🚀 Starting upload to ${options.board}`);
+    logger.info(`Starting upload to ${options.board}`);
     logger.info(`Port: ${options.port}`);
     logger.info(`File: ${uploadOptions.filePath}`);
     if (Object.keys(uploadOptions.buildProperties).length > 0) {

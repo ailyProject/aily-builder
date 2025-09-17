@@ -134,6 +134,7 @@ export class NinjaCompilationPipeline {
       let stdout = '';
       let stderr = '';
       const warnings: string[] = [];
+      let isInFailureMode = false; // 标识是否处于失败模式
 
       childProcess.stdout?.on('data', (data: any) => {
         const output = data.toString('utf8');
@@ -144,13 +145,24 @@ export class NinjaCompilationPipeline {
         for (const line of lines) {
           if (line.trim()) {
             if (/\[\d+\/\d+\]/.test(line)) {
-              // 这是ninja的进度信息
+              // 这是ninja的进度信息，重置失败模式
+              isInFailureMode = false;
               this.logger.info(line.trim());
               // 检查是否是编译完成的消息，立即存储到缓存
               this.handleCompilationProgress(line.trim(), buildDir);
             } else if (line.startsWith('FAILED:')) {
-              // 编译失败信息
+              // 编译失败信息，进入失败模式
+              isInFailureMode = true;
               this.logger.error(line.trim());
+            } else if (isInFailureMode) {
+              // 在失败模式下，所有后续行都作为错误信息
+              // 但隐藏 ninja 的构建停止消息
+              if (line.includes('ninja: build stopped') || line.includes('subcommand failed')) {
+                isInFailureMode = false;
+                // 不输出这个消息，只是退出失败模式
+              } else {
+                this.logger.error(line.trim());
+              }
             } else {
               // 其他输出
               this.logger.verbose(line.trim());
@@ -182,10 +194,10 @@ export class NinjaCompilationPipeline {
           this.logger.info('Ninja build completed successfully');
           resolve({ success: true, warnings: warnings.length > 0 ? warnings : undefined });
         } else {
-          this.logger.error(`Ninja build failed with exit code ${code}`);
-          if (stderr) {
-            this.logger.error(`stderr: ${stderr}`);
-          }
+          // this.logger.error(`Ninja build failed with exit code ${code}`);
+          // if (stderr) {
+          //   this.logger.error(`stderr: ${stderr}`);
+          // }
           resolve({ success: false, warnings: warnings.length > 0 ? warnings : undefined });
         }
       });
