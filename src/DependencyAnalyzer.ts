@@ -129,7 +129,6 @@ export class DependencyAnalyzer {
     await this.resolveDependencies(mainIncludeFiles, resolveA);
     // this.dependencyList = this.deduplicateDependencies(this.dependencyList);
     // console.log(this.dependencyList);
-
     // this.dependencyList = deduplicateDependencies(this.dependencyList);
 
     return Array.from(this.dependencyList.values());
@@ -479,10 +478,11 @@ export class DependencyAnalyzer {
         // 读取libraryObject.path下的所有源文件
         let includeFilePaths: string[] = [];
         try {
-          const libraryFiles = await glob('*.{h,cpp,c}', {
+          const libraryFiles = await glob('**/*.{h,cpp,c}', {
             cwd: libraryObject.path,
             absolute: true,
-            nodir: true
+            nodir: true,
+            maxDepth: 9
           });
           includeFilePaths = libraryFiles;
           // console.log('includeFilePaths:', includeFilePaths);
