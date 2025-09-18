@@ -90,10 +90,10 @@ export class CompileConfigManager {
         // process.env['SDK_CORE_PATH'], // core sdk
         process.env['SDK_VARIANT_PATH'], // variants
       ],
-      // 添加 Arduino 配置信息
+      // 添加 Arduino 配置信息 - 用于预链接钩子和平台特定编译
       arduino: {
         platform: arduinoConfig.platform,
-        moreConfig: arduinoConfig.moreConfig
+        board: arduinoConfig.board  // 添加 board 配置，可能在某些场景下有用
       }
     }
 

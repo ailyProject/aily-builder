@@ -291,25 +291,29 @@ export class ArduinoConfigParser {
      * @param {Object} buildProperties 要应用的构建属性
      */
     private applyBuildProperties(boardConfig: { [key: string]: string }, buildProperties: { [key: string]: string }): void {
-        Object.keys(buildProperties).forEach(key => {
-            // console.log(`  应用额外构建属性: ${key} = ${buildProperties[key]}`);
-            boardConfig[key] = buildProperties[key];
+        // 动态检测 boardConfig 中所有可用的菜单选项
+        const availableMenuOptions = this.detectAvailableMenuOptions(boardConfig);
+        
+        // 先应用所有菜单选项，这样菜单生成的配置会被优先设置
+        availableMenuOptions.forEach(menuType => {
+            if (buildProperties[menuType]) {
+                this.applyMenuSettings(boardConfig, menuType, buildProperties[menuType]);
+            }
         });
 
-        // 处理菜单选项：flash
-        if (buildProperties['flash']) {
-            this.applyFlashMenuSettings(boardConfig, buildProperties['flash']);
-        }
-
-        // 处理菜单选项：uploadmethod
-        if (buildProperties['uploadmethod']) {
-            this.applyUploadMethodMenuSettings(boardConfig, buildProperties['uploadmethod']);
-        }
-
-        // 处理分区方案的智能匹配
+        // 处理分区方案的智能匹配（特殊处理，因为它使用 build.partitions 键）
         if (buildProperties['build.partitions']) {
             this.applyPartitionSchemeSettings(boardConfig, buildProperties['build.partitions']);
         }
+
+        // 最后应用其他非菜单相关的构建属性，但要避免覆盖菜单已设置的关键属性
+        Object.keys(buildProperties).forEach(key => {
+            // 跳过菜单选项本身（如 flash、uploadmethod 等）
+            if (!availableMenuOptions.includes(key) && key !== 'build.partitions') {
+                // console.log(`  应用额外构建属性: ${key} = ${buildProperties[key]}`);
+                boardConfig[key] = buildProperties[key];
+            }
+        });
     }
 
     /**
@@ -375,97 +379,82 @@ export class ArduinoConfigParser {
     }
 
     /**
-     * 根据 flash 菜单选项自动应用相关的配置参数
+     * 根据菜单选项自动应用相关的配置参数
      * 例如：flash=4194304_3145728 会查找并应用 menu.flash.4194304_3145728.* 相关配置
+     * 例如：uploadmethod=default 会查找并应用 menu.uploadmethod.default.* 相关配置
+     * @param {Object} boardConfig 板子配置对象
+     * @param {string} menuType 菜单类型 (如 'flash', 'uploadmethod')
+     * @param {string} menuValue 菜单选项值
+     */
+    private applyMenuSettings(boardConfig: { [key: string]: string }, menuType: string, menuValue: string): void {
+        // console.log(`  检测到 ${menuType} 菜单设置: ${menuValue}`);
+
+        // 查找匹配的菜单配置
+        const menuPrefix = `menu.${menuType}.${menuValue}.`;
+        const appliedSettings: string[] = [];
+
+        for (const key in boardConfig) {
+            if (key.startsWith(menuPrefix)) {
+                // 提取配置属性名（去掉前缀）
+                const configKey = key.replace(menuPrefix, '');
+                const configValue = boardConfig[key];
+
+                // 应用配置到 boardConfig
+                boardConfig[configKey] = configValue;
+                appliedSettings.push(`${configKey} = ${configValue}`);
+                // console.log(`    应用 ${menuType} 配置: ${configKey} = ${configValue}`);
+            }
+        }
+
+        // if (appliedSettings.length === 0) {
+        //     console.warn(`  ⚠️  未找到匹配的 ${menuType} 配置: ${menuValue}`);
+        // } else {
+        //     console.log(`  ✅ 成功应用 ${appliedSettings.length} 个 ${menuType} 配置项`);
+        // }
+    }
+
+    /**
+     * 根据 flash 菜单选项自动应用相关的配置参数
      * @param {Object} boardConfig 板子配置对象
      * @param {string} flashValue flash 菜单选项值
      */
     private applyFlashMenuSettings(boardConfig: { [key: string]: string }, flashValue: string): void {
-        // console.log(`  检测到 flash 菜单设置: ${flashValue}`);
-
-        // 查找匹配的 flash 配置
-        const flashMenuPrefix = `menu.flash.${flashValue}.`;
-        const appliedSettings: string[] = [];
-
-        for (const key in boardConfig) {
-            if (key.startsWith(flashMenuPrefix)) {
-                // 提取配置属性名（去掉前缀）
-                const configKey = key.replace(flashMenuPrefix, '');
-                const configValue = boardConfig[key];
-
-                // 应用配置到 boardConfig
-                boardConfig[configKey] = configValue;
-                appliedSettings.push(`${configKey} = ${configValue}`);
-                // console.log(`    应用 flash 配置: ${configKey} = ${configValue}`);
-            }
-        }
-
-        // if (appliedSettings.length === 0) {
-        //     console.warn(`  ⚠️  未找到匹配的 flash 配置: ${flashValue}`);
-        // } else {
-        //     console.log(`  ✅ 成功应用 ${appliedSettings.length} 个 flash 配置项`);
-        // }
+        this.applyMenuSettings(boardConfig, 'flash', flashValue);
     }
 
     /**
      * 根据 uploadmethod 菜单选项自动应用相关的配置参数
-     * 例如：uploadmethod=default 会查找并应用 menu.uploadmethod.default.* 相关配置
      * @param {Object} boardConfig 板子配置对象
      * @param {string} uploadMethodValue uploadmethod 菜单选项值
      */
     private applyUploadMethodMenuSettings(boardConfig: { [key: string]: string }, uploadMethodValue: string): void {
-        // console.log(`  检测到 uploadmethod 菜单设置: ${uploadMethodValue}`);
-
-        // 查找匹配的 uploadmethod 配置
-        const uploadMethodMenuPrefix = `menu.uploadmethod.${uploadMethodValue}.`;
-        const appliedSettings: string[] = [];
-
-        for (const key in boardConfig) {
-            if (key.startsWith(uploadMethodMenuPrefix)) {
-                // 提取配置属性名（去掉前缀）
-                const configKey = key.replace(uploadMethodMenuPrefix, '');
-                const configValue = boardConfig[key];
-
-                // 应用配置到 boardConfig
-                boardConfig[configKey] = configValue;
-                appliedSettings.push(`${configKey} = ${configValue}`);
-                // console.log(`    应用 uploadmethod 配置: ${configKey} = ${configValue}`);
-            }
-        }
-
-        // if (appliedSettings.length === 0) {
-        //     console.warn(`  ⚠️  未找到匹配的 uploadmethod 配置: ${uploadMethodValue}`);
-        // } else {
-        //     console.log(`  ✅ 成功应用 ${appliedSettings.length} 个 uploadmethod 配置项`);
-        // }
+        this.applyMenuSettings(boardConfig, 'uploadmethod', uploadMethodValue);
     }
 
     /**
-     * 从 boards.txt 配置中填充默认的菜单选项到 buildProperties
-     * 只为未设置的属性填充默认值
-     * @param {Object} boardConfig 板子配置对象
-     * @param {Object} buildProperties 构建属性对象
+     * 从 boardConfig 中动态检测所有可用的菜单选项类型
+     * 解析 menu.{menuType}.{optionValue}.{configKey} 格式的键
+     * @param {Object} boardConfig 板子配置
+     * @returns {string[]} 可用的菜单类型列表
      */
-    private fillDefaultMenuOptions(boardConfig: { [key: string]: string }, buildProperties: { [key: string]: string }): void {
-        // 为 uploadmethod 设置默认值
-        if (!buildProperties['uploadmethod']) {
-            const uploadMethodOptions = this.getAvailableMenuOptions(boardConfig, 'uploadmethod');
-            if (uploadMethodOptions.length > 0) {
-                // 优先选择 'default'，如果没有则选择第一个
-                buildProperties['uploadmethod'] = uploadMethodOptions.includes('default') ? 'default' : uploadMethodOptions[0];
-                console.log(`  自动设置默认 uploadmethod: ${buildProperties['uploadmethod']}`);
+    private detectAvailableMenuOptions(boardConfig: { [key: string]: string }): string[] {
+        const menuTypes = new Set<string>();
+        
+        for (const key in boardConfig) {
+            // 查找所有以 menu. 开头的配置项
+            if (key.startsWith('menu.')) {
+                // 提取菜单类型 (menu.flash.2097152_0.build.flash_total -> flash)
+                const parts = key.split('.');
+                if (parts.length >= 3) {
+                    const menuType = parts[1]; // menu.{menuType}.{option}.{config}
+                    menuTypes.add(menuType);
+                }
             }
         }
-
-        // 为 flash 设置默认值
-        if (!buildProperties['flash']) {
-            const flashOptions = this.getAvailableMenuOptions(boardConfig, 'flash');
-            if (flashOptions.length > 0) {
-                // 选择第一个 flash 选项作为默认值
-                buildProperties['flash'] = flashOptions[0];
-                console.log(`  自动设置默认 flash: ${buildProperties['flash']}`);
-            }
-        }
+        
+        const result = Array.from(menuTypes).sort();
+        // console.log(`检测到可用的菜单选项: ${result.join(', ')}`);
+        return result;
     }
 
     /**
@@ -489,6 +478,29 @@ export class ArduinoConfigParser {
         }
         
         return options.sort(); // 排序以保证一致性
+    }
+
+    /**
+     * 直接在 boardConfig 中应用默认菜单选项，确保关键配置存在
+     * 这样即使不调用 fillDefaultMenuOptions，boardConfig 也会有必要的菜单配置
+     * @param {Object} boardConfig 板子配置对象
+     */
+    private applyDefaultMenuOptionsToBoard(boardConfig: { [key: string]: string }): void {
+        // 动态检测所有可用的菜单选项
+        const availableMenuOptions = this.detectAvailableMenuOptions(boardConfig);
+        
+        // 为所有检测到的菜单选项应用默认值（直接设置到 boardConfig）
+        availableMenuOptions.forEach(menuType => {
+            const options = this.getAvailableMenuOptions(boardConfig, menuType);
+            if (options.length > 0) {
+                // 优先选择 'default'，如果没有则选择第一个
+                const defaultValue = options.includes('default') ? 'default' : options[0];
+                console.log(`  直接应用默认 ${menuType}: ${defaultValue}`);
+                
+                // 直接应用菜单设置到 boardConfig
+                this.applyMenuSettings(boardConfig, menuType, defaultValue);
+            }
+        });
     }
 
     /**
@@ -656,8 +668,8 @@ export class ArduinoConfigParser {
 
         let boardConfig: { [key: string]: string } = this.parseBoardsTxt(boardsTxtPath, fqbnObj);
 
-        // 从 boards.txt 中获取默认菜单选项来填充 buildProperties
-        this.fillDefaultMenuOptions(boardConfig, buildProperties);
+        // 确保 boardConfig 中有基本的默认菜单选项（即使不通过 buildProperties 设置）
+        this.applyDefaultMenuOptionsToBoard(boardConfig);
 
         // 替换/添加额外的构建属性
         this.applyBuildProperties(boardConfig, buildProperties);
