@@ -408,14 +408,25 @@ export class DependencyAnalyzer {
    * 处理 #define 指令
    */
   private handleDefineDirective(node: Parser.SyntaxNode): void {
+    // this.logger.debug(`Processing #define directive: ${JSON.stringify(node.text)}`);
     const text = node.text;
-    const match = text.match(/#define\s+([A-Za-z_][A-Za-z0-9_]*)\s*(.*)/);
 
-    if (match) {
-      const macroName = match[1];
-      const macroValue = match[2] ? match[2].trim() : '';
-      this.setMacro(macroName, macroValue, true);
-      // this.logger.debug(`Defined macro: ${macroName}${macroValue ? ` = ${macroValue}` : ''}`);
+    // 按行分割文本，处理每个 #define 行
+    const lines = text.split('\n');
+
+    for (const line of lines) {
+      const trimmedLine = line.trim();
+      if (trimmedLine.startsWith('#define')) {
+        // 匹配 #define 指令，只匹配当前行
+        const match = trimmedLine.match(/#define\s+([A-Za-z_][A-Za-z0-9_]*)\s*(.*)/);
+
+        if (match) {
+          const macroName = match[1];
+          const macroValue = match[2] ? match[2].trim() : '';
+          this.setMacro(macroName, macroValue, true);
+          this.logger.debug(`Defined macro: ${macroName} = ${macroValue}`);
+        }
+      }
     }
   }
 
