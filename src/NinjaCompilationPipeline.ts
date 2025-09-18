@@ -5,11 +5,11 @@ import { Logger } from './utils/Logger';
 import { Dependency } from './DependencyAnalyzer';
 import { CacheManager, CacheKey } from './CacheManager';
 import { NinjaGenerator, NinjaOptions } from './NinjaGenerator';
+import { escapeQuotedDefines } from './utils/escapeQuotes';
 
 export interface NinjaPipelineOptions {
   dependencies: Dependency[];
   compileConfig: any;
-  arduinoConfig?: any; // 新增：Arduino 平台配置
 }
 
 export interface NinjaCompilationResult {
@@ -32,7 +32,7 @@ export class NinjaCompilationPipeline {
     this.ninjaGenerator = new NinjaGenerator(logger);
   }
 
-  async compile({ dependencies, compileConfig, arduinoConfig }: NinjaPipelineOptions): Promise<NinjaCompilationResult> {
+  async compile({ dependencies, compileConfig }: NinjaPipelineOptions): Promise<NinjaCompilationResult> {
     this.dependencies = dependencies;
     this.compileConfig = compileConfig;
 
@@ -53,16 +53,15 @@ export class NinjaCompilationPipeline {
         compileConfig,
         buildPath: process.env['BUILD_PATH'] || '',
         jobs: parseInt(process.env['BUILD_JOBS'] || '4'),
-        skipExistingObjects: true, // 启用增量构建
-        arduinoConfig // 新增：传递 Arduino 配置
+        skipExistingObjects: true // 启用增量构建
       };
 
       const ninjaFilePath = await this.ninjaGenerator.generateNinjaFile(ninjaOptions);
       this.logger.verbose(`Ninja file generated: ${ninjaFilePath}`);
 
       // 2.5. 运行链接前钩子（RP2040需要生成链接脚本）
-      if (arduinoConfig) {
-        await this.runPreLinkHooks(arduinoConfig);
+      if (compileConfig.arduino) {
+        await this.runPreLinkHooks(compileConfig.arduino);
       }
 
       // 3. 执行ninja构建
@@ -680,40 +679,7 @@ export class NinjaCompilationPipeline {
    * 解析命令中的变量
    */
   private resolveVariables(command: string, arduinoConfig: any): string {
-    let result = command;
-    
-    // 添加常用的工具路径变量
-    const toolsMap = {
-      'runtime.tools.pqt-python3.path': 'python',  // 使用系统 python
-      'build.ram_length': '262144',  // RP2040 默认RAM大小
-    };
-    
-    // 解析 {} 变量
-    result = result.replace(/\{([^}]+)\}/g, (match, varName) => {
-      // 首先检查 toolsMap
-      if (toolsMap[varName]) {
-        return toolsMap[varName];
-      }
-      
-      // 然后检查 arduinoConfig 中的变量
-      if (arduinoConfig.moreConfig && arduinoConfig.moreConfig[varName] !== undefined) {
-        return arduinoConfig.moreConfig[varName];
-      }
-      if (arduinoConfig.platform && arduinoConfig.platform[varName] !== undefined) {
-        return arduinoConfig.platform[varName];
-      }
-      
-      // 如果找不到变量，保持原样
-      this.logger.debug(`Unknown variable in prelink hook: ${varName}`);
-      return match;
-    });
-    
-    // 修复 Python 路径格式
-    result = result.replace(/"python\/python3"/g, 'python');
-    
-    // 修复单引号括起来的宏定义（Arduino IDE 兼容格式）
-    result = result.replace(/'-D([A-Z_][A-Z0-9_]*)="([^"]*)"'/g, '"-D$1=\\"$2\\""');
-    
-    return result;
+    // 使用工具函数处理宏定义转义
+    return escapeQuotedDefines(command);
   }
 }

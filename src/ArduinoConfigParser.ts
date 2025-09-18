@@ -301,6 +301,11 @@ export class ArduinoConfigParser {
             this.applyFlashMenuSettings(boardConfig, buildProperties['flash']);
         }
 
+        // 处理菜单选项：uploadmethod
+        if (buildProperties['uploadmethod']) {
+            this.applyUploadMethodMenuSettings(boardConfig, buildProperties['uploadmethod']);
+        }
+
         // 处理分区方案的智能匹配
         if (buildProperties['build.partitions']) {
             this.applyPartitionSchemeSettings(boardConfig, buildProperties['build.partitions']);
@@ -376,7 +381,7 @@ export class ArduinoConfigParser {
      * @param {string} flashValue flash 菜单选项值
      */
     private applyFlashMenuSettings(boardConfig: { [key: string]: string }, flashValue: string): void {
-        console.log(`  检测到 flash 菜单设置: ${flashValue}`);
+        // console.log(`  检测到 flash 菜单设置: ${flashValue}`);
 
         // 查找匹配的 flash 配置
         const flashMenuPrefix = `menu.flash.${flashValue}.`;
@@ -391,15 +396,99 @@ export class ArduinoConfigParser {
                 // 应用配置到 boardConfig
                 boardConfig[configKey] = configValue;
                 appliedSettings.push(`${configKey} = ${configValue}`);
-                console.log(`    应用 flash 配置: ${configKey} = ${configValue}`);
+                // console.log(`    应用 flash 配置: ${configKey} = ${configValue}`);
             }
         }
 
-        if (appliedSettings.length === 0) {
-            console.warn(`  ⚠️  未找到匹配的 flash 配置: ${flashValue}`);
-        } else {
-            console.log(`  ✅ 成功应用 ${appliedSettings.length} 个 flash 配置项`);
+        // if (appliedSettings.length === 0) {
+        //     console.warn(`  ⚠️  未找到匹配的 flash 配置: ${flashValue}`);
+        // } else {
+        //     console.log(`  ✅ 成功应用 ${appliedSettings.length} 个 flash 配置项`);
+        // }
+    }
+
+    /**
+     * 根据 uploadmethod 菜单选项自动应用相关的配置参数
+     * 例如：uploadmethod=default 会查找并应用 menu.uploadmethod.default.* 相关配置
+     * @param {Object} boardConfig 板子配置对象
+     * @param {string} uploadMethodValue uploadmethod 菜单选项值
+     */
+    private applyUploadMethodMenuSettings(boardConfig: { [key: string]: string }, uploadMethodValue: string): void {
+        // console.log(`  检测到 uploadmethod 菜单设置: ${uploadMethodValue}`);
+
+        // 查找匹配的 uploadmethod 配置
+        const uploadMethodMenuPrefix = `menu.uploadmethod.${uploadMethodValue}.`;
+        const appliedSettings: string[] = [];
+
+        for (const key in boardConfig) {
+            if (key.startsWith(uploadMethodMenuPrefix)) {
+                // 提取配置属性名（去掉前缀）
+                const configKey = key.replace(uploadMethodMenuPrefix, '');
+                const configValue = boardConfig[key];
+
+                // 应用配置到 boardConfig
+                boardConfig[configKey] = configValue;
+                appliedSettings.push(`${configKey} = ${configValue}`);
+                // console.log(`    应用 uploadmethod 配置: ${configKey} = ${configValue}`);
+            }
         }
+
+        // if (appliedSettings.length === 0) {
+        //     console.warn(`  ⚠️  未找到匹配的 uploadmethod 配置: ${uploadMethodValue}`);
+        // } else {
+        //     console.log(`  ✅ 成功应用 ${appliedSettings.length} 个 uploadmethod 配置项`);
+        // }
+    }
+
+    /**
+     * 从 boards.txt 配置中填充默认的菜单选项到 buildProperties
+     * 只为未设置的属性填充默认值
+     * @param {Object} boardConfig 板子配置对象
+     * @param {Object} buildProperties 构建属性对象
+     */
+    private fillDefaultMenuOptions(boardConfig: { [key: string]: string }, buildProperties: { [key: string]: string }): void {
+        // 为 uploadmethod 设置默认值
+        if (!buildProperties['uploadmethod']) {
+            const uploadMethodOptions = this.getAvailableMenuOptions(boardConfig, 'uploadmethod');
+            if (uploadMethodOptions.length > 0) {
+                // 优先选择 'default'，如果没有则选择第一个
+                buildProperties['uploadmethod'] = uploadMethodOptions.includes('default') ? 'default' : uploadMethodOptions[0];
+                console.log(`  自动设置默认 uploadmethod: ${buildProperties['uploadmethod']}`);
+            }
+        }
+
+        // 为 flash 设置默认值
+        if (!buildProperties['flash']) {
+            const flashOptions = this.getAvailableMenuOptions(boardConfig, 'flash');
+            if (flashOptions.length > 0) {
+                // 选择第一个 flash 选项作为默认值
+                buildProperties['flash'] = flashOptions[0];
+                console.log(`  自动设置默认 flash: ${buildProperties['flash']}`);
+            }
+        }
+    }
+
+    /**
+     * 获取指定菜单的所有可用选项
+     * @param {Object} boardConfig 板子配置
+     * @param {string} menuName 菜单名称 (如 'flash', 'uploadmethod')
+     * @returns {string[]} 可用选项列表
+     */
+    private getAvailableMenuOptions(boardConfig: { [key: string]: string }, menuName: string): string[] {
+        const options: string[] = [];
+        const menuPrefix = `menu.${menuName}.`;
+        
+        for (const key in boardConfig) {
+            if (key.startsWith(menuPrefix)) {
+                // 提取选项名 (如 menu.flash.2097152_0.build.flash_total -> 2097152_0)
+                const parts = key.replace(menuPrefix, '').split('.');
+                if (parts.length > 0 && !options.includes(parts[0])) {
+                    options.push(parts[0]);
+                }
+            }
+        }
+        
+        return options.sort(); // 排序以保证一致性
     }
 
     /**
@@ -567,6 +656,9 @@ export class ArduinoConfigParser {
 
         let boardConfig: { [key: string]: string } = this.parseBoardsTxt(boardsTxtPath, fqbnObj);
 
+        // 从 boards.txt 中获取默认菜单选项来填充 buildProperties
+        this.fillDefaultMenuOptions(boardConfig, buildProperties);
+
         // 替换/添加额外的构建属性
         this.applyBuildProperties(boardConfig, buildProperties);
 
@@ -623,6 +715,7 @@ export class ArduinoConfigParser {
             'runtime.tools.esp32-arduino-libs.path': process.env['ESP32_ARDUINO_LIBS_PATH'] || '%ESP32_ARDUINO_LIBS_PATH%',
             'runtime.tools.esptool_py.path': process.env['ESPTOOL_PY_PATH'],
             'runtime.tools.pqt-gcc.path': process.env['PQT_GCC_PATH'] || await this.findToolPath('pqt-gcc'),
+            'runtime.tools.pqt-python3.path': await this.findToolPath('pqt-python3'),
             'build.toolchainpkg': toolchainPkg,
             'build.toolchain': boardConfig['build.toolchain'] || (fqbnObj.package === 'rp2040' ? 'arm-none-eabi' : ''),
             'build.debug_port': '',
@@ -643,7 +736,7 @@ export class ArduinoConfigParser {
         }
 
         // console.log(moreConfig);
-        console.log('moreConfig:', moreConfig);
+        // console.log('moreConfig:', moreConfig);
         let platformConfig: { [key: string]: string } = this.parsePlatformTxt(platformTxtPath, fqbnObj, boardConfig, moreConfig);
 
         // 设置编译器路径

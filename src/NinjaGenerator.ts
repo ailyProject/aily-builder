@@ -36,7 +36,6 @@ export interface NinjaOptions {
   buildPath: string;
   jobs: number;
   skipExistingObjects?: boolean; // 新增：是否跳过已存在的对象文件
-  arduinoConfig?: any; // 新增：Arduino 平台配置
 }
 
 export class NinjaGenerator {
@@ -47,7 +46,6 @@ export class NinjaGenerator {
   private ninjaFile: NinjaFile;
   private objectFiles: string[] = [];
   private skipExistingObjects: boolean = false;
-  private arduinoConfig: any; // 新增：Arduino 平台配置
   private compileConfigManager: CompileConfigManager; // 新增：编译配置管理器
 
   constructor(logger: Logger) {
@@ -67,7 +65,6 @@ export class NinjaGenerator {
       this.compileConfig = options.compileConfig;
       this.buildPath = options.buildPath;
       this.skipExistingObjects = options.skipExistingObjects || false;
-      this.arduinoConfig = options.arduinoConfig; // 新增：存储 Arduino 配置
 
       // console.log(this.compileConfig);
 
@@ -114,8 +111,8 @@ export class NinjaGenerator {
     };
 
     // 添加 RP2040 平台变量（从 Arduino 配置中获取）
-    if (this.arduinoConfig && this.arduinoConfig.platform) {
-      const platform = this.arduinoConfig.platform;
+    if (this.compileConfig.arduino && this.compileConfig.arduino.platform) {
+      const platform = this.compileConfig.arduino.platform;
       
       // 添加编译器标志
       if (platform['compiler.c.elf.flags']) {

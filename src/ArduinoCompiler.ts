@@ -101,7 +101,7 @@ export class ArduinoCompiler {
     this.logger.verbose(`Starting compilation pipeline...`);
     let compileResult;
 
-    compileResult = await this.ninjaPipeline.compile({ dependencies, compileConfig, arduinoConfig });
+    compileResult = await this.ninjaPipeline.compile({ dependencies, compileConfig });
 
     if (!compileResult.success) {
       return {
