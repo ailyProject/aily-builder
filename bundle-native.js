@@ -14,6 +14,12 @@ async function bundleWithNative() {
 
     console.log('📦 Building complete bundle with native modules...');
     
+    // 检测当前平台和架构
+    const platform = process.platform;
+    const arch = process.arch;
+    const platformArch = `${platform}-${arch}`;
+    console.log(`📋 Detected platform: ${platformArch}`);
+    
     // 创建输出目录
     const bundleDir = './dist/bundle';
     await fs.ensureDir(bundleDir);
@@ -53,9 +59,9 @@ async function bundleWithNative() {
     await fs.copy(path.join(treeSitterSrc, 'package.json'), path.join(treeSitterDest, 'package.json'));
     await fs.copy(path.join(treeSitterSrc, 'tree-sitter.d.ts'), path.join(treeSitterDest, 'tree-sitter.d.ts'));
     
-    // 只复制编译后的 .node 文件
-    const treeSitterBuildSrc = path.join(treeSitterSrc, 'build', 'Release');
-    const treeSitterBuildDest = path.join(treeSitterDest, 'build', 'Release');
+    // 复制预编译的 .node 文件
+    const treeSitterBuildSrc = path.join(treeSitterSrc, 'prebuilds', platformArch);
+    const treeSitterBuildDest = path.join(treeSitterDest, 'prebuilds', platformArch);
     await fs.ensureDir(treeSitterBuildDest);
     if (await fs.pathExists(treeSitterBuildSrc)) {
       const files = await fs.readdir(treeSitterBuildSrc);
@@ -65,6 +71,42 @@ async function bundleWithNative() {
         }
       }
       console.log('✅ Copied tree-sitter native files');
+    } else {
+      console.log(`⚠️  Warning: No tree-sitter prebuilds found for ${platformArch}`);
+    }
+
+    // 复制 node-gyp-build 依赖（tree-sitter 需要）
+    console.log('📦 Copying node-gyp-build dependency...');
+    const nodeGypBuildSrc = './node_modules/node-gyp-build';
+    const nodeGypBuildDest = path.join(bundleDir, 'node_modules/node-gyp-build');
+    await fs.ensureDir(nodeGypBuildDest);
+    
+    if (await fs.pathExists(nodeGypBuildSrc)) {
+      // 复制主要文件
+      await fs.copy(path.join(nodeGypBuildSrc, 'index.js'), path.join(nodeGypBuildDest, 'index.js'));
+      await fs.copy(path.join(nodeGypBuildSrc, 'package.json'), path.join(nodeGypBuildDest, 'package.json'));
+      await fs.copy(path.join(nodeGypBuildSrc, 'node-gyp-build.js'), path.join(nodeGypBuildDest, 'node-gyp-build.js'));
+      await fs.copy(path.join(nodeGypBuildSrc, 'optional.js'), path.join(nodeGypBuildDest, 'optional.js'));
+      console.log('✅ Copied node-gyp-build dependency');
+    } else {
+      console.log('⚠️  Warning: node-gyp-build not found');
+    }
+
+    // 复制 node-addon-api 依赖（tree-sitter 和 tree-sitter-cpp 都需要）
+    console.log('📦 Copying node-addon-api dependency...');
+    const nodeAddonApiSrc = './node_modules/node-addon-api';
+    const nodeAddonApiDest = path.join(bundleDir, 'node_modules/node-addon-api');
+    await fs.ensureDir(nodeAddonApiDest);
+    
+    if (await fs.pathExists(nodeAddonApiSrc)) {
+      // 复制主要文件
+      await fs.copy(path.join(nodeAddonApiSrc, 'index.js'), path.join(nodeAddonApiDest, 'index.js'));
+      await fs.copy(path.join(nodeAddonApiSrc, 'package.json'), path.join(nodeAddonApiDest, 'package.json'));
+      await fs.copy(path.join(nodeAddonApiSrc, 'napi.h'), path.join(nodeAddonApiDest, 'napi.h'));
+      await fs.copy(path.join(nodeAddonApiSrc, 'napi-inl.h'), path.join(nodeAddonApiDest, 'napi-inl.h'));
+      console.log('✅ Copied node-addon-api dependency');
+    } else {
+      console.log('⚠️  Warning: node-addon-api not found');
     }
 
     // 复制 tree-sitter-cpp 模块
@@ -87,9 +129,9 @@ async function bundleWithNative() {
       console.log('✅ Copied tree-sitter-cpp bindings');
     }
     
-    // 只复制编译后的 .node 文件
-    const treeSitterCppBuildSrc = path.join(treeSitterCppSrc, 'build', 'Release');
-    const treeSitterCppBuildDest = path.join(treeSitterCppDest, 'build', 'Release');
+    // 复制预编译的 .node 文件
+    const treeSitterCppBuildSrc = path.join(treeSitterCppSrc, 'prebuilds', platformArch);
+    const treeSitterCppBuildDest = path.join(treeSitterCppDest, 'prebuilds', platformArch);
     await fs.ensureDir(treeSitterCppBuildDest);
     if (await fs.pathExists(treeSitterCppBuildSrc)) {
       const files = await fs.readdir(treeSitterCppBuildSrc);
@@ -99,6 +141,8 @@ async function bundleWithNative() {
         }
       }
       console.log('✅ Copied tree-sitter-cpp native files');
+    } else {
+      console.log(`⚠️  Warning: No tree-sitter-cpp prebuilds found for ${platformArch}`);
     }
 
     // 复制 grammar.js（可能需要）
@@ -107,6 +151,37 @@ async function bundleWithNative() {
     if (await fs.pathExists(grammarSrc)) {
       await fs.copy(grammarSrc, grammarDest);
       console.log('✅ Copied tree-sitter-cpp grammar');
+    }
+
+    // 复制 tree-sitter-c 依赖（tree-sitter-cpp 需要）
+    console.log('📦 Copying tree-sitter-c dependency...');
+    const treeSitterCSrc = './node_modules/tree-sitter-c';
+    const treeSitterCDest = path.join(bundleDir, 'node_modules/tree-sitter-c');
+    await fs.ensureDir(treeSitterCDest);
+    
+    if (await fs.pathExists(treeSitterCSrc)) {
+      // 复制主要文件
+      await fs.copy(path.join(treeSitterCSrc, 'package.json'), path.join(treeSitterCDest, 'package.json'));
+      await fs.copy(path.join(treeSitterCSrc, 'bindings'), path.join(treeSitterCDest, 'bindings'));
+      
+      // 复制预编译的 .node 文件
+      const treeSitterCBuildSrc = path.join(treeSitterCSrc, 'prebuilds', platformArch);
+      const treeSitterCBuildDest = path.join(treeSitterCDest, 'prebuilds', platformArch);
+      await fs.ensureDir(treeSitterCBuildDest);
+      if (await fs.pathExists(treeSitterCBuildSrc)) {
+        const files = await fs.readdir(treeSitterCBuildSrc);
+        for (const file of files) {
+          if (file.endsWith('.node')) {
+            await fs.copy(path.join(treeSitterCBuildSrc, file), path.join(treeSitterCBuildDest, file));
+          }
+        }
+        console.log('✅ Copied tree-sitter-c native files');
+      } else {
+        console.log(`⚠️  Warning: No tree-sitter-c prebuilds found for ${platformArch}`);
+      }
+      console.log('✅ Copied tree-sitter-c dependency');
+    } else {
+      console.log('⚠️  Warning: tree-sitter-c not found');
     }
 
     // 4. 复制 ninja 工具（如果存在）
@@ -202,11 +277,14 @@ node index.js --version
 - \`aily-builder.js\` - Main bundled application
 - \`node_modules/tree-sitter/\` - Tree-sitter parser with native bindings
 - \`node_modules/tree-sitter-cpp/\` - C++ language grammar for tree-sitter
+- \`node_modules/tree-sitter-c/\` - C language grammar (dependency of tree-sitter-cpp)
+- \`node_modules/node-gyp-build/\` - Native module loader
+- \`node_modules/node-addon-api/\` - Node.js addon API
 
 ## System Requirements
 
 - Node.js >= 16
-- The native modules are compiled for ${process.platform}-${process.arch}
+- The native modules are compiled for ${platformArch}
 `;
 
     await fs.writeFile(path.join(bundleDir, 'README.md'), readmeContent);
