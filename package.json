@@ -7,7 +7,7 @@
     "aily": "dist/main.js"
   },
   "scripts": {
-    "build": "tsc",
+    "build": "rimraf dist && tsc",
     "bundle": "npm run build && node bundle.js",
     "bundle:minify": "npm run build && node bundle.js --minify",
     "bundle:both": "npm run build && node bundle.js --both",
