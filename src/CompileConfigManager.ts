@@ -16,12 +16,20 @@ export class CompileConfigManager {
    */
   private escapeQuotedDefines(args: string): string {
     if (!args) return args;
-    // 匹配 -D<MACRO_NAME>="<VALUE>" 的模式
+    
+    // 首先处理被单引号包围的 -D 宏定义（来自 platform.txt）
+    // 匹配 '-DMACRO_NAME="VALUE"' 格式
+    const singleQuotedDefineRegex = /'-D([A-Z_][A-Z0-9_]*)="([^"]*)"'/g;
+    args = args.replace(singleQuotedDefineRegex, (match, macroName, value) => {
+      // 去掉外层单引号，转义内部双引号，添加外层双引号（Arduino IDE 格式）
+      return `"-D${macroName}=\\"${value}\\""`;
+    });
+    
+    // 然后处理普通的 -D 宏定义
     const quotedDefineRegex = /-D([A-Z_][A-Z0-9_]*)="([^"]*)"/g;
-
     return args.replace(quotedDefineRegex, (match, macroName, value) => {
-      // 转义双引号
-      return `-D${macroName}=\\"${value}\\"`;
+      // 标准处理：转义内部引号，添加外层双引号
+      return `"-D${macroName}=\\"${value}\\""`;
     });
   }
 
@@ -49,13 +57,29 @@ export class CompileConfigManager {
       flag_bin = removeCompilerPath(arduinoConfig.platform['recipe.objcopy.bin.pattern'])
     }
     if (arduinoConfig.platform['recipe.c.combine.pattern']) {
+      // 先尝试从模式中提取编译器名称
       ld = extractCompilerName(arduinoConfig.platform['recipe.c.combine.pattern'])
+      
+      // 如果提取失败（包含未解析变量），则手动构建
+      if (!ld && arduinoConfig.platform['compiler.path'] && arduinoConfig.platform['compiler.c.elf.cmd']) {
+        const compilerPath = arduinoConfig.platform['compiler.path'];
+        const compilerCmd = arduinoConfig.platform['compiler.c.elf.cmd'];
+        ld = compilerPath + compilerCmd;
+        console.log('手动构建链接器命令:', ld);
+      }
+      
       flag_ld = removeCompilerPath(arduinoConfig.platform['recipe.c.combine.pattern'])
     }
 
     // console.log('platformConfig:', JSON.stringify(arduinoConfig.platform, null, 2));
 
-    // console.log(ld);
+    console.log('recipe.c.combine.pattern:', arduinoConfig.platform['recipe.c.combine.pattern']);
+    console.log('compiler.path:', arduinoConfig.platform['compiler.path']);
+    console.log('compiler.c.elf.cmd:', arduinoConfig.platform['compiler.c.elf.cmd']);
+    console.log('build.toolchainpkg:', arduinoConfig.platform['build.toolchainpkg']);
+    console.log('build.toolchain:', arduinoConfig.platform['build.toolchain']);
+    console.log('runtime.tools.pqt-gcc.path:', arduinoConfig.platform['runtime.tools.pqt-gcc.path']);
+    console.log('ld extracted:', ld);
     // console.log(arduinoConfig.platform['recipe.c.combine.pattern']);
     // console.log(arduinoConfig.platform['recipe.c.o.pattern']);
     // console.log(arduinoConfig.platform['recipe.cpp.o.pattern']);

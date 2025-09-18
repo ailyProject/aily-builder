@@ -2,6 +2,7 @@ import fs from 'fs-extra';
 import path from 'path';
 import { Logger } from './utils/Logger';
 import { Dependency } from './DependencyAnalyzer';
+import { CompileConfigManager } from './CompileConfigManager';
 
 export interface NinjaRule {
   name: string;
@@ -35,6 +36,7 @@ export interface NinjaOptions {
   buildPath: string;
   jobs: number;
   skipExistingObjects?: boolean; // 新增：是否跳过已存在的对象文件
+  arduinoConfig?: any; // 新增：Arduino 平台配置
 }
 
 export class NinjaGenerator {
@@ -45,9 +47,12 @@ export class NinjaGenerator {
   private ninjaFile: NinjaFile;
   private objectFiles: string[] = [];
   private skipExistingObjects: boolean = false;
+  private arduinoConfig: any; // 新增：Arduino 平台配置
+  private compileConfigManager: CompileConfigManager; // 新增：编译配置管理器
 
   constructor(logger: Logger) {
     this.logger = logger;
+    this.compileConfigManager = new CompileConfigManager(logger); // 初始化编译配置管理器
     this.ninjaFile = {
       rules: [],
       builds: [],
@@ -62,6 +67,7 @@ export class NinjaGenerator {
       this.compileConfig = options.compileConfig;
       this.buildPath = options.buildPath;
       this.skipExistingObjects = options.skipExistingObjects || false;
+      this.arduinoConfig = options.arduinoConfig; // 新增：存储 Arduino 配置
 
       // console.log(this.compileConfig);
 
@@ -106,6 +112,53 @@ export class NinjaGenerator {
       build_path: this.buildPath.replace(/\\/g, '/'),
       sketch_name: process.env['SKETCH_NAME'] || 'sketch'
     };
+
+    // 添加 RP2040 平台变量（从 Arduino 配置中获取）
+    if (this.arduinoConfig && this.arduinoConfig.platform) {
+      const platform = this.arduinoConfig.platform;
+      
+      // 添加编译器标志
+      if (platform['compiler.c.elf.flags']) {
+        let flags = platform['compiler.c.elf.flags'];
+        // 使用 CompileConfigManager 正确处理单引号括起来的宏定义
+        flags = this.compileConfigManager.escapeCompilerArgs(flags);
+        this.ninjaFile.variables.compiler_c_elf_flags = flags;
+      }
+      if (platform['compiler.c.elf.extra_flags']) {
+        this.ninjaFile.variables.compiler_c_elf_extra_flags = platform['compiler.c.elf.extra_flags'];
+      }
+      if (platform['compiler.ldflags']) {
+        this.ninjaFile.variables.compiler_ldflags = platform['compiler.ldflags'];
+      }
+      if (platform['compiler.libraries.ldflags']) {
+        let ldflags = platform['compiler.libraries.ldflags'];
+        // 移除 %LD_FLAGS% 占位符
+        ldflags = ldflags.replace(/%LD_FLAGS%/g, '');
+        this.ninjaFile.variables.compiler_libraries_ldflags = ldflags;
+      }
+      
+      // 添加平台路径
+      if (platform['runtime.platform.path']) {
+        this.ninjaFile.variables.runtime_platform_path = platform['runtime.platform.path'].replace(/\\/g, '/');
+      }
+      
+      // 添加芯片和库配置
+      if (platform['build.chip']) {
+        this.ninjaFile.variables.build_chip = platform['build.chip'];
+      }
+      if (platform['build.libpico']) {
+        this.ninjaFile.variables.build_libpico = platform['build.libpico'];
+      }
+      if (platform['build.libpicow']) {
+        this.ninjaFile.variables.build_libpicow = platform['build.libpicow'];
+      }
+      if (platform['compiler.libbearssl']) {
+        this.ninjaFile.variables.compiler_libbearssl = platform['compiler.libbearssl'];
+      }
+      if (platform['build.flags.libstdcpp']) {
+        this.ninjaFile.variables.build_flags_libstdcpp = platform['build.flags.libstdcpp'];
+      }
+    }
 
     // 添加编译器路径到PATH
     if (process.env['COMPILER_PATH']) {
@@ -499,6 +552,28 @@ export class NinjaGenerator {
     // console.log(replacements);
 
     let command = argsTemplate;
+
+    // 替换{}样式的变量（用于RP2040等平台）
+    // 替换 {build.path}
+    command = command.replace(/\{build\.path\}/g, '$build_path');
+    // 替换 {object_files}
+    command = command.replace(/\{object_files\}/g, '$in');
+    // 替换 {build.project_name}
+    command = command.replace(/\{build\.project_name\}/g, '$sketch_name');
+    // 替换 {archive_file}
+    command = command.replace(/\{build\.path\}\/\{archive_file\}/g, '$build_path/core.a');
+    command = command.replace(/\{archive_file\}/g, 'core.a');
+    // 替换其他常见的{}变量
+    command = command.replace(/\{compiler\.c\.elf\.flags\}/g, '$compiler_c_elf_flags');
+    command = command.replace(/\{compiler\.c\.elf\.extra_flags\}/g, '$compiler_c_elf_extra_flags');
+    command = command.replace(/\{compiler\.ldflags\}/g, '$compiler_ldflags');
+    command = command.replace(/\{compiler\.libraries\.ldflags\}/g, '$compiler_libraries_ldflags');
+    command = command.replace(/\{runtime\.platform\.path\}/g, '$runtime_platform_path');
+    command = command.replace(/\{build\.chip\}/g, '$build_chip');
+    command = command.replace(/\{build\.libpico\}/g, '$build_libpico');
+    command = command.replace(/\{build\.libpicow\}/g, '$build_libpicow');
+    command = command.replace(/\{compiler\.libbearssl\}/g, '$compiler_libbearssl');
+    command = command.replace(/\{build\.flags\.libstdcpp\}/g, '$build_flags_libstdcpp');
 
     // 替换include路径
     if (command.includes('%INCLUDE_PATHS%')) {

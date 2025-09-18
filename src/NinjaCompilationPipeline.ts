@@ -9,6 +9,7 @@ import { NinjaGenerator, NinjaOptions } from './NinjaGenerator';
 export interface NinjaPipelineOptions {
   dependencies: Dependency[];
   compileConfig: any;
+  arduinoConfig?: any; // 新增：Arduino 平台配置
 }
 
 export interface NinjaCompilationResult {
@@ -31,7 +32,7 @@ export class NinjaCompilationPipeline {
     this.ninjaGenerator = new NinjaGenerator(logger);
   }
 
-  async compile({ dependencies, compileConfig }: NinjaPipelineOptions): Promise<NinjaCompilationResult> {
+  async compile({ dependencies, compileConfig, arduinoConfig }: NinjaPipelineOptions): Promise<NinjaCompilationResult> {
     this.dependencies = dependencies;
     this.compileConfig = compileConfig;
 
@@ -52,11 +53,17 @@ export class NinjaCompilationPipeline {
         compileConfig,
         buildPath: process.env['BUILD_PATH'] || '',
         jobs: parseInt(process.env['BUILD_JOBS'] || '4'),
-        skipExistingObjects: true // 启用增量构建
+        skipExistingObjects: true, // 启用增量构建
+        arduinoConfig // 新增：传递 Arduino 配置
       };
 
       const ninjaFilePath = await this.ninjaGenerator.generateNinjaFile(ninjaOptions);
       this.logger.verbose(`Ninja file generated: ${ninjaFilePath}`);
+
+      // 2.5. 运行链接前钩子（RP2040需要生成链接脚本）
+      if (arduinoConfig) {
+        await this.runPreLinkHooks(arduinoConfig);
+      }
 
       // 3. 执行ninja构建
       this.logger.info('Starting ninja build...');
@@ -624,5 +631,89 @@ export class NinjaCompilationPipeline {
       this.logger.debug(`Cannot get compiler version: ${error}`);
     }
     return '';
+  }
+
+  /**
+   * 运行链接前钩子（如生成链接脚本）
+   */
+  private async runPreLinkHooks(arduinoConfig: any) {
+    try {
+      // 运行链接前钩子（如 recipe.hooks.linking.prelink.1.pattern）
+      for (let i = 1; i <= 10; i++) {
+        const key = `recipe.hooks.linking.prelink.${i}.pattern`;
+        if (arduinoConfig.platform && arduinoConfig.platform[key]) {
+          this.logger.verbose(`Running prelink hook ${i}...`);
+          let command = arduinoConfig.platform[key];
+          
+          // 解析变量
+          command = this.resolveVariables(command, arduinoConfig);
+          
+          this.logger.debug(`Prelink command: ${command}`);
+          
+          const { exec } = require('child_process');
+          const { promisify } = require('util');
+          const execAsync = promisify(exec);
+          
+          try {
+            const { stdout, stderr } = await execAsync(command, {
+              cwd: process.env['BUILD_PATH'] || process.cwd()
+            });
+            
+            if (stdout) {
+              this.logger.debug(`Prelink hook ${i} stdout: ${stdout}`);
+            }
+            if (stderr) {
+              this.logger.debug(`Prelink hook ${i} stderr: ${stderr}`);
+            }
+          } catch (error) {
+            this.logger.warn(`Prelink hook ${i} failed: ${error.message}`);
+            // 继续执行其他钩子
+          }
+        }
+      }
+    } catch (error) {
+      this.logger.warn(`Error running prelink hooks: ${error.message}`);
+    }
+  }
+
+  /**
+   * 解析命令中的变量
+   */
+  private resolveVariables(command: string, arduinoConfig: any): string {
+    let result = command;
+    
+    // 添加常用的工具路径变量
+    const toolsMap = {
+      'runtime.tools.pqt-python3.path': 'python',  // 使用系统 python
+      'build.ram_length': '262144',  // RP2040 默认RAM大小
+    };
+    
+    // 解析 {} 变量
+    result = result.replace(/\{([^}]+)\}/g, (match, varName) => {
+      // 首先检查 toolsMap
+      if (toolsMap[varName]) {
+        return toolsMap[varName];
+      }
+      
+      // 然后检查 arduinoConfig 中的变量
+      if (arduinoConfig.moreConfig && arduinoConfig.moreConfig[varName] !== undefined) {
+        return arduinoConfig.moreConfig[varName];
+      }
+      if (arduinoConfig.platform && arduinoConfig.platform[varName] !== undefined) {
+        return arduinoConfig.platform[varName];
+      }
+      
+      // 如果找不到变量，保持原样
+      this.logger.debug(`Unknown variable in prelink hook: ${varName}`);
+      return match;
+    });
+    
+    // 修复 Python 路径格式
+    result = result.replace(/"python\/python3"/g, 'python');
+    
+    // 修复单引号括起来的宏定义（Arduino IDE 兼容格式）
+    result = result.replace(/'-D([A-Z_][A-Z0-9_]*)="([^"]*)"'/g, '"-D$1=\\"$2\\""');
+    
+    return result;
   }
 }

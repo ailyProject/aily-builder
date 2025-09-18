@@ -286,6 +286,7 @@ export class ArduinoConfigParser {
     /**
      * 应用额外的构建属性，并处理分区方案的智能匹配
      * 当设置 build.partitions 时，自动应用对应的相关参数（如 upload.maximum_size）
+     * 支持菜单选项，如 flash=4194304_3145728
      * @param {Object} boardConfig 板子配置对象
      * @param {Object} buildProperties 要应用的构建属性
      */
@@ -294,6 +295,11 @@ export class ArduinoConfigParser {
             // console.log(`  应用额外构建属性: ${key} = ${buildProperties[key]}`);
             boardConfig[key] = buildProperties[key];
         });
+
+        // 处理菜单选项：flash
+        if (buildProperties['flash']) {
+            this.applyFlashMenuSettings(boardConfig, buildProperties['flash']);
+        }
 
         // 处理分区方案的智能匹配
         if (buildProperties['build.partitions']) {
@@ -361,6 +367,39 @@ export class ArduinoConfigParser {
         }
 
         return null;
+    }
+
+    /**
+     * 根据 flash 菜单选项自动应用相关的配置参数
+     * 例如：flash=4194304_3145728 会查找并应用 menu.flash.4194304_3145728.* 相关配置
+     * @param {Object} boardConfig 板子配置对象
+     * @param {string} flashValue flash 菜单选项值
+     */
+    private applyFlashMenuSettings(boardConfig: { [key: string]: string }, flashValue: string): void {
+        console.log(`  检测到 flash 菜单设置: ${flashValue}`);
+
+        // 查找匹配的 flash 配置
+        const flashMenuPrefix = `menu.flash.${flashValue}.`;
+        const appliedSettings: string[] = [];
+
+        for (const key in boardConfig) {
+            if (key.startsWith(flashMenuPrefix)) {
+                // 提取配置属性名（去掉前缀）
+                const configKey = key.replace(flashMenuPrefix, '');
+                const configValue = boardConfig[key];
+
+                // 应用配置到 boardConfig
+                boardConfig[configKey] = configValue;
+                appliedSettings.push(`${configKey} = ${configValue}`);
+                console.log(`    应用 flash 配置: ${configKey} = ${configValue}`);
+            }
+        }
+
+        if (appliedSettings.length === 0) {
+            console.warn(`  ⚠️  未找到匹配的 flash 配置: ${flashValue}`);
+        } else {
+            console.log(`  ✅ 成功应用 ${appliedSettings.length} 个 flash 配置项`);
+        }
     }
 
     /**
@@ -564,6 +603,14 @@ export class ArduinoConfigParser {
                 `JTAGAdapter=${jtagAdapter},ZigbeeMode=${zigbeeMode}`
         }
 
+        let toolchainPkg = 'pqt-gcc'; // 默认值
+        if (fqbnObj.package == 'rp2040') {
+            // 为RP2040设置工具链路径
+            toolchainPkg = boardConfig['build.toolchainpkg'] || 'pqt-gcc';
+            const PQT_GCC_PATH = await this.findToolPath(toolchainPkg);
+            process.env['PQT_GCC_PATH'] = PQT_GCC_PATH;
+        }
+
         process.env['BUILD_MCU'] = boardConfig['build.mcu'];
 
         let moreConfig = {
@@ -575,6 +622,12 @@ export class ArduinoConfigParser {
             'runtime.tools.arm-none-eabi-gcc-7-2017q4.path': process.env['COMPILER_PATH'] || await this.findToolPath('arm-none-eabi-gcc'),
             'runtime.tools.esp32-arduino-libs.path': process.env['ESP32_ARDUINO_LIBS_PATH'] || '%ESP32_ARDUINO_LIBS_PATH%',
             'runtime.tools.esptool_py.path': process.env['ESPTOOL_PY_PATH'],
+            'runtime.tools.pqt-gcc.path': process.env['PQT_GCC_PATH'] || await this.findToolPath('pqt-gcc'),
+            'build.toolchainpkg': toolchainPkg,
+            'build.toolchain': boardConfig['build.toolchain'] || (fqbnObj.package === 'rp2040' ? 'arm-none-eabi' : ''),
+            'build.debug_port': '',
+            'build.debug_level': '',
+            'build.flash_total': boardConfig['build.flash_total'] || '2097152', // 使用菜单配置或默认值
             'build.project_name': process.env['SKETCH_NAME'],
             'includes': '%INCLUDE_PATHS%',
             'source_file': '%SOURCE_FILE_PATH%',
@@ -590,7 +643,7 @@ export class ArduinoConfigParser {
         }
 
         // console.log(moreConfig);
-        // console.log('moreConfig:', moreConfig);
+        console.log('moreConfig:', moreConfig);
         let platformConfig: { [key: string]: string } = this.parsePlatformTxt(platformTxtPath, fqbnObj, boardConfig, moreConfig);
 
         // 设置编译器路径
