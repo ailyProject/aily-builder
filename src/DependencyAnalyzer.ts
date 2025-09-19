@@ -270,7 +270,7 @@ export class DependencyAnalyzer {
 
       return includes;
     } catch (error) {
-      this.logger.warn(`Failed to analyze file ${filePath}: ${error instanceof Error ? error.message : error}`);
+      this.logger.debug(`Failed to analyze file ${filePath}: ${error instanceof Error ? error.message : error}`);
       return [];
     }
   }
