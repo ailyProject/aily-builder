@@ -66,7 +66,7 @@ export class DependencyAnalyzer {
  * @returns 返回包含所有依赖信息的配置对象
  */
   async preprocess(arduinoConfig): Promise<any> {
-    this.logger.verbose('Starting preprocessing with tree-sitter analysis...');
+    this.logger.verbose('Starting dependency analysis...');
     const sketchName = process.env['SKETCH_NAME'];
     const sketchPath = process.env['SKETCH_PATH'];
     const sketchDir = process.env['SKETCH_DIR_PATH'];
@@ -81,11 +81,11 @@ export class DependencyAnalyzer {
     const pathSeparator = process.platform === 'win32' ? ';' : ':';
     const librariesPaths = librariesPathEnv ? librariesPathEnv.split(pathSeparator).filter(p => p.trim()) : [];
 
-    this.logger.debug(`Sketch Path: ${sketchPath}`)
-    this.logger.debug(`Core SDK Path: ${coreSDKPath}`);
-    this.logger.debug(`Variant Path: ${variantPath}`);
-    this.logger.debug(`Core Libraries Path: ${coreLibrariesPath}`);
-    this.logger.debug(`Libraries Paths: ${librariesPaths.join(', ')}`);
+    this.logger.info(`- Sketch Path: ${sketchPath}`)
+    this.logger.info(`- Core SDK Path: ${coreSDKPath}`);
+    this.logger.info(`- Variant Path: ${variantPath}`);
+    this.logger.info(`- Core Libraries Path: ${coreLibrariesPath}`);
+    this.logger.info(`- Libraries Paths: ${librariesPaths.join(', ')}`);
     this.initializeDefaultMacros(arduinoConfig);
 
     // 1. 分析主sketch文件
@@ -121,7 +121,7 @@ export class DependencyAnalyzer {
 
     // 4. 解析路径，解出libraryMap
     this.libraryMap = await this.parserLibraryPaths([coreLibrariesPath, ...librariesPaths]);
-    // console.log(this.libraryMap);
+    // this.logger.debug(JSON.stringify(Object.fromEntries(this.libraryMap)));
 
     // 5. 递归分析依赖，resolveA用于确定是否处理预编译库
     let resolveA = arduinoConfig.platform['compiler.libraries.ldflags'] ? true : false;
@@ -225,7 +225,6 @@ export class DependencyAnalyzer {
     try {
       const content = await fs.readFile(filePath, 'utf-8');
       const tree = this.treeSitterParser.parse(content);
-
       let includes: string[] = [];
       const conditionalIncludes: ConditionalInclude[] = [];
       let conditionStack: Array<{ condition: string, isActive: boolean }> = [];
@@ -424,7 +423,7 @@ export class DependencyAnalyzer {
           const macroName = match[1];
           const macroValue = match[2] ? match[2].trim() : '';
           this.setMacro(macroName, macroValue, true);
-          this.logger.debug(`Defined macro: ${macroName} = ${macroValue}`);
+          // this.logger.debug(`Defined macro: ${macroName} = ${macroValue}`);
         }
       }
     }
