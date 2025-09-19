@@ -333,20 +333,20 @@ export class ArduinoCompiler {
       if (textSize > maxTextSize) {
         const errorMsg = 'text section exceeds available space in board';
         errors.push(errorMsg);
-        this.logger.warn('Sketch too big!');
+        this.logger.debug('Sketch too big!');
       }
 
       if (maxDataSize > 0 && dataSize > maxDataSize) {
         const errorMsg = 'data section exceeds available space in board';
         errors.push(errorMsg);
-        this.logger.warn('Not enough memory!');
+        this.logger.debug('Not enough memory!');
       }
 
       // 检查内存警告阈值
       const warnDataPercentage = 75; // 默认75%
       if (maxDataSize > 0 && dataSize > (maxDataSize * warnDataPercentage / 100)) {
         warnings.push('Low memory available, stability problems may occur.');
-        this.logger.warn('Low memory available, stability problems may occur.');
+        this.logger.debug('Low memory available, stability problems may occur.');
       }
 
       return {

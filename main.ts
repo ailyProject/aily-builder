@@ -131,7 +131,7 @@ program
       await cacheManager.maintainCache();
       logger.verbose('Cache maintenance completed');
     } catch (maintainError) {
-      logger.warn(`Cache maintenance failed: ${maintainError instanceof Error ? maintainError.message : maintainError}`);
+      logger.debug(`Cache maintenance failed: ${maintainError instanceof Error ? maintainError.message : maintainError}`);
     }
   });
 

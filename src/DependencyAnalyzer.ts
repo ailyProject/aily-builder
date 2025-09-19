@@ -452,7 +452,7 @@ export class DependencyAnalyzer {
   private async resolveDependencies(includeFiles: string[], resolveA = false, depth: number = 0, maxDepth: number = 10): Promise<void> {
     // 检查递归深度限制
     if (depth >= maxDepth) {
-      this.logger.warn(`Reached maximum recursion depth (${maxDepth}) while resolving dependencies`);
+      this.logger.debug(`Reached maximum recursion depth (${maxDepth}) while resolving dependencies`);
       return;
     }
 
@@ -498,7 +498,7 @@ export class DependencyAnalyzer {
           includeFilePaths = libraryFiles;
           // console.log('includeFilePaths:', includeFilePaths);
         } catch (error) {
-          this.logger.warn(`Failed to read header files in ${libraryObject.path}: ${error instanceof Error ? error.message : error}`);
+          this.logger.debug(`Failed to read header files in ${libraryObject.path}: ${error instanceof Error ? error.message : error}`);
         }
 
         // 分析每个源文件
@@ -591,7 +591,7 @@ export class DependencyAnalyzer {
         includes: includeFiles
       };
     } catch (error) {
-      this.logger.warn(`Failed to create dependency for ${path}: ${error instanceof Error ? error.message : error}`);
+      this.logger.debug(`Failed to create dependency for ${path}: ${error instanceof Error ? error.message : error}`);
       return null;
     }
   }
@@ -614,7 +614,7 @@ export class DependencyAnalyzer {
       libraryObject.includes.push(...files);
       return true
     } catch (error) {
-      this.logger.warn(`Failed to create library dependency for ${libraryObject.name}: ${error instanceof Error ? error.message : error}`);
+      this.logger.debug(`Failed to create library dependency for ${libraryObject.name}: ${error instanceof Error ? error.message : error}`);
       return null;
     }
   }
@@ -672,7 +672,7 @@ export class DependencyAnalyzer {
       // 去重
       return [...new Set(files)];
     } catch (error) {
-      this.logger.warn(`Failed to scan directory ${dir}: ${error instanceof Error ? error.message : error}`);
+      this.logger.debug(`Failed to scan directory ${dir}: ${error instanceof Error ? error.message : error}`);
       return [];
     }
   }
@@ -810,7 +810,7 @@ export class DependencyAnalyzer {
           libraryMap.set(headerName, libObject);
         }
       } catch (error) {
-        this.logger.warn(`Failed to scan headers in ${dir}: ${error instanceof Error ? error.message : error}`);
+        this.logger.debug(`Failed to scan headers in ${dir}: ${error instanceof Error ? error.message : error}`);
       }
     }
 
@@ -873,7 +873,7 @@ export class DependencyAnalyzer {
       }
 
     } catch (error) {
-      this.logger.warn(`Failed to find source directories in ${libPath}: ${error instanceof Error ? error.message : error}`);
+      this.logger.debug(`Failed to find source directories in ${libPath}: ${error instanceof Error ? error.message : error}`);
     }
 
     return Array.from(sourceDirs);
