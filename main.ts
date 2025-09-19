@@ -33,6 +33,11 @@ program
     memo[key] = value;
     return memo;
   }, {})
+  .option('--board-options <key=value>', 'Board menu option (e.g., flash=2097152_0, uploadmethod=default)', (val, memo) => {
+    const [key, value] = val.split('=');
+    memo[key] = value;
+    return memo;
+  }, {})
   .option('-j, --jobs <number>', 'Number of parallel compilation jobs', (os.cpus().length + 1).toString())
   .option('--verbose', 'Enable verbose output', false)
   .option('--no-cache', 'Disable compilation cache', false)
@@ -87,7 +92,10 @@ program
       librariesPath: options.librariesPath && options.librariesPath.length > 0 
         ? options.librariesPath.map((libPath: string) => path.resolve(libPath)) 
         : [],
-      buildProperties: options.buildProperty || {},
+      buildProperties: {
+        ...(options.buildProperty || {}),
+        ...(options.boardOption || {}) // 将 board-options 合并到 build-properties
+      },
       jobs: parseInt(options.jobs),
       verbose: options.verbose,
       useSccache: options.useSccache
@@ -97,7 +105,12 @@ program
     logger.info(`Board: ${options.board}`);
     logger.info(`Build path: ${buildOptions.buildPath}`);
     logger.info(`Libraries paths: ${buildOptions.librariesPath}`);
-    logger.info(`buildProperties: ${JSON.stringify(buildOptions.buildProperties)}`);
+    if (options.boardOption && Object.keys(options.boardOption).length > 0) {
+      logger.info(`Board options: ${JSON.stringify(options.boardOption)}`);
+    }
+    if (options.buildProperty && Object.keys(options.buildProperty).length > 0) {
+      logger.info(`Build properties: ${JSON.stringify(options.buildProperty)}`);
+    }
     logger.info(`Parallel jobs: ${options.jobs}`);
     logger.info(`Build system: ${useNinja ? 'ninja' : 'legacy parallel'}`);
 

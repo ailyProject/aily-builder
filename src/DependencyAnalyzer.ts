@@ -111,11 +111,8 @@ export class DependencyAnalyzer {
       if (variantDependency) {
         this.dependencyList.set(`${variantDependency.name}`, variantDependency);
       }
-      // 将variantDependency.includes合并到coreDependency.includes中
-      if (variantDependency.includes.length > 0) {
-        coreDependency.includes = [...coreDependency.includes, ...variantDependency.includes];
-        variantDependency.includes = []
-      }
+      // 不要将变体文件合并到核心依赖中，保持变体文件独立
+      // 变体文件应该作为独立的对象文件直接链接，而不是包含在预编译库中
     }
 
 

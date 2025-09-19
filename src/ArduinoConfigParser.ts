@@ -452,7 +452,7 @@ export class ArduinoConfigParser {
             }
         }
         
-        const result = Array.from(menuTypes).sort();
+        const result = Array.from(menuTypes); // 保持原始顺序
         // console.log(`检测到可用的菜单选项: ${result.join(', ')}`);
         return result;
     }
@@ -477,7 +477,7 @@ export class ArduinoConfigParser {
             }
         }
         
-        return options.sort(); // 排序以保证一致性
+        return options; // 保持原始顺序
     }
 
     /**
@@ -495,7 +495,7 @@ export class ArduinoConfigParser {
             if (options.length > 0) {
                 // 优先选择 'default'，如果没有则选择第一个
                 const defaultValue = options.includes('default') ? 'default' : options[0];
-                console.log(`  直接应用默认 ${menuType}: ${defaultValue}`);
+                // console.log(`  直接应用默认 ${menuType}: ${defaultValue}`);
                 
                 // 直接应用菜单设置到 boardConfig
                 this.applyMenuSettings(boardConfig, menuType, defaultValue);
@@ -674,6 +674,8 @@ export class ArduinoConfigParser {
         // 替换/添加额外的构建属性
         this.applyBuildProperties(boardConfig, buildProperties);
 
+        // console.log(boardConfig);
+
         if (!boardConfig['build.arch']) {
             boardConfig['build.arch'] = fqbnObj.platform.toUpperCase();
         }
@@ -728,6 +730,7 @@ export class ArduinoConfigParser {
             'runtime.tools.esptool_py.path': process.env['ESPTOOL_PY_PATH'],
             'runtime.tools.pqt-gcc.path': process.env['PQT_GCC_PATH'] || await this.findToolPath('pqt-gcc'),
             'runtime.tools.pqt-python3.path': await this.findToolPath('pqt-python3'),
+            'runtime.tools.pqt-picotool.path': await this.findToolPath('pqt-picotool'),
             'build.toolchainpkg': toolchainPkg,
             'build.toolchain': boardConfig['build.toolchain'] || (fqbnObj.package === 'rp2040' ? 'arm-none-eabi' : ''),
             'build.debug_port': '',

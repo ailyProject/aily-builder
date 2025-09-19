@@ -315,25 +315,12 @@ export class NinjaGenerator {
       }
 
       if (dependency.type !== 'sketch' && groupObjects.length > 0) {
-        // variant类型归并到core中
+        // 变体文件应该作为独立的对象文件直接链接，而不是归并到归档文件中
         if (dependency.type === 'variant') {
-          // // 找到core类型的依赖并将variant的对象文件添加到其中
-          // const coreDependency = this.dependencies.find(d => d.type === 'core');
-          // if (coreDependency) {
-          //   if (archiveGroups.has(coreDependency.name)) {
-          //     archiveGroups.get(coreDependency.name)!.push(...groupObjects);
-          //   } else {
-          //     archiveGroups.set(coreDependency.name, groupObjects);
-          //   }
-          // } else {
-          // 如果没有找到core依赖，则创建一个core归档组
-          if (archiveGroups.has('core')) {
-            archiveGroups.get('core')!.push(...groupObjects);
-          } else {
-            archiveGroups.set('core', groupObjects);
-          }
-          // }
+          // 将变体对象文件直接添加到最终链接的对象文件列表中
+          this.objectFiles.push(...groupObjects);
         } else {
+          // 其他类型（core、library）创建归档文件
           archiveGroups.set(dependency.name, groupObjects);
         }
       }
