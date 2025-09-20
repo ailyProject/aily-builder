@@ -35,7 +35,7 @@ export class Logger {
     
     // 创建或清空日志文件
     try {
-      fs.writeFileSync(logFilePath, `[${new Date().toISOString()}] aily-builder log started\n`);
+      fs.writeFileSync(logFilePath, `aily-builder log\nDate: ${new Date().toISOString()}\n----------------------------------------------------------------------------\n`);
     } catch (error) {
       console.error(`Failed to initialize log file: ${error}`);
       this.logToFile = false;
@@ -50,8 +50,7 @@ export class Logger {
   private writeToFile(message: string): void {
     if (this.logToFile && this.logFilePath) {
       try {
-        const timestamp = new Date().toISOString();
-        const logLine = `[${timestamp}] ${message}\n`;
+        const logLine = `${message}\n`;
         fs.appendFileSync(this.logFilePath, logLine);
       } catch (error) {
         // 如果写入失败，输出到控制台并禁用文件日志
