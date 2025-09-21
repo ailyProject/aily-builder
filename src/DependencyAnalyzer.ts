@@ -85,10 +85,6 @@ export class DependencyAnalyzer {
 
     // 1. 分析主sketch文件
     const mainIncludeFiles = await analyzeFile(sketchPath, this.macroDefinitions);
-    // this.macroDefinitions.set('BLINKER_WIFI', { name: 'BLINKER_WIFI', isDefined: true });
-    // console.log('mainIncludes:', mainIncludeFiles);
-    // console.log('macroDefinitions:', this.macroDefinitions);
-    // process.exit(0);
 
     // this.dependencyList.add({
     //   name: sketchName,
@@ -220,7 +216,7 @@ export class DependencyAnalyzer {
    * @param depth 当前递归深度，默认为0
    * @param maxDepth 最大递归深度，默认为10
    */
-  private async resolveDependencies(includeFiles: string[], resolveA = false, depth: number = 0, maxDepth: number = 10): Promise<void> {
+  private async resolveDependencies(includeFiles: string[], resolveA = false, depth: number = 0, maxDepth: number = 10, macroDefinitions = this.macroDefinitions): Promise<void> {
     // 检查递归深度限制
     if (depth >= maxDepth) {
       this.logger.debug(`Reached maximum recursion depth (${maxDepth}) while resolving dependencies`);
@@ -273,16 +269,14 @@ export class DependencyAnalyzer {
         }
 
         // 分析每个源文件
+        let macroDefinitions_copy = new Map(macroDefinitions);
         const libraryIncludeHeaderFiles: string[] = [];
         for (const includeFilePath of includeFilePaths) {
-          const headerIncludes = await await analyzeFile(includeFilePath, this.macroDefinitions);
+          const headerIncludes = await await analyzeFile(includeFilePath, macroDefinitions_copy);
           libraryIncludeHeaderFiles.push(...headerIncludes);
         }
-        // if (libraryObject.name == 'WiFi') {
-        //   console.log('libraryIncludeHeaderFiles:', libraryIncludeHeaderFiles.join(', '));
-        // }
-        // const libraryIncludeSourceFiles = libraryIncludeHeaderFiles.filter(f => !this.isSystemHeader(f));
-        await this.resolveDependencies(libraryIncludeHeaderFiles, resolveA, depth + 1, maxDepth)
+
+        await this.resolveDependencies(libraryIncludeHeaderFiles, resolveA, depth + 1, maxDepth, macroDefinitions_copy)
       } else {
         this.logger.verbose(`Not found ${includeFile}`);
       }
