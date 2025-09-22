@@ -1,5 +1,5 @@
 import fs from 'fs-extra';
-import path from 'path';
+import * as path from 'path';
 import { glob } from 'glob';
 import Parser from 'tree-sitter';
 // @ts-ignore - 临时忽略类型检查
@@ -554,7 +554,7 @@ export class DependencyAnalyzer {
    * @param path 核心SDK路径
    * @returns 返回核心SDK依赖项，如果创建失败则返回null
    */
-  private async createDependency(type, path: string): Promise<Dependency | null> {
+  private async createDependency(type, dependencyPath: string): Promise<Dependency | null> {
     try {
       const name = type;
       const includeFiles: string[] = [];
@@ -563,21 +563,31 @@ export class DependencyAnalyzer {
       const extensions = ['.cpp', '.c', '.S', '.s'];
 
       // 直接扫描path
-      if (await fs.pathExists(path)) {
-        const files = await this.scanDirectoryRecursive(path, extensions);
-        const filteredFiles = this.filterSourceFiles(files);
+      if (await fs.pathExists(dependencyPath)) {
+        const files = await this.scanDirectoryRecursive(dependencyPath, extensions);
+        let filteredFiles = this.filterSourceFiles(files);
+        
+        // 对于core类型的依赖，额外过滤掉variant.cpp文件（但保留variant_helper.cpp等其他文件）
+        if (type === 'core') {
+          filteredFiles = filteredFiles.filter(file => {
+            const fileName = path.basename(file).toLowerCase();
+            // 只过滤掉variant.cpp，但保留variant_helper.cpp等其他variant相关文件
+            return fileName !== 'variant.cpp';
+          });
+        }
+        
         includeFiles.push(...filteredFiles);
         // this.logger.debug(`Found ${files.length} core files in ${coreSDKPath}`);
       }
 
       return {
         name,
-        path,
+        path: dependencyPath,
         type,
         includes: includeFiles
       };
     } catch (error) {
-      this.logger.warn(`Failed to create dependency for ${path}: ${error instanceof Error ? error.message : error}`);
+      this.logger.warn(`Failed to create dependency for ${dependencyPath}: ${error instanceof Error ? error.message : error}`);
       return null;
     }
   }
