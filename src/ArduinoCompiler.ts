@@ -56,7 +56,7 @@ export class ArduinoCompiler {
     await this.validateSketch(options.sketchPath);
 
     // 2. 获取开发板、平台、编译配置
-    const arduinoConfig = await this.arduinoConfigParser.parseByFQBN(options.board, options.buildProperties || {});
+    const arduinoConfig = await this.arduinoConfigParser.parseByFQBN(options.board, options.buildProperties || {}, options.toolVersions || {});
 
     // 3. 准备构建目录
     await this.prepareBuildDirectory(options.buildPath, options.sketchPath);

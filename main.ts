@@ -43,9 +43,35 @@ program
   .option('--no-cache', 'Disable compilation cache', false)
   .option('--clean-cache', 'Clean cache before compilation', false)
   .option('--log-file', 'Write logs to file in build directory', false)
+  .option('--tool-versions <versions>', 'Specify tool versions (format: tool1@version1,tool2@version2)', undefined)
   .action(async (sketch, options) => {
     // console.log('options:', options);
     logger.setVerbose(options.verbose);
+
+    // 解析工具版本参数
+    let toolVersions: Record<string, string> = {};
+    if (options.toolVersions) {
+      try {
+        // 支持格式: tool1@version1,tool2@version2
+        const versionPairs = options.toolVersions.split(',');
+        for (const pair of versionPairs) {
+          const trimmedPair = pair.trim();
+          if (trimmedPair) {
+            const [toolName, version] = trimmedPair.split('@');
+            if (toolName && version) {
+              toolVersions[toolName.trim()] = version.trim();
+            } else {
+              throw new Error(`Invalid tool version format: ${trimmedPair}. Expected format: tool@version`);
+            }
+          }
+        }
+        logger.verbose(`Parsed tool versions: ${JSON.stringify(toolVersions)}`);
+      } catch (error) {
+        logger.error(`Error parsing tool versions: ${error instanceof Error ? error.message : error}`);
+        logger.error('Expected format: tool1@version1,tool2@version2');
+        process.exit(1);
+      }
+    }
 
     // 确定使用的编译方式
     const useNinja = options.useLegacy ? false : options.useNinja;
@@ -106,6 +132,7 @@ program
         ...(options.buildProperty || {}),
         ...(options.boardOptions || {}) // 将 board-options 合并到 build-properties
       },
+      toolVersions: toolVersions,
       jobs: parseInt(options.jobs),
       verbose: options.verbose,
       useSccache: options.useSccache
@@ -120,6 +147,9 @@ program
     }
     if (options.buildProperty && Object.keys(options.buildProperty).length > 0) {
       logger.info(`Build properties: ${JSON.stringify(options.buildProperty)}`);
+    }
+    if (Object.keys(toolVersions).length > 0) {
+      logger.info(`Tool versions: ${JSON.stringify(toolVersions)}`);
     }
     logger.info(`Parallel jobs: ${options.jobs}`);
     logger.info(`Build system: ${useNinja ? 'ninja' : 'legacy parallel'}`);

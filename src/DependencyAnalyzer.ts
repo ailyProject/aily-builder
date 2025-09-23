@@ -100,6 +100,8 @@ export class DependencyAnalyzer {
         this.dependencyList.set(`${coreDependency.name}`, coreDependency);
       }
     }
+    // console.log(this.dependencyList);
+    
     // 3. 添加变体路径依赖
     if (variantPath) {
       variantDependency = await this.createDependency('variant', variantPath);
@@ -406,7 +408,6 @@ export class DependencyAnalyzer {
         }
         
         includeFiles.push(...filteredFiles);
-        // this.logger.debug(`Found ${files.length} core files in ${coreSDKPath}`);
       }
 
       return {
@@ -503,38 +504,13 @@ export class DependencyAnalyzer {
   }
 
   /**
-   * 过滤源文件，解决同一基本名称但扩展名不同的文件冲突。
-   * 优先级: .S > .s > .cpp > .c
+   * 过滤源文件，只进行架构过滤，保留所有扩展名的文件
    * @param files 文件路径数组
    * @returns 过滤后的文件路径数组
    */
   private filterSourceFiles(files: string[]): string[] {
-    // 首先按架构过滤库文件
-    const architectureFilteredFiles = this.filterByArchitecture(files);
-
-    // 然后按扩展名优先级过滤
-    const fileMap = new Map<string, string>();
-    const precedence = ['.S', '.s', '.cpp', '.c'];
-
-    for (const file of architectureFilteredFiles) {
-      const ext = path.extname(file);
-      const base = file.slice(0, -ext.length);
-
-      if (precedence.includes(ext)) {
-        const existingFile = fileMap.get(base);
-        if (existingFile) {
-          const existingExt = path.extname(existingFile);
-          if (precedence.indexOf(ext) < precedence.indexOf(existingExt)) {
-            // 当前文件有更高优先级
-            fileMap.set(base, file);
-          }
-        } else {
-          fileMap.set(base, file);
-        }
-      }
-    }
-
-    return Array.from(fileMap.values());
+    // 只进行架构过滤，不进行扩展名优先级过滤
+    return this.filterByArchitecture(files);
   }
 
   /**
