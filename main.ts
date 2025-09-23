@@ -94,7 +94,7 @@ program
         : [],
       buildProperties: {
         ...(options.buildProperty || {}),
-        ...(options.boardOption || {}) // 将 board-options 合并到 build-properties
+        ...(options.boardOptions || {}) // 将 board-options 合并到 build-properties
       },
       jobs: parseInt(options.jobs),
       verbose: options.verbose,
@@ -105,8 +105,8 @@ program
     logger.info(`Board: ${options.board}`);
     logger.info(`Build path: ${buildOptions.buildPath}`);
     logger.info(`Libraries paths: ${buildOptions.librariesPath}`);
-    if (options.boardOption && Object.keys(options.boardOption).length > 0) {
-      logger.info(`Board options: ${JSON.stringify(options.boardOption)}`);
+    if (options.boardOptions && Object.keys(options.boardOptions).length > 0) {
+      logger.info(`Board options: ${JSON.stringify(options.boardOptions)}`);
     }
     if (options.buildProperty && Object.keys(options.buildProperty).length > 0) {
       logger.info(`Build properties: ${JSON.stringify(options.buildProperty)}`);
