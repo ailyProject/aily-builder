@@ -110,10 +110,12 @@ export class DependencyAnalyzer {
       // 变体文件应该作为独立的对象文件直接链接，而不是包含在预编译库中
     }
 
-
     // 4. 解析路径，解出libraryMap
     this.libraryMap = await this.parserLibraryPaths([coreLibrariesPath, ...librariesPaths]);
     // this.logger.debug(JSON.stringify(Object.fromEntries(this.libraryMap)));
+
+    // 4.5. 添加平台特定的必需库（如 STM32 SrcWrapper）
+    await this.addPlatformSpecificLibraries(arduinoConfig);
 
     // 5. 递归分析依赖，resolveA用于确定是否处理预编译库
     let resolveA = arduinoConfig.platform['compiler.libraries.ldflags'] ? true : false;
@@ -616,6 +618,9 @@ export class DependencyAnalyzer {
     // console.log(resultDirs);
     // 构建头文件到库信息的映射
     const libraryMap = new Map<string, Dependency>();
+    // 同时构建库名称到库信息的映射，用于平台特定库查找
+    const libraryByNameMap = new Map<string, Dependency>();
+    
     for (const dir of resultDirs) {
       let libName = path.basename(dir);
       if (libName === 'src') {
@@ -628,6 +633,9 @@ export class DependencyAnalyzer {
         includes: [],
         others: []
       }
+
+      // 将库按名称存储，用于平台特定库查找
+      libraryByNameMap.set(libName, libObject);
 
       try {
         // 扫描目录中的所有.h文件，只搜索当前目录，不递归子目录
@@ -644,6 +652,11 @@ export class DependencyAnalyzer {
       } catch (error) {
         this.logger.debug(`Failed to scan headers in ${dir}: ${error instanceof Error ? error.message : error}`);
       }
+    }
+
+    // 将库名称映射添加到主映射中，使用特殊前缀避免与头文件名冲突
+    for (const [libName, libObject] of libraryByNameMap) {
+      libraryMap.set(`__LIB_${libName}`, libObject);
     }
 
     // console.log(libraryMap);
@@ -740,59 +753,6 @@ export class DependencyAnalyzer {
           const libNames = Array.from(this.libraryMap.keys()).filter(key => key.startsWith('__LIB_'));
           this.logger.debug(`Available libraries: ${libNames.join(', ')}`);
         }
-      }
-    }
-  }
-
-  /**
-   * 分析核心 SDK 中的关键头文件，特别是 Arduino.h
-   * 这些头文件不在 libraryMap 中，需要特殊处理
-   * @param mainIncludeFiles 主文件包含的头文件列表
-   * @param coreSDKPath 核心 SDK 路径
-   */
-  private async analyzeCoreHeaders(mainIncludeFiles: string[], coreSDKPath: string): Promise<void> {
-    if (!coreSDKPath) return;
-
-    // 检查主文件是否包含 Arduino.h
-    const includesArduinoH = mainIncludeFiles.includes('Arduino.h');
-    
-    if (includesArduinoH) {
-      this.logger.info('Found Arduino.h include, analyzing core SDK headers...');
-      
-      // 查找 Arduino.h 文件
-      const arduinoHPath = path.join(coreSDKPath, 'Arduino.h');
-      
-      if (await fs.pathExists(arduinoHPath)) {
-        this.logger.info(`Analyzing core Arduino.h: ${arduinoHPath}`);
-        
-        // 先读取Arduino.h的内容来验证是否包含__IN_ECLIPSE__条件编译
-        try {
-          const content = await fs.readFile(arduinoHPath, 'utf-8');
-          const hasInEclipse = content.includes('__IN_ECLIPSE__');
-          this.logger.info(`Arduino.h contains __IN_ECLIPSE__ directives: ${hasInEclipse}`);
-          
-          if (hasInEclipse) {
-            // 搜索相关的条件编译块
-            const eclipseBlocks = content.match(/#ifdef\s+__IN_ECLIPSE__[\s\S]*?#endif/g);
-            if (eclipseBlocks) {
-              this.logger.info(`Found ${eclipseBlocks.length} __IN_ECLIPSE__ blocks in Arduino.h`);
-              eclipseBlocks.forEach((block, index) => {
-                this.logger.debug(`Block ${index + 1}: ${block.substring(0, 200)}...`);
-              });
-            }
-          }
-        } catch (error) {
-          this.logger.warn(`Failed to read Arduino.h content: ${error}`);
-        }
-        
-        // 分析 Arduino.h 文件的包含
-        const arduinoIncludes = await this.analyzeFile(arduinoHPath);
-        this.logger.info(`Arduino.h includes: ${arduinoIncludes.join(', ')}`);
-        
-        // 递归分析 Arduino.h 中包含的头文件
-        await this.resolveDependencies(arduinoIncludes, false, 0, 5);
-      } else {
-        this.logger.warn(`Arduino.h not found at: ${arduinoHPath}`);
       }
     }
   }
