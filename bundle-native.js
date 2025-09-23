@@ -168,49 +168,6 @@ require('./aily-builder.js');
       JSON.stringify(bundlePackageJson, null, 2)
     );
 
-    // 7. 创建使用说明
-    const readmeContent = `# Aily Builder Complete Bundle
-
-This is a complete bundle of aily-builder including all native dependencies.
-
-## Usage
-
-\`\`\`bash
-# Run directly
-node index.js [command] [options]
-
-# Or if you have the bundle in PATH
-aily [command] [options]
-\`\`\`
-
-## Examples
-
-\`\`\`bash
-# Show help
-node index.js --help
-
-# Compile Arduino sketch
-node index.js compile examples/blink.ino --verbose
-
-# Show version
-node index.js --version
-\`\`\`
-
-## Files included
-
-- \`index.js\` - Launch script
-- \`aily-builder.js\` - Main bundled application
-- \`node_modules/tree-sitter/\` - Tree-sitter parser with native bindings
-- \`node_modules/tree-sitter-cpp/\` - C++ language grammar for tree-sitter
-
-## System Requirements
-
-- Node.js >= 16
-- The native modules are compiled for ${process.platform}-${process.arch}
-`;
-
-    await fs.writeFile(path.join(bundleDir, 'README.md'), readmeContent);
-
     // 显示统计信息
     console.log('✅ Complete bundle created successfully!');
     console.log(`📁 Output directory: ${bundleDir}`);
@@ -267,7 +224,6 @@ async function bundleWithNativeMinified() {
     await fs.copy('./dist/bundle/ninja', path.join(bundleDir, 'ninja'));
     await fs.copy('./dist/bundle/index.js', path.join(bundleDir, 'index.js'));
     await fs.copy('./dist/bundle/package.json', path.join(bundleDir, 'package.json'));
-    await fs.copy('./dist/bundle/README.md', path.join(bundleDir, 'README.md'));
     
     console.log('✅ Minified complete bundle created!');
     console.log(`📁 Output directory: ${bundleDir}`);
