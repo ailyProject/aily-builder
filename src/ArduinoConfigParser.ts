@@ -481,7 +481,7 @@ export class ArduinoConfigParser {
      * @param {Object} buildProperties 额外的构建属性
      * @returns {Object} 特定板子的完整配置
      */
-    async parseByFQBN(fqbn: string, buildProperties: { [key: string]: string }): Promise<BoardParseResult> {
+    async parseByFQBN(fqbn: string, buildProperties: { [key: string]: string }, toolVersions: { [key: string]: string } = undefined): Promise<BoardParseResult> {
         // 解析 FQBN
         const fqbnObj = this.parseFQBN(fqbn);
         // console.log(`解析 FQBN: ${fqbn}`);
@@ -519,8 +519,8 @@ export class ArduinoConfigParser {
 
         if (fqbnObj.package == 'esp32') {
             const [ESP32_ARDUINO_LIBS_PATH, ESPTOOL_PY_PATH] = await Promise.all([
-                this.findToolPath('esp32-arduino-libs'),
-                this.findToolPath('esptool_py'),
+                this.findToolPath('esp32-arduino-libs', toolVersions?.['esp32-arduino-libs'] || ''),
+                this.findToolPath('esptool_py', toolVersions?.['esptool_py'] || ''),
             ]);
             process.env['ESP32_ARDUINO_LIBS_PATH'] = ESP32_ARDUINO_LIBS_PATH;
             process.env['ESPTOOL_PY_PATH'] = ESPTOOL_PY_PATH;
@@ -580,10 +580,10 @@ export class ArduinoConfigParser {
         let moreConfig = {
             'runtime.os': 'windows',
             'runtime.ide.version': '10607',
-            'runtime.tools.avr-gcc.path': process.env['COMPILER_PATH'] || await this.findToolPath('avr-gcc'),
-            'runtime.tools.esp-x32.path': process.env['COMPILER_PATH'] || await this.findToolPath('esp-x32'),
-            'runtime.tools.esp-rv32.path': process.env['COMPILER_PATH'] || await this.findToolPath('esp-rv32'),
-            'runtime.tools.arm-none-eabi-gcc-7-2017q4.path': process.env['COMPILER_PATH'] || await this.findToolPath('arm-none-eabi-gcc'),
+            'runtime.tools.avr-gcc.path': process.env['COMPILER_PATH'] || await this.findToolPath('avr-gcc', toolVersions?.['avr-gcc'] || ''),
+            'runtime.tools.esp-x32.path': process.env['COMPILER_PATH'] || await this.findToolPath('esp-x32', toolVersions?.['esp-x32'] || ''),
+            'runtime.tools.esp-rv32.path': process.env['COMPILER_PATH'] || await this.findToolPath('esp-rv32', toolVersions?.['esp-rv32'] || ''),
+            'runtime.tools.arm-none-eabi-gcc-7-2017q4.path': process.env['COMPILER_PATH'] || await this.findToolPath('arm-none-eabi-gcc', toolVersions?.['arm-none-eabi-gcc'] || ''),
             'runtime.tools.esp32-arduino-libs.path': process.env['ESP32_ARDUINO_LIBS_PATH'] || '%ESP32_ARDUINO_LIBS_PATH%',
             'runtime.tools.esptool_py.path': process.env['ESPTOOL_PY_PATH'],
             'build.project_name': process.env['SKETCH_NAME'],
@@ -680,7 +680,7 @@ export class ArduinoConfigParser {
         }
     }
 
-    async findToolPath(toolName) {
+    async findToolPath(toolName, version='') {
         let toolsBasePath: string;
 
         if (process.env['TOOLS_PATH']) {
@@ -705,7 +705,15 @@ export class ArduinoConfigParser {
         for (const pattern of patterns) {
             const result = await glob(pattern, { absolute: true });
             if (result && result.length > 0) {
-                // console.log(`找到工具路径: ${result[0]}`);
+                if (result.length > 1 && version) {
+                    // 如果指定了版本号，尝试匹配
+                    for (const p of result) {
+                        const pVersion = path.basename(p).split('@')[1];
+                        if (pVersion === version) {
+                            return p;
+                        }
+                    }
+                }
                 return result[0];
             }
         }
