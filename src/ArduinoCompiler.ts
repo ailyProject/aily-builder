@@ -69,7 +69,7 @@ export class ArduinoCompiler {
         this.logger.info('Generating compile configuration...');
         return await this.compileConfigManager.parseCompileConfig(arduinoConfig);
       })(),
-      
+
       // 4. 依赖分析
       (async () => {
         this.logger.info('Analyzing dependencies...');
@@ -77,7 +77,7 @@ export class ArduinoCompiler {
         this.logger.info(`Dependency analysis completed.`);
         return deps;
       })(),
-      
+
       // 5. 预处理2：运行编译前钩子（ESP32需要）
       (async () => {
         if (arduinoConfig.platform['recipe.hooks.prebuild.1.pattern']) {
@@ -116,19 +116,30 @@ export class ArduinoCompiler {
 
     // 运行编译后钩子和输出文件生成
     let finalOutputPath = compileResult.outFilePath;
-    
+
+    /*
+    ESP32 配置 begin
+    */
     // ESP32平台的后处理钩子
     if (arduinoConfig.platform['recipe.objcopy.partitions.bin.pattern']) {
       this.logger.info('Running ESP32 partition generation...');
       const resolvedCommand = this.resolveVariables(arduinoConfig.platform['recipe.objcopy.partitions.bin.pattern']);
       await this.runCommand(resolvedCommand);
     }
+
     if (arduinoConfig.platform['recipe.hooks.objcopy.postobjcopy.1.pattern']) {
       this.logger.info('Running ESP32 post-build hook scripts...');
       await this.runPostBuildHooks(arduinoConfig);
       finalOutputPath = path.join(process.env['BUILD_PATH'], 'sketch.merged.bin');
     }
-    
+
+    /*
+    ESP32 配置 end
+    */
+
+    /*
+    RP2040 配置 begin
+    */
     // RP2040平台的输出文件生成
     if (arduinoConfig.platform['recipe.objcopy.uf2.pattern']) {
       this.logger.info('Generating UF2 file...');
@@ -136,20 +147,23 @@ export class ArduinoCompiler {
       await this.runCommand(resolvedCommand);
       finalOutputPath = path.join(process.env['BUILD_PATH'], `${process.env['SKETCH_NAME']}.uf2`);
     }
-    
+
     // 生成BIN文件（如果配置了）
     if (arduinoConfig.platform['recipe.objcopy.bin.1.pattern']) {
       this.logger.info('Generating BIN file...');
       const resolvedCommand = this.resolveVariables(arduinoConfig.platform['recipe.objcopy.bin.1.pattern']);
       await this.runCommand(resolvedCommand);
     }
-    
+
     // 签名BIN文件（如果配置了）
     if (arduinoConfig.platform['recipe.objcopy.bin.2.pattern']) {
       this.logger.info('Signing BIN file...');
       const resolvedCommand = this.resolveVariables(arduinoConfig.platform['recipe.objcopy.bin.2.pattern']);
       await this.runCommand(resolvedCommand);
     }
+    /*
+    RP2040 配置 end
+    */
 
     const totalTime = Date.now() - startTime;
     const buildTime = totalTime - preprocessTime;
@@ -423,7 +437,7 @@ export class ArduinoCompiler {
    */
   private resolveVariables(command: string): string {
     if (!command) return command;
-    
+
     // 首先替换环境变量（基础变量替换）
     let resolvedCommand = command.replace(/\{([^}]+)\}/g, (match, variable) => {
       // 从环境变量中获取值
@@ -431,15 +445,15 @@ export class ArduinoCompiler {
       if (value !== undefined) {
         return value;
       }
-      
+
       // 如果环境变量不存在，保持原始格式
       this.logger.warn(`Variable ${variable} not found in environment`);
       return match;
     });
-    
+
     // 然后应用引号转义
     resolvedCommand = escapeQuotedDefines(resolvedCommand);
-    
+
     return resolvedCommand;
   }
 }
