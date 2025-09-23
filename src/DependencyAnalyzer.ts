@@ -130,15 +130,6 @@ export class DependencyAnalyzer {
   private initializeDefaultMacros(arduinoConfig): void {
     // Arduino平台默认宏
     this.setMacro('ARDUINO', '100', true);
-    
-    // 为 STM32 平台定义 __IN_ECLIPSE__ 宏，以便自动发现 SrcWrapper.h 依赖
-    this.setMacro('__IN_ECLIPSE__', '1', true);
-    // this.logger.info('Defined __IN_ECLIPSE__ macro for STM32 platform dependency detection');
-    
-    // 定义C++编译器相关宏
-    this.setMacro('__cplusplus', '1', true);
-    // 不预定义 GCC_VERSION，让 Arduino.h 自己处理
-    
     // 从 arduinoConfig.platform['recipe.cpp.o.pattern'] 中提取宏定义
     const macros = extractMacroDefinitions(arduinoConfig.platform['recipe.cpp.o.pattern'])
     macros.forEach(macro => {
