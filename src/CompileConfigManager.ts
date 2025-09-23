@@ -50,6 +50,7 @@ export class CompileConfigManager {
 
     // console.log('platformConfig:', JSON.stringify(arduinoConfig.platform, null, 2));
 
+    // console.log('STM32编译模板检查:');
     // console.log('recipe.c.combine.pattern:', arduinoConfig.platform['recipe.c.combine.pattern']);
     // console.log('compiler.path:', arduinoConfig.platform['compiler.path']);
     // console.log('compiler.c.elf.cmd:', arduinoConfig.platform['compiler.c.elf.cmd']);
@@ -57,13 +58,12 @@ export class CompileConfigManager {
     // console.log('build.toolchain:', arduinoConfig.platform['build.toolchain']);
     // console.log('runtime.tools.pqt-gcc.path:', arduinoConfig.platform['runtime.tools.pqt-gcc.path']);
     // console.log('ld extracted:', ld);
-    // console.log(arduinoConfig.platform['recipe.c.combine.pattern']);
-    // console.log(arduinoConfig.platform['recipe.c.o.pattern']);
-    // console.log(arduinoConfig.platform['recipe.cpp.o.pattern']);
-    // console.log(arduinoConfig.platform['recipe.ar.o.pattern']);
-    // console.log(arduinoConfig.platform['recipe.S.o.pattern']);
-    // console.log(arduinoConfig.platform['recipe.objcopy.bin.pattern']);
-    // console.log(arduinoConfig.platform['recipe.size.pattern']);
+    // console.log('recipe.c.o.pattern:', arduinoConfig.platform['recipe.c.o.pattern']);
+    // console.log('recipe.cpp.o.pattern:', arduinoConfig.platform['recipe.cpp.o.pattern']);
+    // console.log('recipe.ar.pattern:', arduinoConfig.platform['recipe.ar.pattern']);
+    // console.log('recipe.S.o.pattern:', arduinoConfig.platform['recipe.S.o.pattern']);
+    // console.log('recipe.objcopy.bin.pattern:', arduinoConfig.platform['recipe.objcopy.bin.pattern']);
+    // console.log('recipe.size.pattern:', arduinoConfig.platform['recipe.size.pattern']);
 
     let compileConfig = {
       // path: process.env['COMPILER_PATH'],

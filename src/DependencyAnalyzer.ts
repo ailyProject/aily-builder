@@ -118,15 +118,17 @@ export class DependencyAnalyzer {
 
     // 4. 解析路径，解出libraryMap
     this.libraryMap = await this.parserLibraryPaths([coreLibrariesPath, ...librariesPaths]);
-    // console.log(this.libraryMap);
+
+    // 4.5. 添加平台特定的必需库（如 STM32 SrcWrapper）
+    // 由于自动发现机制尚未完全完善，暂时手动添加
+    // await this.addPlatformSpecificLibraries(arduinoConfig);
+
+    // 4.6. 特殊处理：分析核心 SDK 中的 Arduino.h 文件
+    await this.analyzeCoreHeaders(mainIncludeFiles, coreSDKPath);
 
     // 5. 递归分析依赖，resolveA用于确定是否处理预编译库
     let resolveA = arduinoConfig.platform['compiler.libraries.ldflags'] ? true : false;
-    // console.log(`resolveA: ${resolveA}`);
     await this.resolveDependencies(mainIncludeFiles, resolveA);
-    // this.dependencyList = this.deduplicateDependencies(this.dependencyList);
-    // console.log(this.dependencyList);
-    // this.dependencyList = deduplicateDependencies(this.dependencyList);
 
     return Array.from(this.dependencyList.values());
   }
@@ -137,16 +139,23 @@ export class DependencyAnalyzer {
   private initializeDefaultMacros(arduinoConfig): void {
     // Arduino平台默认宏
     this.setMacro('ARDUINO', '100', true);
+    
+    // 为 STM32 平台定义 __IN_ECLIPSE__ 宏，以便自动发现 SrcWrapper.h 依赖
+    this.setMacro('__IN_ECLIPSE__', '1', true);
+    // this.logger.info('Defined __IN_ECLIPSE__ macro for STM32 platform dependency detection');
+    
+    // 定义C++编译器相关宏
+    this.setMacro('__cplusplus', '1', true);
+    // 不预定义 GCC_VERSION，让 Arduino.h 自己处理
+    
     // 从 arduinoConfig.platform['recipe.cpp.o.pattern'] 中提取宏定义
     const macros = extractMacroDefinitions(arduinoConfig.platform['recipe.cpp.o.pattern'])
-    // console.log('提取的宏定义:', macros);
-    // console.log('提取的宏定义:', macros);
     macros.forEach(macro => {
       let [key, value] = macro.split('=')
       this.setMacro(key.trim(), value ? value.trim() : '1');
     })
 
-    this.logger.debug(`Initialized default macros: ${Array.from(this.macroDefinitions.keys()).join(', ')}`);
+    this.logger.info(`Initialized default macros: ${Array.from(this.macroDefinitions.keys()).join(', ')}`);
   }
 
   /**
@@ -166,7 +175,9 @@ export class DependencyAnalyzer {
    */
   private isMacroDefined(name: string): boolean {
     const macro = this.macroDefinitions.get(name);
-    return macro ? macro.isDefined : false;
+    const result = macro ? macro.isDefined : false;
+    this.logger.debug(`isMacroDefined("${name}") -> ${result} (macro: ${JSON.stringify(macro)})`);
+    return result;
   }
 
   /**
@@ -177,38 +188,92 @@ export class DependencyAnalyzer {
   private evaluateCondition(condition: string): boolean {
     // 移除空白字符
     const cleanCondition = condition.trim();
+    
+    this.logger.debug(`Evaluating condition: "${condition}" -> "${cleanCondition}"`);
 
     // 处理 ! 否定 - 这需要在其他处理之前
     if (cleanCondition.startsWith('!')) {
       const negatedCondition = cleanCondition.substring(1).trim();
-      return !this.evaluateCondition(negatedCondition);
+      const result = !this.evaluateCondition(negatedCondition);
+      this.logger.debug(`Negation result for "${condition}": ${result}`);
+      return result;
     }
 
     // 处理 defined(MACRO) 形式
     const definedMatch = cleanCondition.match(/defined\s*\(\s*([A-Za-z_][A-Za-z0-9_]*)\s*\)/);
     if (definedMatch) {
       const macroName = definedMatch[1];
-      return this.isMacroDefined(macroName);
+      const result = this.isMacroDefined(macroName);
+      this.logger.debug(`defined(${macroName}) -> ${result}`);
+      return result;
+    }
+
+    // 处理数值比较 (如 GCC_VERSION < 60300)
+    const comparisonMatch = cleanCondition.match(/([A-Za-z_][A-Za-z0-9_]*)\s*([<>=!]+)\s*(\d+)/);
+    if (comparisonMatch) {
+      const macroName = comparisonMatch[1];
+      const operator = comparisonMatch[2];
+      const targetValue = parseInt(comparisonMatch[3]);
+      
+      const macro = this.macroDefinitions.get(macroName);
+      
+      // 如果宏未定义，在数值比较中视为0（这是C预处理器的标准行为）
+      let macroValue = 0;
+      if (macro && macro.value) {
+        const parsedValue = parseInt(macro.value);
+        macroValue = isNaN(parsedValue) ? 0 : parsedValue;
+      }
+      
+      let result = false;
+      switch (operator) {
+        case '<':
+          result = macroValue < targetValue;
+          break;
+        case '<=':
+          result = macroValue <= targetValue;
+          break;
+        case '>':
+          result = macroValue > targetValue;
+          break;
+        case '>=':
+          result = macroValue >= targetValue;
+          break;
+        case '==':
+          result = macroValue === targetValue;
+          break;
+        case '!=':
+          result = macroValue !== targetValue;
+          break;
+      }
+      
+      this.logger.debug(`Comparison ${macroName}(${macroValue}) ${operator} ${targetValue} -> ${result}`);
+      return result;
     }
 
     // 处理简单的宏名称
     if (/^[A-Za-z_][A-Za-z0-9_]*$/.test(cleanCondition)) {
-      return this.isMacroDefined(cleanCondition);
+      const result = this.isMacroDefined(cleanCondition);
+      this.logger.debug(`Macro "${cleanCondition}" defined: ${result}`);
+      return result;
     }
 
     // 处理逻辑运算符 && 和 ||
     if (cleanCondition.includes('&&')) {
       const parts = cleanCondition.split('&&').map(p => p.trim());
-      return parts.every(part => this.evaluateCondition(part));
+      const result = parts.every(part => this.evaluateCondition(part));
+      this.logger.debug(`AND condition "${condition}" -> ${result}`);
+      return result;
     }
 
     if (cleanCondition.includes('||')) {
       const parts = cleanCondition.split('||').map(p => p.trim());
-      return parts.some(part => this.evaluateCondition(part));
+      const result = parts.some(part => this.evaluateCondition(part));
+      this.logger.debug(`OR condition "${condition}" -> ${result}`);
+      return result;
     }
 
     // 默认返回false（未知条件）
-    // this.logger.debug(`Unknown condition format: ${condition}`);
+    this.logger.debug(`Unknown condition format: ${condition} -> false`);
     return false;
   }
 
@@ -220,6 +285,13 @@ export class DependencyAnalyzer {
    */
   private async analyzeFile(filePath: string): Promise<string[]> {
     try {
+      const isArduinoH = filePath.includes('Arduino.h');
+      if (isArduinoH) {
+        this.logger.info(`Analyzing Arduino.h file: ${filePath}`);
+      } else {
+        this.logger.debug(`Analyzing file: ${filePath}`);
+      }
+      
       const content = await fs.readFile(filePath, 'utf-8');
       const tree = this.treeSitterParser.parse(content);
 
@@ -285,18 +357,21 @@ export class DependencyAnalyzer {
       if (match) {
         condition = `defined(${match[1]})`;
         isActive = this.isMacroDefined(match[1]);
+        this.logger.debug(`Processing #ifdef ${match[1]}: macro defined = ${isActive}`);
       }
     } else if (text.startsWith('#ifndef')) {
       const match = text.match(/#ifndef\s+([A-Za-z_][A-Za-z0-9_]*)/);
       if (match) {
         condition = `!defined(${match[1]})`;
         isActive = !this.isMacroDefined(match[1]);
+        this.logger.debug(`Processing #ifndef ${match[1]}: macro not defined = ${isActive}`);
       }
     } else if (text.startsWith('#if ')) {
       const match = text.match(/#if\s+(.+)/);
       if (match) {
         condition = match[1].trim();
         isActive = this.evaluateCondition(condition);
+        this.logger.debug(`Processing #if ${condition}: result = ${isActive}`);
       }
     }
 
@@ -304,6 +379,11 @@ export class DependencyAnalyzer {
       // 检查父级条件是否都为true
       const parentConditionsActive = conditionStack.length === 0 || conditionStack.every(c => c.isActive);
       const effectiveActive = parentConditionsActive && isActive;
+
+      this.logger.debug(`  Condition stack before push: [${conditionStack.map(c => `${c.condition}:${c.isActive}`).join(', ')}]`);
+      this.logger.debug(`  Parent conditions active: ${parentConditionsActive}`);
+      this.logger.debug(`  Current condition result: ${isActive}`);
+      this.logger.debug(`  Effective active: ${effectiveActive}`);
 
       conditionStack.push({ condition, isActive: effectiveActive });
     }
@@ -381,6 +461,11 @@ export class DependencyAnalyzer {
         const currentConditionActive = conditionStack[conditionStack.length - 1].isActive;
         const currentCondition = conditionStack[conditionStack.length - 1].condition;
 
+        this.logger.debug(`Conditional include check: ${includePath}`);
+        this.logger.debug(`  - Condition stack length: ${conditionStack.length}`);
+        this.logger.debug(`  - Current condition: ${currentCondition}`);
+        this.logger.debug(`  - Current condition active: ${currentConditionActive}`);
+
         conditionalIncludes.push({
           include: includePath,
           condition: currentCondition,
@@ -390,13 +475,14 @@ export class DependencyAnalyzer {
 
         if (currentConditionActive) {
           includes.push(includePath);
-          // this.logger.debug(`Conditional include ACTIVE: ${includePath} (${currentCondition})`);
+          this.logger.debug(`Conditional include ACTIVE: ${includePath} (${currentCondition})`);
         } else {
-          // this.logger.debug(`Conditional include SKIPPED: ${includePath} (${currentCondition})`);
+          this.logger.debug(`Conditional include SKIPPED: ${includePath} (${currentCondition})`);
         }
       } else {
         // 无条件include
         includes.push(includePath);
+        this.logger.debug(`Unconditional include: ${includePath}`);
       }
     }
   }
@@ -445,13 +531,14 @@ export class DependencyAnalyzer {
     for (const includeFile of includeFiles) {
       // 跳过系统头文件
       if (this.isSystemHeader(includeFile)) {
+        this.logger.debug(`Skipping system header: ${includeFile}`);
         continue;
       }
 
       if (this.libraryMap.has(includeFile)) {
         // 库存在
         const libraryObject = this.libraryMap.get(includeFile)
-        // console.log(`Found library for ${includeFile}: ${libraryObject.name}`);
+        this.logger.debug(`Found library for ${includeFile}: ${libraryObject.name}`);
 
         if (this.dependencyList.has(libraryObject.name)) {
           continue;
@@ -873,6 +960,92 @@ export class DependencyAnalyzer {
     }
 
     return Array.from(sourceDirs);
+  }
+
+  /**
+   * 添加平台特定的必需库
+   * 对于 STM32 平台，自动添加 SrcWrapper 库
+   * @param arduinoConfig Arduino 配置对象
+   */
+  private async addPlatformSpecificLibraries(arduinoConfig: any): Promise<void> {
+    const platformName = arduinoConfig.fqbnParsed?.package;
+    
+    // 检查是否为 STM32 平台
+    if (platformName === 'STMicroelectronics') {
+      this.logger.debug('Detected STM32 platform, adding SrcWrapper library...');
+      
+      // 检查 SrcWrapper 库是否已经在 libraryMap 中
+      if (this.libraryMap && this.libraryMap.has('__LIB_SrcWrapper')) {
+        const srcWrapperDep = this.libraryMap.get('__LIB_SrcWrapper');
+        if (srcWrapperDep) {
+          // 先调用 updateLibraryDependency 来扫描源文件
+          await this.updateLibraryDependency(srcWrapperDep);
+          // 将 SrcWrapper 库添加到依赖列表中
+          this.dependencyList.set('SrcWrapper', srcWrapperDep);
+          this.logger.info('Added SrcWrapper library for STM32 platform');
+        }
+      } else {
+        this.logger.warn('SrcWrapper library not found in library paths for STM32 platform');
+        // 调试：打印所有可用的库
+        if (this.libraryMap) {
+          const libNames = Array.from(this.libraryMap.keys()).filter(key => key.startsWith('__LIB_'));
+          this.logger.debug(`Available libraries: ${libNames.join(', ')}`);
+        }
+      }
+    }
+  }
+
+  /**
+   * 分析核心 SDK 中的关键头文件，特别是 Arduino.h
+   * 这些头文件不在 libraryMap 中，需要特殊处理
+   * @param mainIncludeFiles 主文件包含的头文件列表
+   * @param coreSDKPath 核心 SDK 路径
+   */
+  private async analyzeCoreHeaders(mainIncludeFiles: string[], coreSDKPath: string): Promise<void> {
+    if (!coreSDKPath) return;
+
+    // 检查主文件是否包含 Arduino.h
+    const includesArduinoH = mainIncludeFiles.includes('Arduino.h');
+    
+    if (includesArduinoH) {
+      this.logger.info('Found Arduino.h include, analyzing core SDK headers...');
+      
+      // 查找 Arduino.h 文件
+      const arduinoHPath = path.join(coreSDKPath, 'Arduino.h');
+      
+      if (await fs.pathExists(arduinoHPath)) {
+        this.logger.info(`Analyzing core Arduino.h: ${arduinoHPath}`);
+        
+        // 先读取Arduino.h的内容来验证是否包含__IN_ECLIPSE__条件编译
+        try {
+          const content = await fs.readFile(arduinoHPath, 'utf-8');
+          const hasInEclipse = content.includes('__IN_ECLIPSE__');
+          this.logger.info(`Arduino.h contains __IN_ECLIPSE__ directives: ${hasInEclipse}`);
+          
+          if (hasInEclipse) {
+            // 搜索相关的条件编译块
+            const eclipseBlocks = content.match(/#ifdef\s+__IN_ECLIPSE__[\s\S]*?#endif/g);
+            if (eclipseBlocks) {
+              this.logger.info(`Found ${eclipseBlocks.length} __IN_ECLIPSE__ blocks in Arduino.h`);
+              eclipseBlocks.forEach((block, index) => {
+                this.logger.debug(`Block ${index + 1}: ${block.substring(0, 200)}...`);
+              });
+            }
+          }
+        } catch (error) {
+          this.logger.warn(`Failed to read Arduino.h content: ${error}`);
+        }
+        
+        // 分析 Arduino.h 文件的包含
+        const arduinoIncludes = await this.analyzeFile(arduinoHPath);
+        this.logger.info(`Arduino.h includes: ${arduinoIncludes.join(', ')}`);
+        
+        // 递归分析 Arduino.h 中包含的头文件
+        await this.resolveDependencies(arduinoIncludes, false, 0, 5);
+      } else {
+        this.logger.warn(`Arduino.h not found at: ${arduinoHPath}`);
+      }
+    }
   }
 }
 

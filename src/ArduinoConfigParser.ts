@@ -193,7 +193,7 @@ export class ArduinoConfigParser {
                     const expanded = this.expandVariablesOptimized(original, variables, variableNames);
 
                     // 检测间接循环引用：如果扩展后的字符串变得过长
-                    if (expanded.length > 2000) {
+                    if (expanded.length > 5000) { // 增加阈值，从2000增加到5000
                         console.warn(`⚠️  检测到可能的间接循环引用: ${key}`);
                         // console.log(`   变量值: ${original}`);
                         // console.log(`   扩展后: ${expanded}`);
@@ -294,7 +294,7 @@ export class ArduinoConfigParser {
         // 动态检测 boardConfig 中所有可用的菜单选项
         const availableMenuOptions = this.detectAvailableMenuOptions(boardConfig);
         
-        // 先应用所有菜单选项，这样菜单生成的配置会被优先设置
+        // 应用用户指定的菜单选项（大部分过滤工作已在 parseBoardsTxt 中完成）
         availableMenuOptions.forEach(menuType => {
             if (buildProperties[menuType]) {
                 this.applyMenuSettings(boardConfig, menuType, buildProperties[menuType]);
@@ -484,21 +484,28 @@ export class ArduinoConfigParser {
      * 直接在 boardConfig 中应用默认菜单选项，确保关键配置存在
      * 这样即使不调用 fillDefaultMenuOptions，boardConfig 也会有必要的菜单配置
      * @param {Object} boardConfig 板子配置对象
+     * @param {Object} buildProperties 构建属性，用于指定特定菜单选项
      */
-    private applyDefaultMenuOptionsToBoard(boardConfig: { [key: string]: string }): void {
+    private applyDefaultMenuOptionsToBoard(boardConfig: { [key: string]: string }, buildProperties: { [key: string]: string } = {}): void {
         // 动态检测所有可用的菜单选项
         const availableMenuOptions = this.detectAvailableMenuOptions(boardConfig);
         
-        // 为所有检测到的菜单选项应用默认值（直接设置到 boardConfig）
+        // 为所有检测到的菜单选项应用默认值或用户指定值（直接设置到 boardConfig）
         availableMenuOptions.forEach(menuType => {
             const options = this.getAvailableMenuOptions(boardConfig, menuType);
             if (options.length > 0) {
-                // 优先选择 'default'，如果没有则选择第一个
-                const defaultValue = options.includes('default') ? 'default' : options[0];
-                // console.log(`  直接应用默认 ${menuType}: ${defaultValue}`);
+                let selectedValue: string;
+                
+                // 检查用户是否在 buildProperties 中指定了这个菜单类型的值
+                if (buildProperties[menuType] && options.includes(buildProperties[menuType])) {
+                    selectedValue = buildProperties[menuType];
+                } else {
+                    // 优先选择 'default'，如果没有则选择第一个
+                    selectedValue = options.includes('default') ? 'default' : options[0];
+                }
                 
                 // 直接应用菜单设置到 boardConfig
-                this.applyMenuSettings(boardConfig, menuType, defaultValue);
+                this.applyMenuSettings(boardConfig, menuType, selectedValue);
             }
         });
     }
@@ -666,15 +673,13 @@ export class ArduinoConfigParser {
             process.env['ESPTOOL_PY_PATH'] = ESPTOOL_PY_PATH;
         }
 
-        let boardConfig: { [key: string]: string } = this.parseBoardsTxt(boardsTxtPath, fqbnObj);
+        let boardConfig: { [key: string]: string } = this.parseBoardsTxt(boardsTxtPath, fqbnObj, buildProperties);
 
-        // 确保 boardConfig 中有基本的默认菜单选项（即使不通过 buildProperties 设置）
-        this.applyDefaultMenuOptionsToBoard(boardConfig);
+        // 确保 boardConfig 中有基本的默认菜单选项，同时考虑用户指定的构建属性
+        this.applyDefaultMenuOptionsToBoard(boardConfig, buildProperties);
 
         // 替换/添加额外的构建属性
         this.applyBuildProperties(boardConfig, buildProperties);
-
-        // console.log(boardConfig);
 
         if (!boardConfig['build.arch']) {
             boardConfig['build.arch'] = fqbnObj.platform.toUpperCase();
@@ -731,10 +736,15 @@ export class ArduinoConfigParser {
             'runtime.tools.pqt-gcc.path': process.env['PQT_GCC_PATH'] || await this.findToolPath('pqt-gcc'),
             'runtime.tools.pqt-python3.path': await this.findToolPath('pqt-python3'),
             'runtime.tools.pqt-picotool.path': await this.findToolPath('pqt-picotool'),
+            'runtime.tools.xpack-arm-none-eabi-gcc-14.2.1-1.1.path': await this.findToolPath('xpack-arm-none-eabi-gcc'),
+            'runtime.tools.STM32Tools.path': await this.findToolPath('STM32Tools'),
+            'runtime.tools.CMSIS-5.9.0.path': await this.findToolPath('CMSIS'),
+            'runtime.tools.STM32_SVD.path': await this.findToolPath('STM32_SVD'),
+            'build.system.path': path.join(process.env['SDK_PATH'], 'system'),
             'build.toolchainpkg': toolchainPkg,
             'build.toolchain': boardConfig['build.toolchain'] || (fqbnObj.package === 'rp2040' ? 'arm-none-eabi' : ''),
-            'build.debug_port': '',
-            'build.debug_level': '',
+            // 'build.debug_port': '',
+            // 'build.debug_level': '',
             'build.flash_total': boardConfig['build.flash_total'] || '2097152', // 使用菜单配置或默认值
             'build.project_name': process.env['SKETCH_NAME'],
             'includes': '%INCLUDE_PATHS%',
@@ -747,7 +757,7 @@ export class ArduinoConfigParser {
             'build.path': process.env['BUILD_PATH'] || '%OUTPUT_PATH%',
             'archive_file': 'core.a',
             'archive_file_path': process.env['BUILD_PATH'] + '/core.a',
-            'build.core.path': path.join(process.env['SDK_PATH'], 'cores', fqbnObj.package),
+            'build.core.path': path.join(process.env['SDK_PATH'], 'cores', boardConfig['build.core']),
         }
 
         // console.log(moreConfig);
@@ -759,7 +769,7 @@ export class ArduinoConfigParser {
         // console.log(`process.env['COMPILER_PATH']:`, process.env['COMPILER_PATH'], platformConfig);
 
         // 设置 SDK_CORE_PATH
-        process.env['SDK_CORE_PATH'] = path.join(process.env['SDK_PATH'], 'cores', fqbnObj.package);
+        process.env['SDK_CORE_PATH'] = path.join(process.env['SDK_PATH'], 'cores', boardConfig['build.core']);
         // 设置SDK_VARIANT_PATH
         process.env['SDK_VARIANT_PATH'] = path.join(process.env['SDK_PATH'], 'variants', boardConfig['build.variant']);
         // 设置 SDK_CORE_LIBRARIES_PATH
@@ -791,7 +801,7 @@ export class ArduinoConfigParser {
      * @param {string} boardId 目标板子ID
      * @returns {Object} 解析结果，只包含指定板子的配置
      */
-    parseBoardsTxt(boardsPath: string, fqbnObj: FQBNObject) {
+    parseBoardsTxt(boardsPath: string, fqbnObj: FQBNObject, buildProperties: { [key: string]: string } = {}) {
         const boardId = fqbnObj.boardId;
         // console.log(`  解析开发板 ${boardId} 的配置...`);
         // console.log(boardsPath);
@@ -807,7 +817,7 @@ export class ArduinoConfigParser {
                 return trimmedLine.startsWith(boardPrefix) && !trimmedLine.startsWith('#');
             });
 
-            // 将配置行解析为对象
+            // 将配置行解析为对象，同时根据 buildProperties 过滤菜单选项
             const boardConfig: { [key: string]: string } = {};
 
             boardLines.forEach(line => {
@@ -820,7 +830,33 @@ export class ArduinoConfigParser {
 
                     // 移除板卡名称前缀，只保留配置项名称
                     const configKey = key.substring(boardPrefix.length);
-                    boardConfig[configKey] = value;
+                    
+                    // 检查是否为菜单项配置（格式：menu.menuType.option.xxx）
+                    if (configKey.startsWith('menu.')) {
+                        const menuMatch = configKey.match(/^menu\.([^.]+)\.([^.]+)/);
+                        if (menuMatch) {
+                            const menuType = menuMatch[1];
+                            const menuOption = menuMatch[2];
+                            
+                            // 如果用户指定了这个菜单类型的值，只保留用户选择的选项
+                            if (buildProperties[menuType]) {
+                                if (menuOption === buildProperties[menuType]) {
+                                    // 保留用户选择的菜单选项
+                                    boardConfig[configKey] = value;
+                                }
+                                // 忽略其他菜单选项
+                            } else {
+                                // 用户未指定，保留所有选项（后续会应用默认值）
+                                boardConfig[configKey] = value;
+                            }
+                        } else {
+                            // 不是标准菜单项格式，直接保留
+                            boardConfig[configKey] = value;
+                        }
+                    } else {
+                        // 非菜单项配置，直接保留
+                        boardConfig[configKey] = value;
+                    }
                 }
             });
 
