@@ -714,6 +714,17 @@ export class ArduinoConfigParser {
                 `JTAGAdapter=${jtagAdapter},ZigbeeMode=${zigbeeMode}`
         }
 
+        if (!boardConfig['build.mcu']) {
+            // 搜索包含 'build.mcu' 的 key
+            for (const key in boardConfig) {
+                if (key.includes('build.mcu') && key !== 'build.mcu') {
+                    boardConfig['build.mcu'] = boardConfig[key];
+                    // console.log(`  从 ${key} 设置 build.mcu = ${boardConfig[key]}`);
+                    break;
+                }
+            }
+        }
+
         let toolchainPkg = 'pqt-gcc'; // 默认值
         if (fqbnObj.package == 'rp2040') {
             // 为RP2040设置工具链路径

@@ -182,7 +182,7 @@ export class ArduinoUploader {
             // 例如检查串口是否存在，是否可访问等
             return true;
         } catch (error) {
-            this.logger.warn(`Port validation failed: ${error instanceof Error ? error.message : error}`);
+            this.logger.debug(`Port validation failed: ${error instanceof Error ? error.message : error}`);
             return false;
         }
     }
@@ -197,7 +197,7 @@ export class ArduinoUploader {
             // 在Linux/Mac上可能是 /dev/ttyUSB0, /dev/ttyACM0 等
             return [];
         } catch (error) {
-            this.logger.warn(`Failed to get available ports: ${error instanceof Error ? error.message : error}`);
+            this.logger.debug(`Failed to get available ports: ${error instanceof Error ? error.message : error}`);
             return [];
         }
     }

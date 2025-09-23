@@ -1,10 +1,8 @@
 import fs from 'fs-extra';
 import * as path from 'path';
 import { glob } from 'glob';
-import Parser from 'tree-sitter';
-// @ts-ignore - 临时忽略类型检查
-import Cpp from 'tree-sitter-cpp';
 import { Logger } from './utils/Logger';
+import { analyzeFile } from './utils/AnalyzeFile';
 
 export interface PreprocessOptions {
   libraries?: string;
@@ -41,7 +39,6 @@ export interface ConditionalInclude {
 
 export class DependencyAnalyzer {
   private logger: Logger;
-  private treeSitterParser: Parser;
   private dependencyList: Map<string, Dependency>
   // private processedFiles: Set<string>;
   private macroDefinitions: Map<string, MacroDefinition>;
@@ -53,8 +50,6 @@ export class DependencyAnalyzer {
    */
   constructor(logger: Logger) {
     this.logger = logger;
-    this.treeSitterParser = new Parser();
-    this.treeSitterParser.setLanguage(Cpp);
     // this.processedFiles = new Set<string>();
     this.dependencyList = new Map<string, Dependency>()
     this.macroDefinitions = new Map<string, MacroDefinition>();
@@ -66,7 +61,7 @@ export class DependencyAnalyzer {
  * @returns 返回包含所有依赖信息的配置对象
  */
   async preprocess(arduinoConfig): Promise<any> {
-    this.logger.verbose('Starting preprocessing with tree-sitter analysis...');
+    this.logger.verbose('Starting dependency analysis...');
     const sketchName = process.env['SKETCH_NAME'];
     const sketchPath = process.env['SKETCH_PATH'];
     const sketchDir = process.env['SKETCH_DIR_PATH'];
@@ -81,16 +76,16 @@ export class DependencyAnalyzer {
     const pathSeparator = process.platform === 'win32' ? ';' : ':';
     const librariesPaths = librariesPathEnv ? librariesPathEnv.split(pathSeparator).filter(p => p.trim()) : [];
 
-    this.logger.debug(`Sketch Path: ${sketchPath}`)
-    this.logger.debug(`Core SDK Path: ${coreSDKPath}`);
-    this.logger.debug(`Variant Path: ${variantPath}`);
-    this.logger.debug(`Core Libraries Path: ${coreLibrariesPath}`);
-    this.logger.debug(`Libraries Paths: ${librariesPaths.join(', ')}`);
+    this.logger.info(`- Sketch Path: ${sketchPath}`)
+    this.logger.info(`- Core SDK Path: ${coreSDKPath}`);
+    this.logger.info(`- Variant Path: ${variantPath}`);
+    this.logger.info(`- Core Libraries Path: ${coreLibrariesPath}`);
+    this.logger.info(`- Libraries Paths: ${librariesPaths.join(', ')}`);
     this.initializeDefaultMacros(arduinoConfig);
 
     // 1. 分析主sketch文件
-    const mainIncludeFiles = await this.analyzeFile(sketchPath);
-    // console.log('mainIncludes', mainIncludeFiles);
+    const mainIncludeFiles = await analyzeFile(sketchPath, this.macroDefinitions);
+
     // this.dependencyList.add({
     //   name: sketchName,
     //   path: sketchDir,
@@ -118,13 +113,7 @@ export class DependencyAnalyzer {
 
     // 4. 解析路径，解出libraryMap
     this.libraryMap = await this.parserLibraryPaths([coreLibrariesPath, ...librariesPaths]);
-
-    // 4.5. 添加平台特定的必需库（如 STM32 SrcWrapper）
-    // 由于自动发现机制尚未完全完善，暂时手动添加
-    // await this.addPlatformSpecificLibraries(arduinoConfig);
-
-    // 4.6. 特殊处理：分析核心 SDK 中的 Arduino.h 文件
-    await this.analyzeCoreHeaders(mainIncludeFiles, coreSDKPath);
+    // this.logger.debug(JSON.stringify(Object.fromEntries(this.libraryMap)));
 
     // 5. 递归分析依赖，resolveA用于确定是否处理预编译库
     let resolveA = arduinoConfig.platform['compiler.libraries.ldflags'] ? true : false;
@@ -278,253 +267,15 @@ export class DependencyAnalyzer {
   }
 
   /**
-   * 使用Tree-sitter解析器分析单个文件的#include指令
-   * 支持条件编译指令，如 #if defined(ESP32)
-   * @param filePath 要分析的文件路径
-   * @returns 返回该文件中包含的所有头文件列表
-   */
-  private async analyzeFile(filePath: string): Promise<string[]> {
-    try {
-      const isArduinoH = filePath.includes('Arduino.h');
-      if (isArduinoH) {
-        this.logger.info(`Analyzing Arduino.h file: ${filePath}`);
-      } else {
-        this.logger.debug(`Analyzing file: ${filePath}`);
-      }
-      
-      const content = await fs.readFile(filePath, 'utf-8');
-      const tree = this.treeSitterParser.parse(content);
-
-      let includes: string[] = [];
-      const conditionalIncludes: ConditionalInclude[] = [];
-      let conditionStack: Array<{ condition: string, isActive: boolean }> = [];
-
-      this.traverseTree(tree.rootNode, (node) => {
-        switch (node.type) {
-          case 'preproc_ifdef':
-          case 'preproc_ifndef':
-          case 'preproc_if':
-            this.handleConditionalStart(node, conditionStack);
-            break;
-
-          case 'preproc_elif':
-            this.handleConditionalElif(node, conditionStack);
-            break;
-
-          case 'preproc_else':
-            this.handleConditionalElse(conditionStack);
-            break;
-
-          case 'preproc_endif':
-            this.handleConditionalEnd(conditionStack);
-            break;
-
-          case 'preproc_include':
-            this.handleIncludeDirective(node, conditionStack, includes, conditionalIncludes);
-            break;
-
-          case 'preproc_def':
-            this.handleDefineDirective(node);
-            break;
-        }
-      });
-
-      // 记录条件编译的include结果
-      if (conditionalIncludes.length > 0) {
-        // this.logger.debug(`Conditional includes in ${path.basename(filePath)}:`);
-        conditionalIncludes.forEach(ci => {
-          // this.logger.debug(`  ${ci.include} (${ci.condition}) -> ${ci.isActive ? 'INCLUDED' : 'SKIPPED'}`);
-        });
-      }
-
-      return includes;
-    } catch (error) {
-      this.logger.warn(`Failed to analyze file ${filePath}: ${error instanceof Error ? error.message : error}`);
-      return [];
-    }
-  }
-
-  /**
-   * 处理条件编译开始指令 (#if, #ifdef, #ifndef)
-   */
-  private handleConditionalStart(node: Parser.SyntaxNode, conditionStack: Array<{ condition: string, isActive: boolean }>): void {
-    const text = node.text;
-    let condition = '';
-    let isActive = false;
-
-    if (text.startsWith('#ifdef')) {
-      const match = text.match(/#ifdef\s+([A-Za-z_][A-Za-z0-9_]*)/);
-      if (match) {
-        condition = `defined(${match[1]})`;
-        isActive = this.isMacroDefined(match[1]);
-        this.logger.debug(`Processing #ifdef ${match[1]}: macro defined = ${isActive}`);
-      }
-    } else if (text.startsWith('#ifndef')) {
-      const match = text.match(/#ifndef\s+([A-Za-z_][A-Za-z0-9_]*)/);
-      if (match) {
-        condition = `!defined(${match[1]})`;
-        isActive = !this.isMacroDefined(match[1]);
-        this.logger.debug(`Processing #ifndef ${match[1]}: macro not defined = ${isActive}`);
-      }
-    } else if (text.startsWith('#if ')) {
-      const match = text.match(/#if\s+(.+)/);
-      if (match) {
-        condition = match[1].trim();
-        isActive = this.evaluateCondition(condition);
-        this.logger.debug(`Processing #if ${condition}: result = ${isActive}`);
-      }
-    }
-
-    if (condition.trim() !== '') {
-      // 检查父级条件是否都为true
-      const parentConditionsActive = conditionStack.length === 0 || conditionStack.every(c => c.isActive);
-      const effectiveActive = parentConditionsActive && isActive;
-
-      this.logger.debug(`  Condition stack before push: [${conditionStack.map(c => `${c.condition}:${c.isActive}`).join(', ')}]`);
-      this.logger.debug(`  Parent conditions active: ${parentConditionsActive}`);
-      this.logger.debug(`  Current condition result: ${isActive}`);
-      this.logger.debug(`  Effective active: ${effectiveActive}`);
-
-      conditionStack.push({ condition, isActive: effectiveActive });
-    }
-  }
-
-  /**
-   * 处理 #elif 指令
-   */
-  private handleConditionalElif(node: Parser.SyntaxNode, conditionStack: Array<{ condition: string, isActive: boolean }>): void {
-    if (conditionStack.length === 0) return;
-
-    const text = node.text;
-    const match = text.match(/#elif\s+(.+)/);
-    if (match) {
-      const condition = match[1].trim();
-      const currentLevel = conditionStack[conditionStack.length - 1];
-
-      // elif只有在当前级别的条件为false时才评估
-      if (!currentLevel.isActive) {
-        const parentConditionsActive = conditionStack.length === 1 ||
-          conditionStack.slice(0, -1).every(c => c.isActive);
-        const isActive = parentConditionsActive && this.evaluateCondition(condition);
-
-        conditionStack[conditionStack.length - 1] = { condition, isActive };
-      }
-    }
-  }
-
-  /**
-   * 处理 #else 指令
-   */
-  private handleConditionalElse(conditionStack: Array<{ condition: string, isActive: boolean }>): void {
-    if (conditionStack.length === 0) return;
-
-    const currentLevel = conditionStack[conditionStack.length - 1];
-    const parentConditionsActive = conditionStack.length === 1 ||
-      conditionStack.slice(0, -1).every(c => c.isActive);
-
-    // else的激活状态与当前条件相反，但也要考虑父级条件
-    const isActive = parentConditionsActive && !currentLevel.isActive;
-
-    conditionStack[conditionStack.length - 1] = {
-      condition: `!(${currentLevel.condition})`,
-      isActive
-    };
-  }
-
-  /**
-   * 处理 #endif 指令
-   */
-  private handleConditionalEnd(conditionStack: Array<{ condition: string, isActive: boolean }>): void {
-    conditionStack.pop();
-  }
-
-  /**
-   * 处理 #include 指令
-   */
-  private handleIncludeDirective(
-    node: Parser.SyntaxNode,
-    conditionStack: Array<{ condition: string, isActive: boolean }>,
-    includes: string[],
-    conditionalIncludes: ConditionalInclude[]
-  ): void {
-    const includeText = node.text;
-    const match = includeText.match(/#include\s*[<"]([^>"]+)[>"]/);
-
-    if (match) {
-      const includePath = match[1];
-
-      // 检查当前是否在任何条件编译块中
-      const isInConditionalBlock = conditionStack.length > 0;
-
-      if (isInConditionalBlock) {
-        // 只需要检查当前最内层的条件是否激活
-        const currentConditionActive = conditionStack[conditionStack.length - 1].isActive;
-        const currentCondition = conditionStack[conditionStack.length - 1].condition;
-
-        this.logger.debug(`Conditional include check: ${includePath}`);
-        this.logger.debug(`  - Condition stack length: ${conditionStack.length}`);
-        this.logger.debug(`  - Current condition: ${currentCondition}`);
-        this.logger.debug(`  - Current condition active: ${currentConditionActive}`);
-
-        conditionalIncludes.push({
-          include: includePath,
-          condition: currentCondition,
-          conditionType: 'if',
-          isActive: currentConditionActive
-        });
-
-        if (currentConditionActive) {
-          includes.push(includePath);
-          this.logger.debug(`Conditional include ACTIVE: ${includePath} (${currentCondition})`);
-        } else {
-          this.logger.debug(`Conditional include SKIPPED: ${includePath} (${currentCondition})`);
-        }
-      } else {
-        // 无条件include
-        includes.push(includePath);
-        this.logger.debug(`Unconditional include: ${includePath}`);
-      }
-    }
-  }
-
-  /**
-   * 处理 #define 指令
-   */
-  private handleDefineDirective(node: Parser.SyntaxNode): void {
-    const text = node.text;
-    const match = text.match(/#define\s+([A-Za-z_][A-Za-z0-9_]*)\s*(.*)/);
-
-    if (match) {
-      const macroName = match[1];
-      const macroValue = match[2] ? match[2].trim() : '';
-      this.setMacro(macroName, macroValue, true);
-      // this.logger.debug(`Defined macro: ${macroName}${macroValue ? ` = ${macroValue}` : ''}`);
-    }
-  }
-
-
-  /**
-   * 递归遍历语法树节点
-   * @param node 当前语法树节点
-   * @param callback 对每个节点执行的回调函数
-   */
-  private traverseTree(node: Parser.SyntaxNode, callback: (node: Parser.SyntaxNode) => void): void {
-    callback(node);
-    for (let i = 0; i < node.childCount; i++) {
-      this.traverseTree(node.child(i)!, callback);
-    }
-  }
-
-  /**
    * 递归解析依赖关系，查找并添加所有需要的库文件
    * @param includeFiles 当前文件包含的头文件列表
    * @param depth 当前递归深度，默认为0
    * @param maxDepth 最大递归深度，默认为10
    */
-  private async resolveDependencies(includeFiles: string[], resolveA = false, depth: number = 0, maxDepth: number = 10): Promise<void> {
+  private async resolveDependencies(includeFiles: string[], resolveA = false, depth: number = 0, maxDepth: number = 10, macroDefinitions = this.macroDefinitions): Promise<void> {
     // 检查递归深度限制
     if (depth >= maxDepth) {
-      this.logger.warn(`Reached maximum recursion depth (${maxDepth}) while resolving dependencies`);
+      this.logger.debug(`Reached maximum recursion depth (${maxDepth}) while resolving dependencies`);
       return;
     }
 
@@ -571,20 +322,18 @@ export class DependencyAnalyzer {
           includeFilePaths = libraryFiles;
           // console.log('includeFilePaths:', includeFilePaths);
         } catch (error) {
-          this.logger.warn(`Failed to read header files in ${libraryObject.path}: ${error instanceof Error ? error.message : error}`);
+          this.logger.debug(`Failed to read header files in ${libraryObject.path}: ${error instanceof Error ? error.message : error}`);
         }
 
         // 分析每个源文件
+        let macroDefinitions_copy = new Map(macroDefinitions);
         const libraryIncludeHeaderFiles: string[] = [];
         for (const includeFilePath of includeFilePaths) {
-          const headerIncludes = await this.analyzeFile(includeFilePath);
+          const headerIncludes = await await analyzeFile(includeFilePath, macroDefinitions_copy);
           libraryIncludeHeaderFiles.push(...headerIncludes);
         }
-        // if (libraryObject.name == 'WiFi') {
-        //   console.log('libraryIncludeHeaderFiles:', libraryIncludeHeaderFiles.join(', '));
-        // }
-        // const libraryIncludeSourceFiles = libraryIncludeHeaderFiles.filter(f => !this.isSystemHeader(f));
-        await this.resolveDependencies(libraryIncludeHeaderFiles, resolveA, depth + 1, maxDepth)
+
+        await this.resolveDependencies(libraryIncludeHeaderFiles, resolveA, depth + 1, maxDepth, macroDefinitions_copy)
       } else {
         this.logger.verbose(`Not found ${includeFile}`);
       }
@@ -674,7 +423,7 @@ export class DependencyAnalyzer {
         includes: includeFiles
       };
     } catch (error) {
-      this.logger.warn(`Failed to create dependency for ${dependencyPath}: ${error instanceof Error ? error.message : error}`);
+      this.logger.debug(`Failed to create dependency for ${path}: ${error instanceof Error ? error.message : error}`);
       return null;
     }
   }
@@ -697,7 +446,7 @@ export class DependencyAnalyzer {
       libraryObject.includes.push(...files);
       return true
     } catch (error) {
-      this.logger.warn(`Failed to create library dependency for ${libraryObject.name}: ${error instanceof Error ? error.message : error}`);
+      this.logger.debug(`Failed to create library dependency for ${libraryObject.name}: ${error instanceof Error ? error.message : error}`);
       return null;
     }
   }
@@ -755,7 +504,7 @@ export class DependencyAnalyzer {
       // 去重
       return [...new Set(files)];
     } catch (error) {
-      this.logger.warn(`Failed to scan directory ${dir}: ${error instanceof Error ? error.message : error}`);
+      this.logger.debug(`Failed to scan directory ${dir}: ${error instanceof Error ? error.message : error}`);
       return [];
     }
   }
@@ -893,7 +642,7 @@ export class DependencyAnalyzer {
           libraryMap.set(headerName, libObject);
         }
       } catch (error) {
-        this.logger.warn(`Failed to scan headers in ${dir}: ${error instanceof Error ? error.message : error}`);
+        this.logger.debug(`Failed to scan headers in ${dir}: ${error instanceof Error ? error.message : error}`);
       }
     }
 
@@ -956,7 +705,7 @@ export class DependencyAnalyzer {
       }
 
     } catch (error) {
-      this.logger.warn(`Failed to find source directories in ${libPath}: ${error instanceof Error ? error.message : error}`);
+      this.logger.debug(`Failed to find source directories in ${libPath}: ${error instanceof Error ? error.message : error}`);
     }
 
     return Array.from(sourceDirs);

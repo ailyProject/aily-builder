@@ -42,6 +42,7 @@ program
   .option('--verbose', 'Enable verbose output', false)
   .option('--no-cache', 'Disable compilation cache', false)
   .option('--clean-cache', 'Clean cache before compilation', false)
+  .option('--log-file', 'Write logs to file in build directory', false)
   .action(async (sketch, options) => {
     // console.log('options:', options);
     logger.setVerbose(options.verbose);
@@ -61,10 +62,19 @@ program
     const uniqueSketchName = `${sketchName}_${projectPathMD5}`;
     const defaultBuildPath = path.join(os.homedir(), 'AppData', 'Local', 'aily-builder', 'project', uniqueSketchName);
 
+    const buildPath = options.buildPath ? path.resolve(options.buildPath) : defaultBuildPath;
+
+    // 如果启用了日志文件功能，设置日志文件路径
+    if (options.logFile) {
+      const logFilePath = path.join(buildPath, 'aily-builder.log');
+      logger.setLogFile(logFilePath);
+      logger.info(`Log file enabled: ${logFilePath}`);
+    }
+
     process.env['SKETCH_NAME'] = sketchName;
     process.env['SKETCH_PATH'] = sketchPath;
     process.env['SKETCH_DIR_PATH'] = sketchDirPath;
-    process.env['BUILD_PATH'] = options.buildPath ? path.resolve(options.buildPath) : defaultBuildPath;
+    process.env['BUILD_PATH'] = buildPath;
     process.env['BUILD_JOBS'] = options.jobs;
     process.env['USE_SCCACHE'] = options.useSccache;
 
@@ -88,7 +98,7 @@ program
       sketchPath,
       sketchDirPath,
       board: options.board,
-      buildPath: options.buildPath ? path.resolve(options.buildPath) : defaultBuildPath,
+      buildPath: buildPath,
       librariesPath: options.librariesPath && options.librariesPath.length > 0 
         ? options.librariesPath.map((libPath: string) => path.resolve(libPath)) 
         : [],
@@ -134,7 +144,7 @@ program
       await cacheManager.maintainCache();
       logger.verbose('Cache maintenance completed');
     } catch (maintainError) {
-      logger.warn(`Cache maintenance failed: ${maintainError instanceof Error ? maintainError.message : maintainError}`);
+      logger.debug(`Cache maintenance failed: ${maintainError instanceof Error ? maintainError.message : maintainError}`);
     }
   });
 
@@ -174,6 +184,7 @@ program
   .option('-p, --port <port>', 'Serial port for upload (e.g., COM3 or /dev/ttyUSB0)', undefined)
   .option('-f, --file <file>', 'Firmware file path to upload (.hex or .bin)', undefined)
   .option('--verbose', 'Enable verbose output', false)
+  .option('--log-file', 'Write logs to file in current directory', false)
   .option('--build-property <key=value>', 'Additional build property', (val, memo) => {
     const [key, value] = val.split('=');
     memo[key] = value;
@@ -181,6 +192,13 @@ program
   }, {})
   .action(async (options) => {
     logger.setVerbose(options.verbose);
+
+    // 如果启用了日志文件功能，设置日志文件路径
+    if (options.logFile) {
+      const logFilePath = path.join(process.cwd(), 'aily-upload.log');
+      logger.setLogFile(logFilePath);
+      logger.info(`Log file enabled: ${logFilePath}`);
+    }
 
     // 验证必需参数
     if (!options.port) {

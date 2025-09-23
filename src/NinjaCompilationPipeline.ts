@@ -187,7 +187,7 @@ export class NinjaCompilationPipeline {
           if (line.trim()) {
             if (line.toLowerCase().includes('warning')) {
               warnings.push(line.trim());
-              this.logger.warn(line.trim());
+              this.logger.debug(line.trim());
             } else {
               this.logger.error(line.trim());
             }
@@ -391,7 +391,7 @@ export class NinjaCompilationPipeline {
       ]);
       this.logger.debug('Cleaned ninja build files');
     } catch (error) {
-      this.logger.warn(`Failed to clean ninja files: ${error instanceof Error ? error.message : error}`);
+      this.logger.debug(`Failed to clean ninja files: ${error instanceof Error ? error.message : error}`);
     }
   }
 
