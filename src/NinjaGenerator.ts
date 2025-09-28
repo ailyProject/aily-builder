@@ -294,6 +294,11 @@ export class NinjaGenerator {
 
     // 2. 生成依赖库和core的编译目标
     for (const dependency of this.dependencies) {
+      // 调试：打印每个依赖的 include 数量，帮助定位 variant 是否被扫描到
+      this.logger.debug(`generateBuilds: dependency='${dependency.name}' type='${dependency.type}' includes=${(dependency.includes || []).length}`);
+      if (dependency.type === 'variant') {
+        this.logger.debug(`generateBuilds: variant files = ${(dependency.includes || []).map(f => f.replace(/\\/g, '/')).join(', ')}`);
+      }
       const groupObjects: string[] = [];
 
       for (const file of dependency.includes) {

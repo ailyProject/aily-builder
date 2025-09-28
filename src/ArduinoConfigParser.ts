@@ -751,6 +751,7 @@ export class ArduinoConfigParser {
             'runtime.tools.STM32Tools.path': await this.findToolPath('STM32Tools'),
             'runtime.tools.CMSIS-5.9.0.path': await this.findToolPath('CMSIS'),
             'runtime.tools.STM32_SVD.path': await this.findToolPath('STM32_SVD'),
+            'runtime.tools.arm-none-eabi-gcc-4.8.3-2014q1.path': await this.findToolPath('arm-none-eabi-gcc', toolVersions?.['arm-none-eabi-gcc'] || ''),
             'build.system.path': path.join(process.env['SDK_PATH'], 'system'),
             'build.toolchainpkg': toolchainPkg,
             'build.toolchain': boardConfig['build.toolchain'] || (fqbnObj.package === 'rp2040' ? 'arm-none-eabi' : ''),
@@ -772,7 +773,7 @@ export class ArduinoConfigParser {
         }
 
         // console.log(moreConfig);
-        // console.log('moreConfig:', moreConfig);
+        console.log('moreConfig:', moreConfig);
         let platformConfig: { [key: string]: string } = this.parsePlatformTxt(platformTxtPath, fqbnObj, boardConfig, moreConfig);
 
         // 设置编译器路径

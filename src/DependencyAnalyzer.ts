@@ -396,8 +396,19 @@ export class DependencyAnalyzer {
       // 直接扫描path
       if (await fs.pathExists(dependencyPath)) {
         const files = await this.scanDirectoryRecursive(dependencyPath, extensions);
-        let filteredFiles = this.filterSourceFiles(files);
-        
+        // 对于 core 类型，不进行按架构过滤 —— core 应包含 SDK 中的所有相关实现文件。
+        // core/variant 扫描时跳过该架构过滤，保留扫描得到的所有相关实现文件（再对 core 做 variant.cpp 的单独移除以避免重复）。4
+        // 如 DUE
+        let filteredFiles: string[];
+        this.logger.debug(`createDependency: scanned files for ${dependencyPath}: ${files.length}`);
+        if (type === 'core' || type === 'variant') {
+          this.logger.debug(`createDependency: skipping architecture filter for ${type}`);
+          filteredFiles = files.slice();
+        } else {
+          filteredFiles = this.filterSourceFiles(files);
+        }
+        this.logger.debug(`createDependency: filtered files count=${filteredFiles.length} for type=${type}`);
+
         // 对于core类型的依赖，额外过滤掉variant.cpp文件（但保留variant_helper.cpp等其他文件）
         if (type === 'core') {
           filteredFiles = filteredFiles.filter(file => {
@@ -406,7 +417,7 @@ export class DependencyAnalyzer {
             return fileName !== 'variant.cpp';
           });
         }
-        
+
         includeFiles.push(...filteredFiles);
       }
 
