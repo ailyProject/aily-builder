@@ -338,11 +338,11 @@ export class NinjaGenerator {
       if (dependency.type !== 'sketch' && groupObjects.length > 0) {
         // 变体文件应该作为独立的对象文件直接链接，而不是归并到归档文件中
         if (dependency.type === 'variant') {
-          console.log(`[DEBUG] Processing variant dependency: ${dependency.name}, objects:`, groupObjects);
+          // console.log(`[DEBUG] Processing variant dependency: ${dependency.name}, objects:`, groupObjects);
           // 将变体对象文件直接添加到最终链接的对象文件列表中
           this.objectFiles.push(...groupObjects);
         } else {
-          console.log(`[DEBUG] Processing ${dependency.type} dependency: ${dependency.name}, objects count: ${groupObjects.length}`);
+          // console.log(`[DEBUG] Processing ${dependency.type} dependency: ${dependency.name}, objects count: ${groupObjects.length}`);
           // 其他类型（core、library）创建归档文件
           archiveGroups.set(dependency.name, groupObjects);
         }

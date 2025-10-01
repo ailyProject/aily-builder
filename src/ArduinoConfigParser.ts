@@ -772,8 +772,7 @@ export class ArduinoConfigParser {
             'build.core.path': path.join(process.env['SDK_PATH'], 'cores', boardConfig['build.core']),
         }
 
-        // console.log(moreConfig);
-        console.log('moreConfig:', moreConfig);
+        // console.log('moreConfig:', moreConfig);
         let platformConfig: { [key: string]: string } = this.parsePlatformTxt(platformTxtPath, fqbnObj, boardConfig, moreConfig);
 
         // 设置编译器路径
