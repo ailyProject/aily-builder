@@ -219,6 +219,7 @@ export class NinjaGenerator {
   private async generateBuilds(): Promise<void> {
     const archiveGroups = new Map<string, string[]>();
     const processedFiles = new Set<string>(); // 避免重复处理同一个文件
+    let sketchObjectFile: string | null = null;
 
     // 1. 优先生成sketch编译目标 - 确保用户代码最先编译
     const sketchBuild = await this.createCompileBuild(
@@ -234,12 +235,23 @@ export class NinjaGenerator {
       };
       // 将sketch构建插入到builds数组的最前面
       this.ninjaFile.builds.unshift(sketchBuild);
-      this.objectFiles.push(sketchBuild.outputs[0]);
+      sketchObjectFile = sketchBuild.outputs[0];
+      this.objectFiles.push(sketchObjectFile);
     } else {
       // 即使跳过编译，也要将对象文件添加到列表中（用于链接）
       const sketchFileName = path.basename(process.env['SKETCH_PATH']!);
       const objectFile = path.join('sketch', `${sketchFileName}.o`);
+      sketchObjectFile = objectFile;
       this.objectFiles.push(objectFile);
+    }
+
+    // 2. 创建 phony 目标，让其他所有编译任务依赖于 sketch 编译完成
+    if (sketchObjectFile) {
+      this.ninjaFile.builds.push({
+        outputs: ['sketch_first'],
+        rule: 'phony',
+        inputs: [sketchObjectFile]
+      });
     }
 
     // 2. 生成依赖库和core的编译目标
@@ -255,6 +267,10 @@ export class NinjaGenerator {
 
         const build = await this.createCompileBuild(file, dependency.type, dependency.name);
         if (build) {
+          // 让所有非 sketch 的编译任务依赖于 sketch_first
+          if (sketchObjectFile) {
+            build.orderOnly = ['sketch_first'];
+          }
           this.ninjaFile.builds.push(build);
           groupObjects.push(build.outputs[0]);
         } else {
