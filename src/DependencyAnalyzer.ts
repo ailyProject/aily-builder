@@ -62,9 +62,7 @@ export class DependencyAnalyzer {
  */
   async preprocess(arduinoConfig): Promise<any> {
     this.logger.verbose('Starting dependency analysis...');
-    const sketchName = process.env['SKETCH_NAME'];
     const sketchPath = process.env['SKETCH_PATH'];
-    const sketchDir = process.env['SKETCH_DIR_PATH'];
 
     // 获取核心SDK和库路径
     const coreSDKPath = process.env['SDK_CORE_PATH'];
@@ -100,8 +98,7 @@ export class DependencyAnalyzer {
         this.dependencyList.set(`${coreDependency.name}`, coreDependency);
       }
     }
-    // console.log(this.dependencyList);
-    
+
     // 3. 添加变体路径依赖
     if (variantPath) {
       variantDependency = await this.createDependency('variant', variantPath);

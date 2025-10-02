@@ -68,7 +68,7 @@ export class ArduinoCompiler {
         this.logger.info('Generating compile configuration...');
         return await this.compileConfigManager.parseCompileConfig(arduinoConfig);
       })(),
-      
+
       // 4. 依赖分析
       (async () => {
         this.logger.info('Analyzing dependencies...');
@@ -76,7 +76,7 @@ export class ArduinoCompiler {
         this.logger.info(`Dependency analysis completed.`);
         return deps;
       })(),
-      
+
       // 5. 预处理2：运行编译前钩子（ESP32需要）
       (async () => {
         if (arduinoConfig.platform['recipe.hooks.prebuild.1.pattern']) {
@@ -177,21 +177,44 @@ export class ArduinoCompiler {
     try {
       // 创建构建目录
       await fs.ensureDir(buildPath);
-      // 使用G++展开项目
-      let command = `${process.env['COMPILER_GPP_PATH']} -o "${path.join(process.env['BUILD_PATH'], process.env['SKETCH_NAME'] + '.cpp')}" -x c++ -fpreprocessed -dD -E ${process.env['SKETCH_PATH']}`
-      try {
-        const stdout = execSync(command, { encoding: 'utf8' });
-        // console.log(stdout);
-        process.env['SKETCH_PATH'] = path.join(process.env['BUILD_PATH'], process.env['SKETCH_NAME'] + '.cpp');
-      } catch (error) {
-        console.error(error);
+
+      // 使用GCC预处理
+      // let command = `${process.env['COMPILER_GPP_PATH']} -o "${path.join(process.env['BUILD_PATH'], process.env['SKETCH_NAME'] + '.cpp')}" -x c++ -fpreprocessed -dD -E ${process.env['SKETCH_PATH']}`
+      // try {
+      //   const stdout = execSync(command, { encoding: 'utf8' });
+      //   process.env['SKETCH_PATH'] = path.join(process.env['BUILD_PATH'], process.env['SKETCH_NAME'] + '.cpp');
+      // } catch (error) {
+      //   console.error(error);
+      // }
+
+      // 直接复制并转换为 .cpp 文件
+      const targetPath = path.join(process.env['BUILD_PATH']!, process.env['SKETCH_NAME'] + '.cpp');
+
+      // 读取原始 .ino 文件内容
+      let content = await fs.readFile(process.env['SKETCH_PATH']!, 'utf-8');
+
+      // 检查是否已包含 Arduino.h
+      const hasArduinoInclude = /#include\s*[<"]Arduino\.h[>"]/i.test(content);
+
+      if (!hasArduinoInclude) {
+        this.logger.verbose('Adding #include <Arduino.h> to sketch');
+        // 在文件开头添加 Arduino.h
+        content = '#include <Arduino.h>\n' + content;
       }
-      this.logger.debug(`Build directory prepared: ${buildPath}`);
+
+      // 添加行号指令（用于更好的错误定位）
+      const lineDirective = `# 1 "${process.env['SKETCH_PATH']!.replace(/\\/g, '\\\\')}"\n`;
+      content = lineDirective + content;
+
+      // 写入新的 .cpp 文件
+      await fs.writeFile(targetPath, content, 'utf-8');
+
+      // 更新环境变量指向新的 .cpp 文件
+      process.env['SKETCH_PATH'] = targetPath;
     } catch (error) {
       throw new Error(`Failed to prepare build directory: ${error instanceof Error ? error.message : error}`);
     }
   }
-
 
   async runPreBuildHooks(arduinoConfig: any) {
     for (let i = 1; i <= 8; i++) {
