@@ -150,10 +150,14 @@ require('./aily-builder.js');
 
     // 6. 创建 package.json
     console.log('📦 Creating package.json...');
+    
+    // 读取项目的 package.json 文件
+    const projectPackageJson = await fs.readJson('./package.json');
+    
     const bundlePackageJson = {
-      name: 'aily-builder-bundle',
-      version: '1.0.0',
-      description: 'Complete aily-builder bundle with native dependencies',
+      name: projectPackageJson.name,
+      version: projectPackageJson.version,
+      description: projectPackageJson.description,
       main: 'index.js',
       bin: {
         'aily': 'index.js'
