@@ -84,7 +84,7 @@ program
     const sketchName = path.basename(sketchPath, '.ino');
     
     // 为了避免不同项目的同名sketch冲突，使用项目路径的MD5哈希值
-    const projectPathMD5 = calculateMD5(sketchDirPath).substring(0, 8); // 只取前8位MD5值
+    const projectPathMD5 = calculateMD5(sketchPath).substring(0, 8); // 只取前8位MD5值
     const uniqueSketchName = `${sketchName}_${projectPathMD5}`;
     const defaultBuildPath = path.join(os.homedir(), 'AppData', 'Local', 'aily-builder', 'project', uniqueSketchName);
 

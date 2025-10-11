@@ -353,12 +353,16 @@ export class NinjaCompilationPipeline {
   }
 
   private getNinjaExecutablePath(): string {
-    // 优先使用项目目录下的ninja
-    const projectNinjaPath = path.join(process.cwd(), 'ninja', 'ninja.exe');
+    // 打包后路径
+    let projectNinjaPath = path.join(__dirname, 'ninja', 'ninja.exe');
     if (fs.existsSync(projectNinjaPath)) {
       return projectNinjaPath;
     }
-
+    // 开发环境路径
+    projectNinjaPath = path.join(process.cwd(), 'ninja', 'ninja.exe');
+    if (fs.existsSync(projectNinjaPath)) {
+      return projectNinjaPath;
+    }
     // 检查系统PATH中的ninja
     const systemNinja = process.platform === 'win32' ? 'ninja.exe' : 'ninja';
 
