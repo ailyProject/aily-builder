@@ -305,7 +305,7 @@ export class DependencyAnalyzer {
         // 读取libraryObject.path下的所有源文件
         let includeFilePaths: string[] = [];
         try {
-          const libraryFiles = await glob('**/*.{h,cpp,c}', {
+          const libraryFiles = await glob('**/*.{h,hpp,cpp,c}', {
             cwd: libraryObject.path,
             absolute: true,
             nodir: true,
@@ -466,7 +466,7 @@ export class DependencyAnalyzer {
 
     try {
       // 使用glob检查是否有源文件
-      const files = await glob('*.{cpp,c,s,h}', {
+      const files = await glob('*.{cpp,c,s,h,hpp}', {
         cwd: dirPath,
         nodir: true,
         maxDepth: 1  // 只检查当前目录，不递归
@@ -614,7 +614,7 @@ export class DependencyAnalyzer {
 
       try {
         // 扫描目录中的所有.h文件，只搜索当前目录，不递归子目录
-        const headerFiles = await glob('*.h', {
+        const headerFiles = await glob('*.{h,hpp}', {
           cwd: dir,
           absolute: true,
           nodir: true
@@ -647,8 +647,8 @@ export class DependencyAnalyzer {
     const sourceDirs = new Set<string>();
 
     try {
-      // 使用glob搜索所有源文件（.h, .c, .cpp, .S）
-      const patterns = ['**/*.h', '**/*.c', '**/*.cpp', '**/*.S'];
+      // 使用glob搜索所有源文件（.h, .hpp, .c, .cpp, .S）
+      const patterns = ['**/*.h', '**/*.hpp', '**/*.c', '**/*.cpp', '**/*.S'];
       const files: string[] = [];
 
       for (const pattern of patterns) {
