@@ -383,31 +383,6 @@ export class DependencyAnalyzer {
   }
 
   /**
-   * 检查指定目录是否包含源文件
-   * 检查是否存在.cpp、.c、.s、.h文件
-   * @param dirPath 要检查的目录路径
-   * @returns 如果包含源文件返回true，否则返回false
-   */
-  private async hasSourceFiles(dirPath: string): Promise<boolean> {
-    if (!await fs.pathExists(dirPath)) {
-      return false;
-    }
-
-    try {
-      // 使用glob检查是否有源文件
-      const files = await glob('*.{cpp,c,s,h,hpp}', {
-        cwd: dirPath,
-        nodir: true,
-        maxDepth: 1  // 只检查当前目录，不递归
-      });
-
-      return files.length > 0;
-    } catch (error) {
-      return false;
-    }
-  }
-
-  /**
    * 递归扫描目录以查找指定扩展名的文件
    * 自动排除examples和extras目录
    * @param dir 要扫描的目录
