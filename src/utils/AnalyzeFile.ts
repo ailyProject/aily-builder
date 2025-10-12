@@ -97,7 +97,7 @@ class ExpressionEvaluator {
             return false;
         }
 
-        try {
+        try {    
             // 处理 defined(MACRO) 或 defined MACRO
             let processed = conditionText.replace(this.definedRegex, (match, macro1, macro2) => {
                 const macro = macro1 || macro2;
@@ -369,8 +369,10 @@ class ASTNodeProcessor {
         const text = this.getNodeText(node);
         // console.log(`DEBUG: extractCondition - 节点文本: "${text}"`);
 
-        // 修复正则表达式，支持多行匹配
-        const match = text.match(/#(?:el)?if\s+([^\r\n]+)/);
+        // 支持多行匹配，处理反斜杠续行。首先移除续行符（反斜杠加换行）
+        const normalizedText = text.replace(/\\\s*[\r\n]+\s*/g, ' ');
+        // 然后提取条件表达式
+        const match = normalizedText.match(/#(?:el)?if\s+(.+?)(?:\/\/|\/\*|$)/s);
         const result = match ? match[1].trim() : '';
         // console.log(`DEBUG: extractCondition - 匹配结果: "${result}"`);
         return result;
@@ -538,11 +540,11 @@ class ASTNodeProcessor {
         // 处理预处理指令
         if (node.type.startsWith('preproc_')) {
             if (node.type === 'preproc_include') {
-                // 直接处理包含文件
+                // 处理包含文件，但不提前返回，因为可能还有子节点需要处理
                 this.processInclude(node, parentConditionActive);
-                return;
+                // 注意：不再 return，继续遍历可能的子节点
             } else {
-                // 处理其他预处理指令
+                // 处理其他预处理指令，并更新条件状态
                 localConditionActive = this.processPreprocessorNode(node, parentConditionActive);
             }
         }
