@@ -647,30 +647,3 @@ export async function analyzeFileWithDefines(
         };
     }
 }
-
-/**
- * 批量分析多个 C++ 文件
- * @param filePaths - 文件路径数组
- * @param defines - 当前定义的宏集合
- * @param options - 可选配置
- * @returns Promise<Record<string, string[]>> - 文件路径到包含列表的映射
- */
-export async function analyzeCppIncludesBatch(
-    filePaths: string[],
-    defines: Map<string, MacroDefinition>,
-    options: AnalysisOptions = {}
-): Promise<Record<string, string[]>> {
-    const results: Record<string, string[]> = {};
-    const promises = filePaths.map(async (filePath) => {
-        try {
-            const includes = await analyzeFile(filePath, defines, { throwOnError: false });
-            results[filePath] = includes;
-        } catch (error) {
-            console.error(`处理文件 ${filePath} 失败:`, (error as Error).message);
-            results[filePath] = [];
-        }
-    });
-
-    await Promise.all(promises);
-    return results;
-}
