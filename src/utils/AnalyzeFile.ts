@@ -97,7 +97,7 @@ class ExpressionEvaluator {
             return false;
         }
 
-        try {    
+        try {
             // 处理 defined(MACRO) 或 defined MACRO
             let processed = conditionText.replace(this.definedRegex, (match, macro1, macro2) => {
                 const macro = macro1 || macro2;
@@ -264,22 +264,17 @@ class ConditionalCompilationManager {
         // 找到正确的 #if 条件帧，跳过可能的嵌套 #if
         let targetFrameIndex = this.stack.length - 1;
 
-        // console.log(`DEBUG: #elif conditionMet=${conditionMet}, parentActive=${parentActive}, stackLength=${this.stack.length}`);
-
         // 如果栈中有多个条件，#elif 通常对应倒数第二个（跳过最内层的嵌套）
         // 检查栈顶帧是否为false且hadTrueBranch为false，如果是则查找上一层
         if (this.stack.length >= 2) {
             const topFrame = this.stack[this.stack.length - 1];
-            // console.log(`  栈顶帧: active=${topFrame.active}, hadTrueBranch=${topFrame.hadTrueBranch}`);
             if (!topFrame.active && !topFrame.hadTrueBranch) {
                 targetFrameIndex = this.stack.length - 2;
-                // console.log(`  选择上一层帧，targetFrameIndex=${targetFrameIndex}`);
             }
         }
 
         if (targetFrameIndex >= 0) {
             const targetFrame = this.stack[targetFrameIndex];
-            // console.log(`  目标帧: type=${targetFrame.type}, active=${targetFrame.active}, parentActive=${targetFrame.parentActive}, hadTrueBranch=${targetFrame.hadTrueBranch}`);
 
             if (!targetFrame.hadTrueBranch) {
                 const newActive = targetFrame.parentActive && conditionMet;
@@ -287,17 +282,25 @@ class ConditionalCompilationManager {
                 if (conditionMet) {
                     targetFrame.hadTrueBranch = true;
                 }
-                // console.log(`  elif结果: newActive=${newActive}`);
                 return newActive;
             } else {
                 targetFrame.active = false;
-                // console.log(`  elif被跳过 (已有真分支)`);
                 return false;
             }
         }
-        // console.log(`  elif失败: targetFrameIndex=${targetFrameIndex}`);
         return false;
     }
+}
+
+/**
+ * 预处理源代码，将续行符转换为单行
+ * @param sourceCode - 原始源代码
+ * @returns 处理后的源代码
+ */
+function preprocessSourceCode(sourceCode: string): string {
+    // 将反斜杠续行符（\ + 换行）替换为空格
+    // 同时移除续行后的前导空白，保持代码的可读性
+    return sourceCode.replace(/\\\s*[\r\n]+\s*/g, ' ');
 }
 
 /**
@@ -334,14 +337,14 @@ class ASTNodeProcessor {
         for (let i = 0; i < node.childCount; i++) {
             const child = node.child(i);
             if (child && (child.type === 'string_literal' || child.type === 'system_lib_string')) {
-                return this.getNodeText(child).replace(/[<">]/g, '');
+                return this.getNodeText(child).replace(/[<">]/g, '').trim();
             }
         }
 
         // 备选方案：正则表达式提取
         const text = this.getNodeText(node);
         const match = text.match(/#include\s*([<"].*?[>"])/);
-        return match ? match[1].replace(/[<">]/g, '') : null;
+        return match ? match[1].replace(/[<">]/g, '').trim() : null;
     }
 
     /**
@@ -367,15 +370,12 @@ class ASTNodeProcessor {
      */
     private extractCondition(node: SyntaxNode): string {
         const text = this.getNodeText(node);
-        // console.log(`DEBUG: extractCondition - 节点文本: "${text}"`);
-
-        // 支持多行匹配，处理反斜杠续行。首先移除续行符（反斜杠加换行）
-        const normalizedText = text.replace(/\\\s*[\r\n]+\s*/g, ' ');
-        // 然后提取条件表达式
-        const match = normalizedText.match(/#(?:el)?if\s+(.+?)(?:\/\/|\/\*|$)/s);
-        const result = match ? match[1].trim() : '';
-        // console.log(`DEBUG: extractCondition - 匹配结果: "${result}"`);
-        return result;
+        // 条件表达式应该在第一行（到第一个真正的换行符之前）
+        const firstLine = text.split('\n')[0];
+        
+        // 提取条件表达式（#if 或 #elif 后面的内容，到注释或行尾）
+        const match = firstLine.match(/#(?:el)?if\s+(.+?)(?:\/\/|\/\*|$)/);
+        return match ? match[1].trim() : '';
     }
 
     /**
@@ -463,16 +463,12 @@ class ASTNodeProcessor {
     }
 
     private processElif(node: SyntaxNode, parentConditionActive: boolean): boolean {
-        // console.log('DEBUG: processElif被调用');
         const conditionText = this.extractCondition(node);
         if (!conditionText) {
-            // console.log('DEBUG: processElif - 没有条件文本');
             return false;
         }
 
-        // console.log(`DEBUG: processElif - 条件: ${conditionText}`);
         const conditionMet = this.expressionEvaluator.evaluate(conditionText);
-        // console.log(`DEBUG: processElif - 条件评估结果: ${conditionMet}`);
         // 使用修复后的 handleElif 方法处理复杂嵌套情况
         return this.conditionManager.handleElif(conditionMet, parentConditionActive);
     }
@@ -497,7 +493,6 @@ class ASTNodeProcessor {
                     // 重新创建 ExpressionEvaluator 以包含新的宏定义
                     const definedMacros = convertMacroDefinitions(this.defines);
                     this.expressionEvaluator = new ExpressionEvaluator(definedMacros);
-                    // console.log(`DEBUG: 新增宏定义 ${macroInfo.name}=${macroInfo.value || '1'}`);
                 }
             }
         }
@@ -617,6 +612,9 @@ export async function analyzeFileWithDefines(
         } catch (e) {
             throw new Error(`无法读取文件 ${filePath}: ${(e as Error).message}`);
         }
+
+        // 修复续行符造成的问题
+        sourceCode = preprocessSourceCode(sourceCode);
 
         // 获取 Parser 实例
         const parser = getParser();
