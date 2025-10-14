@@ -259,35 +259,31 @@ class ConditionalCompilationManager {
     /**
      * 处理 #elif 指令
      */
+        /**
+     * 处理 #elif 指令
+     */
     handleElif(conditionMet: boolean, parentActive: boolean): boolean {
-        // 修复复杂嵌套结构中的 #elif 处理
-        // 找到正确的 #if 条件帧，跳过可能的嵌套 #if
-        let targetFrameIndex = this.stack.length - 1;
-
-        // 如果栈中有多个条件，#elif 通常对应倒数第二个（跳过最内层的嵌套）
-        // 检查栈顶帧是否为false且hadTrueBranch为false，如果是则查找上一层
-        if (this.stack.length >= 2) {
-            const topFrame = this.stack[this.stack.length - 1];
-            if (!topFrame.active && !topFrame.hadTrueBranch) {
-                targetFrameIndex = this.stack.length - 2;
-            }
+        const currentFrame = this.getCurrentFrame();
+        if (!currentFrame) {
+            return false;
         }
 
-        if (targetFrameIndex >= 0) {
-            const targetFrame = this.stack[targetFrameIndex];
-
-            if (!targetFrame.hadTrueBranch) {
-                const newActive = targetFrame.parentActive && conditionMet;
-                targetFrame.active = newActive;
-                if (conditionMet) {
-                    targetFrame.hadTrueBranch = true;
-                }
-                return newActive;
-            } else {
-                targetFrame.active = false;
-                return false;
-            }
+        // #elif 只有在同一层的 #if 或之前的 #elif 都为假时才会被评估
+        // 如果之前已经有条件为真，则跳过这个 #elif
+        if (currentFrame.hadTrueBranch) {
+            currentFrame.active = false;
+            return false;
         }
+
+        // 如果条件满足，且父条件活跃，则激活当前帧
+        if (conditionMet && currentFrame.parentActive) {
+            currentFrame.active = true;
+            currentFrame.hadTrueBranch = true;
+            return true;
+        }
+
+        // 条件不满足，保持非活跃状态
+        currentFrame.active = false;
         return false;
     }
 }
