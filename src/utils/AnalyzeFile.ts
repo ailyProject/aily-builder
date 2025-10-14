@@ -83,7 +83,8 @@ class ExpressionEvaluator {
     constructor(definedMacros: Map<string, string | number>) {
         this.definedMacros = definedMacros;
         this.definedRegex = /defined\s*\(\s*([A-Za-z_][A-Za-z0-9_]*)\s*\)|defined\s+([A-Za-z_][A-Za-z0-9_]*)/g;
-        this.macroRegex = /\b([A-Z_][A-Z0-9_]*)\b/g;
+        // 修复：匹配所有标识符，不仅仅是全大写的
+        this.macroRegex = /\b([A-Za-z_][A-Za-z0-9_]*)\b/g;
         this.numberRegex = /^\d+$/;
     }
 
@@ -107,6 +108,12 @@ class ExpressionEvaluator {
             // 处理宏替换（支持嵌套宏）
             processed = this.resolveMacros(processed);
 
+            // Debug: 打印处理后的表达式
+            if (process.env.DEBUG_EXPR) {
+                console.log(`[DEBUG] 原始条件: ${conditionText}`);
+                console.log(`[DEBUG] 宏替换后: ${processed}`);
+            }
+
             // 处理逻辑运算符
             processed = processed
                 .replace(/&&/g, '&')
@@ -114,7 +121,13 @@ class ExpressionEvaluator {
                 .replace(/!/g, '~');
 
             // 使用更安全的表达式评估
-            return this.safeEvaluate(processed);
+            const result = this.safeEvaluate(processed);
+            
+            if (process.env.DEBUG_EXPR) {
+                console.log(`[DEBUG] 评估结果: ${result}`);
+            }
+            
+            return result;
         } catch (e) {
             console.warn(`无法评估条件: ${conditionText}`, (e as Error).message);
             return false;
@@ -173,15 +186,14 @@ class ExpressionEvaluator {
         }
 
         try {
-            // 处理比较运算符
+            // 处理比较运算符 - 注意顺序！先处理复合运算符，再处理单个运算符
             let processedExpr = expression
-                .replace(/>/g, ' > ')
-                .replace(/</g, ' < ')
-                .replace(/==/g, ' == ')
-                .replace(/!=/g, ' != ')
                 .replace(/&/g, ' && ')
                 .replace(/\|/g, ' || ')
                 .replace(/~/g, ' !');
+
+            // 不需要再处理比较运算符，因为原始表达式中已经是正确的格式
+            // 之前的replace会破坏 >= 和 <= 等复合运算符
 
             // 使用 Function 构造器，但限制在安全的数值运算范围内
             const result = new Function('return (' + processedExpr + ')')();
@@ -247,48 +259,46 @@ class ConditionalCompilationManager {
      */
     handleElse(): boolean {
         const currentFrame = this.getCurrentFrame();
-        if (currentFrame && !currentFrame.hadTrueBranch) {
+        if (!currentFrame) {
+            return true;
+        }
+
+        // 如果之前有分支为真，else不会被执行
+        if (currentFrame.hadTrueBranch) {
+            currentFrame.active = false;
+        } else {
+            // 否则，else分支激活状态取决于父条件
             currentFrame.active = currentFrame.parentActive;
             currentFrame.hadTrueBranch = true;
-        } else if (currentFrame) {
-            currentFrame.active = false;
         }
-        return this.getCurrentActive();
+
+        return currentFrame.active;
     }
 
     /**
      * 处理 #elif 指令
      */
-    handleElif(conditionMet: boolean, parentActive: boolean): boolean {
-        // 修复复杂嵌套结构中的 #elif 处理
-        // 找到正确的 #if 条件帧，跳过可能的嵌套 #if
-        let targetFrameIndex = this.stack.length - 1;
-
-        // 如果栈中有多个条件，#elif 通常对应倒数第二个（跳过最内层的嵌套）
-        // 检查栈顶帧是否为false且hadTrueBranch为false，如果是则查找上一层
-        if (this.stack.length >= 2) {
-            const topFrame = this.stack[this.stack.length - 1];
-            if (!topFrame.active && !topFrame.hadTrueBranch) {
-                targetFrameIndex = this.stack.length - 2;
-            }
+    handleElif(conditionMet: boolean): boolean {
+        const currentFrame = this.getCurrentFrame();
+        if (!currentFrame) {
+            return false;
         }
 
-        if (targetFrameIndex >= 0) {
-            const targetFrame = this.stack[targetFrameIndex];
-
-            if (!targetFrame.hadTrueBranch) {
-                const newActive = targetFrame.parentActive && conditionMet;
-                targetFrame.active = newActive;
-                if (conditionMet) {
-                    targetFrame.hadTrueBranch = true;
-                }
-                return newActive;
-            } else {
-                targetFrame.active = false;
-                return false;
-            }
+        // 如果之前的分支已经为真，则elif不会被执行
+        if (currentFrame.hadTrueBranch) {
+            currentFrame.active = false;
+            return false;
         }
-        return false;
+
+        // 计算elif条件是否激活：父条件必须激活且当前条件满足
+        const newActive = currentFrame.parentActive && conditionMet;
+        currentFrame.active = newActive;
+        
+        if (conditionMet) {
+            currentFrame.hadTrueBranch = true;
+        }
+
+        return newActive;
     }
 }
 
@@ -374,7 +384,8 @@ class ASTNodeProcessor {
         const firstLine = text.split('\n')[0];
         
         // 提取条件表达式（#if 或 #elif 后面的内容，到注释或行尾）
-        const match = firstLine.match(/#(?:el)?if\s+(.+?)(?:\/\/|\/\*|$)/);
+        // 修复：支持 #if(...) 这种没有空格的格式
+        const match = firstLine.match(/#(?:el)?if\s*(.+?)(?:\/\/|\/\*|$)/);
         return match ? match[1].trim() : '';
     }
 
@@ -469,8 +480,7 @@ class ASTNodeProcessor {
         }
 
         const conditionMet = this.expressionEvaluator.evaluate(conditionText);
-        // 使用修复后的 handleElif 方法处理复杂嵌套情况
-        return this.conditionManager.handleElif(conditionMet, parentConditionActive);
+        return this.conditionManager.handleElif(conditionMet);
     }
 
     private processElse(): boolean {
@@ -503,8 +513,6 @@ class ASTNodeProcessor {
      * 从 #define 节点中提取宏定义信息
      */
     private extractMacroDefinition(text: string): MacroDefinition | null {
-        // const text = this.getNodeText(node);
-
         // 支持多种宏定义格式：
         // #define MACRO_NAME
         // #define MACRO_NAME value
@@ -513,8 +521,19 @@ class ASTNodeProcessor {
 
         if (match) {
             const name = match[1];
-            // 如果没有明确的值，对于简单宏定义默认为 '1'
-            const value = match[2] ? match[2].trim() : '1';
+            let value = match[2] ? match[2].trim() : '1';
+
+            // 如果值是另一个宏名，尝试解析它的值
+            // 这里做简单的宏值查找和替换
+            if (value && /^[A-Za-z_][A-Za-z0-9_]*$/.test(value)) {
+                // 值看起来是一个标识符（可能是另一个宏）
+                if (this.defines.has(value)) {
+                    const referencedMacro = this.defines.get(value)!;
+                    if (referencedMacro.value !== undefined) {
+                        value = referencedMacro.value;
+                    }
+                }
+            }
 
             return {
                 name,
@@ -530,37 +549,129 @@ class ASTNodeProcessor {
      * 递归遍历 AST 节点
      */
     walkNode(node: SyntaxNode, parentConditionActive = true): void {
-        let localConditionActive = parentConditionActive;
-
-        // 处理预处理指令
-        if (node.type.startsWith('preproc_')) {
-            if (node.type === 'preproc_include') {
-                // 处理包含文件，但不提前返回，因为可能还有子节点需要处理
-                this.processInclude(node, parentConditionActive);
-                // 注意：不再 return，继续遍历可能的子节点
-            } else {
-                // 处理其他预处理指令，并更新条件状态
-                localConditionActive = this.processPreprocessorNode(node, parentConditionActive);
-            }
+        // 特殊处理条件编译节点
+        if (node.type === 'preproc_if' || node.type === 'preproc_ifdef') {
+            this.processConditionalBlock(node, parentConditionActive);
+            return;
         }
 
-        // 递归遍历子节点
+        // 对于其他预处理指令
+        if (node.type.startsWith('preproc_')) {
+            const localConditionActive = this.processPreprocessorNode(node, parentConditionActive);
+            
+            // 递归遍历子节点
+            for (let i = 0; i < node.childCount; i++) {
+                const child = node.child(i);
+                if (child) {
+                    this.walkNode(child, localConditionActive);
+                }
+            }
+            return;
+        }
+
+        // 对于非预处理节点，递归遍历子节点
         for (let i = 0; i < node.childCount; i++) {
             const child = node.child(i);
             if (child) {
-                // 对于子节点，传递当前的活动条件
-                // 但对于同一个 #if 块内的 #elif，它们应该使用相同的父条件
-                let effectiveParentCondition = localConditionActive;
-
-                // 如果子节点是 #elif，且当前节点是 #if，
-                // #elif 应该使用 #if 的父条件，而不是 #if 的结果
-                if (child.type === 'preproc_elif' && node.type === 'preproc_if') {
-                    effectiveParentCondition = parentConditionActive;
-                }
-
-                this.walkNode(child, effectiveParentCondition);
+                this.walkNode(child, parentConditionActive);
             }
         }
+    }
+
+    /**
+     * 处理完整的条件编译块（#if ... #elif ... #else ... #endif）
+     */
+    private processConditionalBlock(node: SyntaxNode, parentConditionActive: boolean): void {
+        // 首先处理 #if 或 #ifdef
+        let isIfdef = node.type === 'preproc_ifdef';
+        let conditionMet = false;
+        
+        if (isIfdef) {
+            const macroName = this.extractMacroName(node);
+            if (macroName) {
+                const firstChild = node.child(0);
+                const isIfndef = firstChild && this.getNodeText(firstChild).trim() === '#ifndef';
+                
+                if (isIfndef) {
+                    conditionMet = !this.expressionEvaluator.hasMacro(macroName);
+                } else {
+                    conditionMet = this.expressionEvaluator.hasMacro(macroName);
+                }
+            }
+        } else {
+            const conditionText = this.extractCondition(node);
+            if (conditionText) {
+                conditionMet = this.expressionEvaluator.evaluate(conditionText);
+            }
+        }
+
+        // 推入条件栈
+        this.conditionManager.push(
+            isIfdef ? 'ifdef' : 'if',
+            parentConditionActive && conditionMet,
+            parentConditionActive,
+            conditionMet
+        );
+
+        // 获取当前激活状态
+        let currentActive = this.conditionManager.getCurrentActive();
+
+        // 遍历子节点，特殊处理 elif 和 else
+        for (let i = 0; i < node.childCount; i++) {
+            const child = node.child(i);
+            if (!child) continue;
+
+            if (child.type === 'preproc_elif') {
+                // 处理 #elif 前，先处理之前的 #define（在父条件为 true 时定义的宏）
+                // 但 elif 的条件评估应该使用当前的宏状态
+                
+                const elifCondition = this.extractCondition(child);
+                const elifConditionMet = elifCondition ? 
+                    this.expressionEvaluator.evaluate(elifCondition) : false;
+                
+                currentActive = this.conditionManager.handleElif(elifConditionMet);
+
+                // 遍历 elif 的子节点（不包括嵌套的 else）
+                for (let j = 0; j < child.childCount; j++) {
+                    const elifChild = child.child(j);
+                    if (elifChild) {
+                        if (elifChild.type === 'preproc_else') {
+                            // else 是 elif 的子节点，需要特殊处理
+                            currentActive = this.conditionManager.handleElse();
+                            
+                            // 遍历 else 的内容
+                            for (let k = 0; k < elifChild.childCount; k++) {
+                                const elseChild = elifChild.child(k);
+                                if (elseChild && !elseChild.type.startsWith('#')) {
+                                    this.walkNode(elseChild, currentActive);
+                                }
+                            }
+                        } else if (!elifChild.type.startsWith('#')) {
+                            // elif 分支的内容
+                            this.walkNode(elifChild, currentActive);
+                        }
+                    }
+                }
+            } else if (child.type === 'preproc_else') {
+                // 处理独立的 #else（不在 elif 内部）
+                currentActive = this.conditionManager.handleElse();
+                
+                // 遍历 else 的内容
+                for (let j = 0; j < child.childCount; j++) {
+                    const elseChild = child.child(j);
+                    if (elseChild && !elseChild.type.startsWith('#')) {
+                        this.walkNode(elseChild, currentActive);
+                    }
+                }
+            } else if (!child.type.startsWith('#')) {
+                // #if 分支的内容（排除 # 开头的节点，如 #if, #endif 等）
+                // 这里会处理 #define，从而更新 expressionEvaluator
+                this.walkNode(child, currentActive);
+            }
+        }
+
+        // 弹出条件栈
+        this.conditionManager.pop();
     }
 
     /**
