@@ -1,0 +1,110 @@
+=== 娴嬭瘯 ESP32 (甯﹀畬鏁村父閲忓畾涔? ===
+
+瀹氫箟鐨勫畯鏁伴噺: 34
+
+[DEBUG] 鍘熷鏉′欢: defined(EMAIL_ENABLE_INTERNAL_SSLCLIENT)
+[DEBUG] 瀹忔浛鎹㈠悗: 0
+[DEBUG] 璇勪及缁撴灉: false
+[DEBUG] 鍘熷鏉′欢: ARDUINO >= 100
+[DEBUG] 瀹忔浛鎹㈠悗: 10607 >= 100
+[DEBUG] 璇勪及缁撴灉: true
+[DEBUG] 鍘熷鏉′欢: !defined(EMAIL_NETWORK_TYPE)
+[DEBUG] 瀹忔浛鎹㈠悗: !0
+[DEBUG] 璇勪及缁撴灉: true
+[DEBUG] 鍘熷鏉′欢: defined(ESP8266) || defined(ESP31B)
+[DEBUG] 瀹忔浛鎹㈠悗: 0 || 0
+[DEBUG] 璇勪及缁撴灉: false
+[DEBUG] 鍘熷鏉′欢: defined(ARDUINO_ARCH_STM32) || defined(__STM32F1__) || defined(__STM32F4__)
+[DEBUG] 瀹忔浛鎹㈠悗: 0 || 0 || 0
+[DEBUG] 璇勪及缁撴灉: false
+[DEBUG] 鍘熷鏉′欢: defined(ESP32)
+[DEBUG] 瀹忔浛鎹㈠悗: 1
+[DEBUG] 璇勪及缁撴灉: true
+[DEBUG] 鍘熷鏉′欢: defined(ARDUINO_ARCH_RP2040)
+[DEBUG] 瀹忔浛鎹㈠悗: 0
+[DEBUG] 璇勪及缁撴灉: false
+[DEBUG] 鍘熷鏉′欢: defined(ARDUINO_ARCH_SAMD)
+[DEBUG] 瀹忔浛鎹㈠悗: 0
+[DEBUG] 璇勪及缁撴灉: false
+[DEBUG] 鍘熷鏉′欢: defined(ARDUINO_ARCH_MBED)
+[DEBUG] 瀹忔浛鎹㈠悗: 0
+[DEBUG] 璇勪及缁撴灉: false
+[DEBUG] 鍘熷鏉′欢: !defined(STORAGE_EXTERNAL_FORCE_DISABLE) && (EXTERNAL_STORAGE != STORAGE_NONE)
+[DEBUG] 瀹忔浛鎹㈠悗: !0 && (4 != 0)
+[DEBUG] 璇勪及缁撴灉: true
+[DEBUG] 鍘熷鏉′欢: !defined(STORAGE_INTERNAL_FORCE_DISABLE) && (INTERNAL_STORAGE != STORAGE_NONE)
+[DEBUG] 瀹忔浛鎹㈠悗: !0 && (1 != 0)
+[DEBUG] 璇勪及缁撴灉: true
+[DEBUG] 鍘熷鏉′欢: defined(ESP8266)
+[DEBUG] 瀹忔浛鎹㈠悗: 0
+[DEBUG] 璇勪及缁撴灉: false
+[DEBUG] 鍘熷鏉′欢: defined(ESP32)
+[DEBUG] 瀹忔浛鎹㈠悗: 1
+[DEBUG] 璇勪及缁撴灉: true
+[DEBUG] 鍘熷鏉′欢: defined(ESP31B)
+[DEBUG] 瀹忔浛鎹㈠悗: 0
+[DEBUG] 璇勪及缁撴灉: false
+[DEBUG] 鍘熷鏉′欢: !defined(ESP8266) && !defined(ESP31B)
+[DEBUG] 瀹忔浛鎹㈠悗: !0 && !0
+[DEBUG] 璇勪及缁撴灉: true
+[DEBUG] 鍘熷鏉′欢: defined(ESP32) || defined(ESP8266)
+[DEBUG] 瀹忔浛鎹㈠悗: 1 || 0
+[DEBUG] 璇勪及缁撴灉: true
+[DEBUG] 鍘熷鏉′欢: (INTERNAL_STORAGE == STORAGE_SPIFFS)
+[DEBUG] 瀹忔浛鎹㈠悗: (1 == 1)
+[DEBUG] 璇勪及缁撴灉: true
+[DEBUG] 鍘熷鏉′欢: defined(ESP32)
+[DEBUG] 瀹忔浛鎹㈠悗: 1
+[DEBUG] 璇勪及缁撴灉: true
+[DEBUG] 鍘熷鏉′欢: defined(ESP8266)
+[DEBUG] 瀹忔浛鎹㈠悗: 0
+[DEBUG] 璇勪及缁撴灉: false
+[DEBUG] 鍘熷鏉′欢: (INTERNAL_STORAGE == STORAGE_LITTLEFS)
+[DEBUG] 瀹忔浛鎹㈠悗: (1 == 2)
+[DEBUG] 璇勪及缁撴灉: false
+[DEBUG] 鍘熷鏉′欢: defined(ESP32)
+[DEBUG] 瀹忔浛鎹㈠悗: 1
+[DEBUG] 璇勪及缁撴灉: true
+[DEBUG] 鍘熷鏉′欢: ESP_ARDUINO_VERSION_MAJOR >= 2
+[DEBUG] 瀹忔浛鎹㈠悗: 0 >= 2
+[DEBUG] 璇勪及缁撴灉: false
+[DEBUG] 鍘熷鏉′欢: (INTERNAL_STORAGE == STORAGE_FFAT)
+[DEBUG] 瀹忔浛鎹㈠悗: (1 == 3)
+[DEBUG] 璇勪及缁撴灉: false
+[DEBUG] 鍘熷鏉′欢: (INTERNAL_STORAGE == STORAGE_SPIFM)
+[DEBUG] 瀹忔浛鎹㈠悗: (1 == 5)
+[DEBUG] 璇勪及缁撴灉: false
+[DEBUG] 鍘熷鏉′欢: (EXTERNAL_STORAGE == STORAGE_SDFAT_RP2040_ESP8266)
+[DEBUG] 瀹忔浛鎹㈠悗: (4 == 7)
+[DEBUG] 璇勪及缁撴灉: false
+[DEBUG] 鍘熷鏉′欢: (EXTERNAL_STORAGE == STORAGE_SDFAT2)
+[DEBUG] 瀹忔浛鎹㈠悗: (4 == 6)
+[DEBUG] 璇勪及缁撴灉: false
+[DEBUG] 鍘熷鏉′欢: (EXTERNAL_STORAGE == STORAGE_SD)
+[DEBUG] 瀹忔浛鎹㈠悗: (4 == 4)
+[DEBUG] 璇勪及缁撴灉: true
+[DEBUG] 鍘熷鏉′欢: defined(ESP32)
+[DEBUG] 瀹忔浛鎹㈠悗: 1
+[DEBUG] 璇勪及缁撴灉: true
+[DEBUG] 鍘熷鏉′欢: defined(EMAIL_ENABLE_INTERNAL_SSLCLIENT)
+[DEBUG] 瀹忔浛鎹㈠悗: 0
+[DEBUG] 璇勪及缁撴灉: false
+鍖呭惈鐨勫ご鏂囦欢 (3 涓?:
+  1. EMailSenderKey.h
+  2. Client.h
+  3. Arduino.h
+
+楠岃瘉鍏抽敭澶存枃浠?
+  鉁?EMailSenderKey.h
+  鉁?Client.h
+  鉁?Arduino.h
+  鉂?缂哄皯 WiFi.h
+  鉂?缂哄皯 WiFiClientSecure.h
+  鉂?缂哄皯 SPIFFS.h
+
+鉁?娴嬭瘯瀹屾垚
+npm notice
+npm notice New minor version of npm available! 11.1.0 -> 11.6.2
+npm notice Changelog: https://github.com/npm/cli/releases/tag/v11.6.2
+npm notice To update run: npm install -g npm@11.6.2
+npm notice

@@ -379,19 +379,14 @@ class ASTNodeProcessor {
      * 提取条件表达式
      */
     private extractCondition(node: SyntaxNode): string {
-        const DEBUG = process.env.DEBUG_CONDITIONAL === '1';
         const text = this.getNodeText(node);
-        if (DEBUG) console.log(`[COND] getNodeText length: ${text.length}, first 100 chars: "${text.substring(0, 100).replace(/\n/g, '\\n')}"`);
-        
         // 条件表达式应该在第一行（到第一个真正的换行符之前）
         // 处理 Windows 和 Unix 风格的换行符
         const firstLine = text.split(/\r?\n/)[0];
-        if (DEBUG) console.log(`[COND] firstLine: "${firstLine}"`);
         
         // 提取条件表达式（#if 或 #elif 后面的内容，到注释或行尾）
         // 修复：支持 #if(...) 这种没有空格的格式
         const match = firstLine.match(/#(?:el)?if\s*(.+?)(?:\/\/|\/\*|$)/);
-        if (DEBUG) console.log(`[COND] match result: ${match ? `"${match[1]}"` : 'null'}`);
         return match ? match[1].trim() : '';
     }
 
@@ -588,13 +583,9 @@ class ASTNodeProcessor {
      * 处理完整的条件编译块（#if ... #elif ... #else ... #endif）
      */
     private processConditionalBlock(node: SyntaxNode, parentConditionActive: boolean): void {
-        const DEBUG = process.env.DEBUG_CONDITIONAL === '1';
-        
         // 首先处理 #if 或 #ifdef
         let isIfdef = node.type === 'preproc_ifdef';
         let conditionMet = false;
-        
-        if (DEBUG) console.log(`[COND] Processing ${node.type} block`);
         
         if (isIfdef) {
             const macroName = this.extractMacroName(node);
@@ -604,20 +595,14 @@ class ASTNodeProcessor {
                 
                 if (isIfndef) {
                     conditionMet = !this.expressionEvaluator.hasMacro(macroName);
-                    if (DEBUG) console.log(`[COND] #ifndef ${macroName}: ${conditionMet}`);
                 } else {
                     conditionMet = this.expressionEvaluator.hasMacro(macroName);
-                    if (DEBUG) console.log(`[COND] #ifdef ${macroName}: ${conditionMet}`);
                 }
             }
         } else {
             const conditionText = this.extractCondition(node);
-            if (DEBUG) console.log(`[COND] Extracted condition text: "${conditionText}"`);
             if (conditionText) {
                 conditionMet = this.expressionEvaluator.evaluate(conditionText);
-                if (DEBUG) console.log(`[COND] #if ${conditionText}: ${conditionMet}`);
-            } else {
-                if (DEBUG) console.log(`[COND] No condition text extracted!`);
             }
         }
 
