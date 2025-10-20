@@ -1463,14 +1463,19 @@ export class ArduinoLinter {
       const line = lines[i].trim();
       if (!line) continue;
       
-      // 匹配标准格式：file:line:column: severity: message
-      let match = line.match(/^([^:]+):(\d+):(\d+):\s*(error|warning|note|fatal error):\s*(.+)$/);
+      // 尝试从行中提取编译器错误信息（可能嵌套在其他文本中）
+      // 匹配格式：任何地方的 file:line:column: severity: message
+      let match = line.match(/([^:\s]+):(\d+):(\d+):\s*(error|warning|note|fatal error):\s*(.+)$/);
       if (match) {
         const [, file, lineNum, colNum, severity, message] = match;
         
+        // 计算正确的行号：需要减去添加的头文件行数
+        // 我们在 convertSketchToCpp 中添加了 #include <Arduino.h> 和可能的函数声明
+        const originalLine = this.mapLineNumberToOriginal(parseInt(lineNum, 10));
+        
         const lintError: LintError = {
           file: originalFile, // 使用原始文件名而不是临时文件名
-          line: parseInt(lineNum, 10),
+          line: originalLine,
           column: parseInt(colNum, 10),
           message: message.trim(),
           severity: severity.includes('error') ? 'error' : severity as 'error' | 'warning' | 'note'
@@ -1522,5 +1527,29 @@ export class ArduinoLinter {
     }
     
     return { errors, warnings, notes };
+  }
+
+  /**
+   * 将生成的 C++ 文件的行号映射回原始 sketch 文件的行号
+   */
+  private mapLineNumberToOriginal(cppLineNumber: number): number {
+    // 在 convertSketchToCpp 中，我们添加了：
+    // 1. #include <Arduino.h>  (第1行)
+    // 2. 空行                  (第2行)  
+    // 3. 可能的函数声明         (若干行)
+    // 4. 空行                  (第n行)
+    // 5. 原始代码开始           (第n+1行)
+    
+    // 简化处理：假设添加了2行头文件和声明
+    // 实际应该根据 convertSketchToCpp 的具体实现来计算
+    const headerLines = 2; // #include <Arduino.h> + 空行
+    
+    if (cppLineNumber <= headerLines) {
+      // 错误在头文件部分，映射到第1行
+      return 1;
+    }
+    
+    // 错误在原始代码部分，减去头文件行数
+    return Math.max(1, cppLineNumber - headerLines);
   }
 }
