@@ -1020,8 +1020,9 @@ export class ArduinoLinter {
     // 首先进行快速静态分析
     const fastResult = await this.performFastAnalysis(options, startTime);
     
-    // 如果快速检查没有发现错误，直接返回
-    if (fastResult.success) {
+    // 如果快速检查既没有错误也没有警告，直接返回
+    // 现在要求：如果存在 errors 或 warnings，都需要使用准确模式进行进一步验证
+    if (fastResult.errors.length === 0 && fastResult.warnings.length === 0) {
       return fastResult;
     }
     
@@ -1393,7 +1394,7 @@ export class ArduinoLinter {
       }
     }
     
-    // 后备方案：从配置中解析路径
+    // 后备方案：从配置中解析路径（只在没有任何SDK路径时使用）
     if (includes.length === 0) {
       this.logger.verbose('Using fallback include path resolution...');
       
