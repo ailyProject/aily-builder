@@ -13,6 +13,7 @@ export interface LintCacheKey {
   buildProperties: string;
   boardOptions: string;
   sourceFile: string;
+  fileContentHash?: string; // 文件内容哈希，用于检测文件变化
   mode?: string;
 }
 

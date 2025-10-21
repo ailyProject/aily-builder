@@ -165,12 +165,17 @@ export class ParallelStaticAnalyzer {
     const notes: LintError[] = [];
 
     const declaredVars = new Set<string>();
-    const usedVars = new Set<string>();
+    const usedVars = new Map<string, { line: number; column: number }>(); // 记录变量使用位置
     const globalVars = new Set<string>();
     
     // 分析变量声明和使用
     lines.forEach((line, lineIndex) => {
       const trimmed = line.trim();
+      
+      // 跳过预处理指令和注释
+      if (trimmed.startsWith('#') || trimmed.startsWith('//') || trimmed.startsWith('/*')) {
+        return;
+      }
       
       // 检查变量声明
       const varDecl = this.extractVariableDeclaration(trimmed);
@@ -182,17 +187,21 @@ export class ParallelStaticAnalyzer {
       }
       
       // 检查变量使用
-      const usedVarsInLine = this.extractVariableUsages(trimmed);
-      usedVarsInLine.forEach(varName => usedVars.add(varName));
+      const usedVarsInLine = this.extractVariableUsages(trimmed, lineIndex + 1);
+      usedVarsInLine.forEach(({ varName, line, column }) => {
+        if (!usedVars.has(varName)) {
+          usedVars.set(varName, { line, column });
+        }
+      });
     });
     
     // 检查未声明的变量使用
-    usedVars.forEach(varName => {
-      if (!declaredVars.has(varName) && !this.isArduinoBuiltin(varName)) {
+    usedVars.forEach(({ line, column }, varName) => {
+      if (!declaredVars.has(varName) && !this.isArduinoBuiltin(varName) && !this.isKeyword(varName)) {
         warnings.push({
           file: filePath,
-          line: 1, // 简化标记
-          column: 1,
+          line,
+          column,
           message: `Possibly undeclared variable: '${varName}'`,
           severity: 'warning',
           code: 'UNDECLARED_VAR'
@@ -576,18 +585,71 @@ export class ParallelStaticAnalyzer {
     return matches ? matches[2] : null;
   }
 
-  private extractVariableUsages(line: string): string[] {
-    // 简化版本：提取变量使用
-    const variables: string[] = [];
-    const matches = line.match(/\b[a-zA-Z_]\w*\b/g);
-    if (matches) {
-      matches.forEach(match => {
-        if (!this.isKeyword(match) && !this.isArduinoBuiltin(match)) {
-          variables.push(match);
-        }
-      });
+  private extractVariableUsages(line: string, lineNumber: number): Array<{ varName: string; line: number; column: number }> {
+    const variables: Array<{ varName: string; line: number; column: number }> = [];
+    
+    // 跳过预处理指令
+    if (line.trim().startsWith('#')) {
+      return variables;
     }
+    
+    // 使用正则表达式匹配变量名，但要更精确
+    const varPattern = /\b[a-zA-Z_]\w*\b/g;
+    let match;
+    
+    while ((match = varPattern.exec(line)) !== null) {
+      const varName = match[0];
+      const column = match.index + 1;
+      
+      // 过滤掉关键字、Arduino 内置函数和类型
+      if (!this.isKeyword(varName) && !this.isArduinoBuiltin(varName) && !this.isType(varName)) {
+        // 进一步检查：避免把函数调用、属性访问等当作变量
+        if (this.isValidVariableUsage(line, match.index, varName)) {
+          variables.push({ varName, line: lineNumber, column });
+        }
+      }
+    }
+    
     return variables;
+  }
+  
+  private isValidVariableUsage(line: string, index: number, varName: string): boolean {
+    // 检查是否是赋值语句左侧的变量（可能是未声明变量的使用）
+    const afterVar = line.substring(index + varName.length);
+    const beforeVar = line.substring(0, index);
+    
+    // 如果后面紧跟着 '('，这是函数调用，不是变量使用
+    if (afterVar.trim().startsWith('(')) {
+      return false;
+    }
+    
+    // 如果前面是 '.'，这是属性访问，不是独立变量
+    if (beforeVar.trim().endsWith('.')) {
+      return false;
+    }
+    
+    // 如果是 #include 语句中的内容，跳过
+    if (beforeVar.includes('#include')) {
+      return false;
+    }
+    
+    // 如果是字符串字面量中的内容，跳过
+    const quoteBefore = beforeVar.split('"').length - 1;
+    const quoteAfter = afterVar.split('"').length - 1;
+    if (quoteBefore % 2 === 1) {
+      return false;
+    }
+    
+    return true;
+  }
+  
+  private isType(word: string): boolean {
+    const types = [
+      'int', 'float', 'double', 'char', 'byte', 'boolean', 'String',
+      'void', 'long', 'short', 'unsigned', 'signed', 'const', 'static',
+      'uint8_t', 'uint16_t', 'uint32_t', 'int8_t', 'int16_t', 'int32_t'
+    ];
+    return types.includes(word);
   }
 
   private isGlobalScope(lines: string[], lineIndex: number): boolean {
