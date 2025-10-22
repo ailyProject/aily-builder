@@ -187,7 +187,7 @@ export class ParallelStaticAnalyzer {
       }
       
       // 检查变量使用
-      const usedVarsInLine = this.extractVariableUsages(trimmed, lineIndex + 1);
+      const usedVarsInLine = this.extractVariableUsages(line, lineIndex + 1);
       usedVarsInLine.forEach(({ varName, line, column }) => {
         if (!usedVars.has(varName)) {
           usedVars.set(varName, { line, column });
@@ -599,6 +599,7 @@ export class ParallelStaticAnalyzer {
     
     while ((match = varPattern.exec(line)) !== null) {
       const varName = match[0];
+      // 正确计算列位置：match.index 是基于0的，需要+1转换为基于1的列号
       const column = match.index + 1;
       
       // 过滤掉关键字、Arduino 内置函数和类型
