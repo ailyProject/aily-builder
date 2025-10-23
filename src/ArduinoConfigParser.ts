@@ -578,7 +578,7 @@ export class ArduinoConfigParser {
         process.env['BUILD_MCU'] = boardConfig['build.mcu'];
 
         let moreConfig = {
-            'runtime.os': 'windows',
+            'runtime.os': os.platform() === 'win32' ? 'windows' : 'unknown',
             'runtime.ide.version': '10607',
             'runtime.tools.avr-gcc.path': process.env['COMPILER_PATH'] || await this.findToolPath('avr-gcc', toolVersions?.['avr-gcc'] || ''),
             'runtime.tools.esp-x32.path': process.env['COMPILER_PATH'] || await this.findToolPath('esp-x32', toolVersions?.['esp-x32'] || ''),

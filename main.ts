@@ -81,7 +81,15 @@ program
     // 为了避免不同项目的同名sketch冲突，使用项目路径的MD5哈希值
     const projectPathMD5 = calculateMD5(sketchPath).substring(0, 8); // 只取前8位MD5值
     const uniqueSketchName = `${sketchName}_${projectPathMD5}`;
-    const defaultBuildPath = path.join(os.homedir(), 'AppData', 'Local', 'aily-builder', 'project', uniqueSketchName);
+    // 修复默认构建路径，使其在不同操作系统上都能正常工作
+    const defaultBuildPath = path.join(
+      os.platform() === 'win32' 
+        ? path.join(os.homedir(), 'AppData', 'Local')
+        : path.join(os.homedir(), '/Library/Application Support/'),
+      'aily-builder', 
+      'project', 
+      uniqueSketchName
+    );
 
     const buildPath = options.buildPath ? path.resolve(options.buildPath) : defaultBuildPath;
 

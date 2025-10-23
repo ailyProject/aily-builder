@@ -1,10 +1,13 @@
 const { compile } = require('nexe')
+const os = require("os");
+
+console.log('开始构建',os.platform())
 
 compile(
     {
         input: './dist/main.js',
-        output: './dist/aily-builder.exe',
-        target: 'windows-x64-22.19.0',
+        output: os.platform() === 'win32' ? 'dist/aily-builder.exe' : 'dist/aily-builder',
+        target: os.platform() === 'win32' ? 'windows-x64-22.19.0': 'darwin-arm64-22.19.0',
         name: 'aily-builder',
         // ico: undefined, // 可以删除或设置为实际图标路径
         build: true,

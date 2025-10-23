@@ -348,12 +348,12 @@ export class NinjaCompilationPipeline {
 
   private getNinjaExecutablePath(): string {
     // 打包后路径
-    let projectNinjaPath = path.join(__dirname, 'ninja', 'ninja.exe');
+    let projectNinjaPath = path.join(__dirname, 'ninja', process.platform === 'win32' ? 'ninja.exe' : 'ninja');
     if (fs.existsSync(projectNinjaPath)) {
       return projectNinjaPath;
     }
     // 开发环境路径
-    projectNinjaPath = path.join(process.cwd(), 'ninja', 'ninja.exe');
+    projectNinjaPath = path.join(process.cwd(), 'ninja', process.platform === 'win32' ? 'ninja.exe' : 'ninja');
     if (fs.existsSync(projectNinjaPath)) {
       return projectNinjaPath;
     }
