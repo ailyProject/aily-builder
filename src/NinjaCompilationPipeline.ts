@@ -80,7 +80,10 @@ export class NinjaCompilationPipeline {
         const buildPath = process.env['BUILD_PATH'] || '';
         let outFilePath: string;
 
-        if (this.compileConfig.args.hex) {
+        // 优先级：zip > hex > bin > elf
+        if (this.compileConfig.args.zip) {
+          outFilePath = path.join(buildPath, `${sketchName}.zip`);
+        } else if (this.compileConfig.args.hex) {
           outFilePath = path.join(buildPath, `${sketchName}.hex`);
         } else if (this.compileConfig.compiler.bin) {
           outFilePath = path.join(buildPath, `${sketchName}.bin`);

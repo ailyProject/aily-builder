@@ -165,6 +165,26 @@ export class ArduinoCompiler {
     RP2040 配置 end
     */
 
+    /*
+    NRF52 和其他平台的 ZIP 文件生成
+    */
+    // 生成ZIP文件（如果配置了，用于DFU上传等）
+    if (arduinoConfig.platform['recipe.objcopy.zip.pattern']) {
+      this.logger.info('Generating ZIP file for DFU upload...');
+      try {
+        const resolvedCommand = this.resolveVariables(arduinoConfig.platform['recipe.objcopy.zip.pattern']);
+        await this.runCommand(resolvedCommand);
+        finalOutputPath = path.join(process.env['BUILD_PATH'] || '', `${process.env['SKETCH_NAME']}.zip`);
+        this.logger.info(`ZIP file generated: ${finalOutputPath}`);
+      } catch (error) {
+        this.logger.warn(`Failed to generate ZIP file: ${error instanceof Error ? error.message : error}`);
+        // 不中断编译，继续返回HEX文件
+      }
+    }
+    /*
+    NRF52 ZIP 文件生成 end
+    */
+
     const totalTime = Date.now() - startTime;
     const buildTime = totalTime - preprocessTime;
     // 6. 计算固件大小信息

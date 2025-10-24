@@ -21,7 +21,7 @@ export class CompileConfigManager {
 
   parseCompileConfig(arduinoConfig: any) {
 
-    let flag_eep, flag_hex, bin, flag_bin, ld, flag_ld, objcopy;
+    let flag_eep, flag_hex, bin, flag_bin, zip, flag_zip, ld, flag_ld, objcopy;
     if (arduinoConfig.platform['recipe.objcopy.eep.pattern']) {
       flag_eep = removeCompilerPath(arduinoConfig.platform['recipe.objcopy.eep.pattern'])
     }
@@ -32,6 +32,10 @@ export class CompileConfigManager {
     if (arduinoConfig.platform['recipe.objcopy.bin.pattern']) {
       bin = extractToolName(arduinoConfig.platform['recipe.objcopy.bin.pattern'])
       flag_bin = removeCompilerPath(arduinoConfig.platform['recipe.objcopy.bin.pattern'])
+    }
+    if (arduinoConfig.platform['recipe.objcopy.zip.pattern']) {
+      zip = extractToolName(arduinoConfig.platform['recipe.objcopy.zip.pattern'])
+      flag_zip = removeCompilerPath(arduinoConfig.platform['recipe.objcopy.zip.pattern'])
     }
     if (arduinoConfig.platform['recipe.c.combine.pattern']) {
       // 先尝试从模式中提取编译器名称
@@ -84,6 +88,7 @@ export class CompileConfigManager {
         eep: escapeQuotedDefines(flag_eep),
         hex: escapeQuotedDefines(flag_hex),
         bin: escapeQuotedDefines(flag_bin),
+        zip: escapeQuotedDefines(flag_zip),
         size: escapeQuotedDefines(arduinoConfig.platform['recipe.size.pattern'].substring(arduinoConfig.platform['recipe.size.pattern'].indexOf(' ') + 1))
       },
       includes: [
