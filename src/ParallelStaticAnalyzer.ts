@@ -153,7 +153,7 @@ export class ParallelStaticAnalyzer {
   }
 
   /**
-   * 分析变量声明和使用
+   * 分析变量声明和使用 - 支持作用域追踪
    */
   private async analyzeVariables(lines: string[], filePath: string): Promise<{
     errors: LintError[];
@@ -164,11 +164,15 @@ export class ParallelStaticAnalyzer {
     const warnings: LintError[] = [];
     const notes: LintError[] = [];
 
-    const declaredVars = new Set<string>();
-    const usedVars = new Map<string, { line: number; column: number }>(); // 记录变量使用位置
+    // 按函数作用域分类追踪变量
     const globalVars = new Set<string>();
+    const functionScopes = new Map<string, Set<string>>(); // 函数名 -> 声明的变量集合
+    const usedVarsInLine = new Map<number, Array<{ varName: string; column: number }>>(); // 行号 -> 使用的变量
     
-    // 分析变量声明和使用
+    let currentFunction: string | null = null;
+    let braceDepth = 0;
+    
+    // 第一遍：建立作用域和变量声明的映射
     lines.forEach((line, lineIndex) => {
       const trimmed = line.trim();
       
@@ -177,36 +181,89 @@ export class ParallelStaticAnalyzer {
         return;
       }
       
-      // 检查变量声明
+      // 追踪大括号深度和函数作用域
+      const openBraces = (line.match(/\{/g) || []).length;
+      const closeBraces = (line.match(/\}/g) || []).length;
+      
+      // 检查函数定义（setup/loop 等）
+      const funcDef = line.match(/\b(setup|loop|(\w+)\s*\([^)]*\))\s*\{/);
+      if (funcDef && braceDepth === 0) {
+        // 进入新函数作用域
+        currentFunction = funcDef[1].replace(/\s*\{/, '').trim();
+        if (!functionScopes.has(currentFunction)) {
+          functionScopes.set(currentFunction, new Set());
+        }
+      }
+      
+      braceDepth += openBraces - closeBraces;
+      
+      // 在函数作用域内检查变量声明
       const varDecl = this.extractVariableDeclaration(trimmed);
       if (varDecl) {
-        declaredVars.add(varDecl);
-        if (this.isGlobalScope(lines, lineIndex)) {
+        if (currentFunction && braceDepth > 0) {
+          // 在函数作用域内
+          functionScopes.get(currentFunction)?.add(varDecl);
+        } else if (braceDepth === 0) {
+          // 在全局作用域
           globalVars.add(varDecl);
         }
       }
       
-      // 检查变量使用
-      const usedVarsInLine = this.extractVariableUsages(line, lineIndex + 1);
-      usedVarsInLine.forEach(({ varName, line, column }) => {
-        if (!usedVars.has(varName)) {
-          usedVars.set(varName, { line, column });
-        }
-      });
+      // 第二遍处理会在下面进行
+      if (braceDepth === 0) {
+        currentFunction = null;
+      }
     });
     
-    // 检查未声明的变量使用
-    usedVars.forEach(({ line, column }, varName) => {
-      if (!declaredVars.has(varName) && !this.isArduinoBuiltin(varName) && !this.isKeyword(varName)) {
-        warnings.push({
-          file: filePath,
-          line,
-          column,
-          message: `Possibly undeclared variable: '${varName}'`,
-          severity: 'warning',
-          code: 'UNDECLARED_VAR'
-        });
+    // 第二遍：检查变量使用
+    currentFunction = null;
+    braceDepth = 0;
+    const availableVars = new Set<string>([...globalVars]); // 当前可用变量（全局 + 当前函数作用域）
+    
+    lines.forEach((line, lineIndex) => {
+      const trimmed = line.trim();
+      
+      // 跳过预处理指令和注释
+      if (trimmed.startsWith('#') || trimmed.startsWith('//') || trimmed.startsWith('/*')) {
+        return;
       }
+      
+      // 更新大括号深度和函数作用域
+      const openBraces = (line.match(/\{/g) || []).length;
+      const closeBraces = (line.match(/\}/g) || []).length;
+      
+      // 检查函数定义
+      const funcDef = line.match(/\b(setup|loop|(\w+)\s*\([^)]*\))\s*\{/);
+      if (funcDef && braceDepth === 0) {
+        currentFunction = funcDef[1].replace(/\s*\{/, '').trim();
+        // 重建可用变量：全局 + 当前函数局部
+        availableVars.clear();
+        globalVars.forEach(v => availableVars.add(v));
+        if (currentFunction && functionScopes.has(currentFunction)) {
+          functionScopes.get(currentFunction)?.forEach(v => availableVars.add(v));
+        }
+      }
+      
+      braceDepth += openBraces - closeBraces;
+      
+      if (braceDepth === 0) {
+        currentFunction = null;
+      }
+      
+      // 检查变量使用
+      const varsInLine = this.extractVariableUsages(line, lineIndex + 1);
+      varsInLine.forEach(({ varName, column }) => {
+        if (!availableVars.has(varName) && !this.isArduinoBuiltin(varName) && !this.isKeyword(varName)) {
+          warnings.push({
+            file: filePath,
+            line: lineIndex + 1,
+            column,
+            message: `Possibly undeclared variable: '${varName}'`,
+            severity: 'warning',
+            code: 'UNDECLARED_VAR'
+          });
+        }
+      });
     });
 
     return { errors, warnings, notes };
@@ -495,11 +552,23 @@ export class ParallelStaticAnalyzer {
   private checkSemicolons(lines: string[], filePath: string, errors: LintError[], warnings: LintError[]): void {
     for (let i = 0; i < lines.length; i++) {
       const line = lines[i];
-      const trimmed = line.trim();
+      let trimmed = line.trim();
       
       // 跳过空行、注释行、预处理指令
       if (!trimmed || trimmed.startsWith('//') || trimmed.startsWith('/*') || 
           trimmed.startsWith('*') || trimmed.startsWith('#')) {
+        continue;
+      }
+      
+      // 移除行尾注释，但需要注意不要移除字符串中的 //
+      // 简单方法：找到第一个 // 位置，确保它不在字符串内
+      const commentIndex = this.findCommentStart(trimmed);
+      if (commentIndex !== -1) {
+        trimmed = trimmed.substring(0, commentIndex).trim();
+      }
+      
+      // 跳过空行（注释移除后可能变为空）
+      if (!trimmed) {
         continue;
       }
       
@@ -529,6 +598,44 @@ export class ParallelStaticAnalyzer {
   }
 
   // === 辅助方法 ===
+
+  private findCommentStart(line: string): number {
+    // 找到第一个注释位置（// 或 /*），但要确保不在字符串内
+    let inDoubleQuote = false;
+    let inSingleQuote = false;
+    
+    for (let i = 0; i < line.length - 1; i++) {
+      const char = line[i];
+      const nextChar = line[i + 1];
+      
+      // 处理转义字符
+      if (char === '\\') {
+        i++; // 跳过下一个字符
+        continue;
+      }
+      
+      // 切换引号状态
+      if (char === '"' && !inSingleQuote) {
+        inDoubleQuote = !inDoubleQuote;
+      } else if (char === "'" && !inDoubleQuote) {
+        inSingleQuote = !inSingleQuote;
+      }
+      
+      // 如果不在字符串内，检查注释开始
+      if (!inDoubleQuote && !inSingleQuote) {
+        // 检查 //
+        if (char === '/' && nextChar === '/') {
+          return i;
+        }
+        // 检查 /*
+        if (char === '/' && nextChar === '*') {
+          return i;
+        }
+      }
+    }
+    
+    return -1;
+  }
 
   private isInStringOrComment(line: string, pos: number): boolean {
     // 简化版本：检查是否在字符串或注释中
