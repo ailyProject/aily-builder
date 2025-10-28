@@ -85,7 +85,7 @@ program
     const defaultBuildPath = path.join(
       os.platform() === 'win32' 
         ? path.join(os.homedir(), 'AppData', 'Local')
-        : path.join(os.homedir(), '/Library/Application Support/'),
+        : path.join(os.homedir(), 'Library'),
       'aily-builder', 
       'project', 
       uniqueSketchName

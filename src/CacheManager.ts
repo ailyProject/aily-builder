@@ -27,8 +27,18 @@ export class CacheManager {
 
     constructor(logger: Logger) {
         this.logger = logger;
-        // 使用用户的AppData\Local\aily-builder\cache作为缓存目录
-        this.cacheDir = path.join(os.homedir(), 'AppData', 'Local', 'aily-builder', 'cache');
+        if (os.platform() === 'win32') {
+            // 使用用户的AppData\Local\aily-builder\cache作为缓存目录
+            this.cacheDir = path.join(os.homedir(), 'AppData', 'Local', 'aily-builder', 'cache');
+        } else if (os.platform() === 'darwin') {
+            // 使用用户的Library/Caches/aily-builder/cache作为缓存目录
+            this.cacheDir = path.join(os.homedir(), 'Library', 'Caches', 'aily-builder', 'cache');
+        } else {
+            // 对于其他平台，使用用户的主目录下的.aily-builder/cache作为缓存目录
+            this.cacheDir = path.join(os.homedir(), '.aily-builder', 'cache');
+        }
+
+        // 确保缓存目录存在
         fs.ensureDirSync(this.cacheDir);
         
         this.logger.debug(`Cache directory: ${this.cacheDir}`);
