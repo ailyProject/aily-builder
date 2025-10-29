@@ -219,10 +219,15 @@ export class ArduinoConfigParser {
 
     /**
      * 应用 Windows 特定的配置覆盖
-     * 当某个 key 有 .windows 版本时，使用 Windows 版本覆盖普通版本
+     * 当某个 key 有 .windows 版本时，仅在 Windows 系统下使用 Windows 版本覆盖普通版本
      * @param {Object} variables 变量映射
      */
     private applyWindowsOverrides(variables: { [key: string]: string }): void {
+        // 只在 Windows 系统下应用 Windows 覆盖
+        if (os.platform() !== 'win32') {
+            return;
+        }
+
         // 查找所有以 .windows 结尾的键
         const windowsKeys = Object.keys(variables).filter(key => key.endsWith('.windows'));
 
