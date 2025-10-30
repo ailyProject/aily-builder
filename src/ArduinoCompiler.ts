@@ -298,8 +298,18 @@ export class ArduinoCompiler {
 
   async runPostBuildHooks(arduinoConfig) {
     for (let i = 1; i <= 3; i++) {
-      const key = `recipe.hooks.objcopy.postobjcopy.${i}.pattern.windows`;
-      let script = arduinoConfig.platform[key] ? arduinoConfig.platform[key] : arduinoConfig.platform[`recipe.hooks.objcopy.postobjcopy.${i}.pattern`];
+      // 根据操作系统选择相应的键
+      const isWindows = process.platform === 'win32';
+      const windowsKey = `recipe.hooks.objcopy.postobjcopy.${i}.pattern.windows`;
+      const defaultKey = `recipe.hooks.objcopy.postobjcopy.${i}.pattern`;
+      
+      let script;
+      if (isWindows && arduinoConfig.platform[windowsKey]) {
+        script = arduinoConfig.platform[windowsKey];
+      } else {
+        script = arduinoConfig.platform[defaultKey];
+      }
+      
       if (script) {
         this.logger.info(`Post-build hook ${i}: ${script}`);
         try {
