@@ -593,15 +593,16 @@ export class NinjaGenerator {
       const includeArgs = this.dependencies
         .map(dep => {
           const varName = `${dep.name.replace(/[^a-zA-Z0-9]/g, '_')}_path`;
-          return `-I$${varName}`;
+          // 使用引号包围变量以处理包含特殊字符的路径
+          return `"-I$${varName}"`;
         })
         .join(' ');
       command = command.replace(/%INCLUDE_PATHS%/g, includeArgs);
     }
 
     // 替换输入输出文件
-    command = command.replace(/"%SOURCE_FILE_PATH%"/g, replacements.input || '$in');
-    command = command.replace(/"%OBJECT_FILE_PATH%"/g, replacements.output || '$out');
+    command = command.replace(/"%SOURCE_FILE_PATH%"/g, replacements.input || '"$in"');
+    command = command.replace(/"%OBJECT_FILE_PATH%"/g, replacements.output || '"$out"');
 
     // 处理链接时的对象文件路径
     if (command.includes('%OBJECT_FILE_PATHS%')) {

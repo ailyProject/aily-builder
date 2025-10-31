@@ -784,6 +784,33 @@ export class ArduinoConfigParser {
 
         // 设置编译器路径
         process.env['COMPILER_PATH'] = process.env['COMPILER_PATH'] || platformConfig['compiler.path'] || platformConfig['runtime.tools.avr-gcc.path'];
+        
+        // 调试：检查编译器状态
+        const compilerPath = platformConfig['compiler.path'];
+        const compilerCmd = platformConfig['compiler.cpp.cmd'];
+        const fullCompilerPath = compilerPath + compilerCmd;
+        
+        console.log('=== 编译器状态检查 ===');
+        console.log('compiler.path:', compilerPath);
+        console.log('compiler.cpp.cmd:', compilerCmd); 
+        console.log('完整编译器路径:', fullCompilerPath);
+        
+        // 检查编译器文件是否存在
+        try {
+            const fs = require('fs');
+            const exists = fs.existsSync(fullCompilerPath);
+            console.log('编译器文件存在:', exists);
+            
+            if (exists) {
+                const stats = fs.statSync(fullCompilerPath);
+                console.log('编译器文件权限:', stats.mode.toString(8));
+                console.log('编译器文件是否可执行:', !!(stats.mode & parseInt('111', 8)));
+            }
+        } catch (error) {
+            console.log('检查编译器文件时出错:', error.message);
+        }
+        console.log('=====================');
+        
         // console.log(`process.env['COMPILER_PATH']:`, process.env['COMPILER_PATH'], platformConfig);
 
         // 设置 SDK_CORE_PATH

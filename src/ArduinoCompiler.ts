@@ -284,7 +284,13 @@ export class ArduinoCompiler {
       if (script) {
         this.logger.info(`Pre-build hook ${i}: ${script}`);
         try {
-          const output = await this.runCommand(script);
+          // 解析变量并清理空的命令部分
+          let resolvedScript = this.resolveVariables(script);
+          resolvedScript = this.cleanEmptyCommands(resolvedScript);
+          
+          this.logger.verbose(`Resolved pre-build hook ${i}: ${resolvedScript}`);
+          
+          const output = await this.runCommand(resolvedScript);
           if (output.trim()) {
             this.logger.verbose(`Pre-build hook ${i} output: ${output.trim()}`);
           }
@@ -313,7 +319,13 @@ export class ArduinoCompiler {
       if (script) {
         this.logger.info(`Post-build hook ${i}: ${script}`);
         try {
-          const output = await this.runCommand(script);
+          // 解析变量并清理空的命令部分
+          let resolvedScript = this.resolveVariables(script);
+          resolvedScript = this.cleanEmptyCommands(resolvedScript);
+          
+          this.logger.verbose(`Resolved post-build hook ${i}: ${resolvedScript}`);
+          
+          const output = await this.runCommand(resolvedScript);
           if (output.trim()) {
             this.logger.verbose(`Post-build hook ${i} output: ${output.trim()}`);
           }
@@ -508,5 +520,26 @@ export class ArduinoCompiler {
     resolvedCommand = escapeQuotedDefines(resolvedCommand);
 
     return resolvedCommand;
+  }
+
+  /**
+   * 清理命令中的空字符串部分，避免执行空命令
+   * @param command 待清理的命令字符串
+   * @returns 清理后的命令字符串
+   */
+  private cleanEmptyCommands(command: string): string {
+    if (!command) return command;
+
+    // 将命令按空格分割，移除空的引号对和空字符串
+    const parts = command.split(/\s+/);
+    const cleanedParts = parts.filter(part => {
+      // 移除空字符串
+      if (!part || part.trim() === '') return false;
+      // 移除空的引号对
+      if (part === '""' || part === "''") return false;
+      return true;
+    });
+
+    return cleanedParts.join(' ');
   }
 }
