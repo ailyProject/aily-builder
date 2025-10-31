@@ -605,21 +605,6 @@ export class ArduinoConfigParser {
             }
         }
 
-        console.log('\n=== 平台变量解析分析报告 ===');
-
-        if (unresolvedVars.size > 0) {
-            console.log(`发现 ${unresolvedVars.size} 个未解析的变量:`);
-            Array.from(unresolvedVars).forEach(v => {
-                console.log(`  {${v}}`);
-            });
-
-            console.log(`\n共有 ${unresolvedEntries.length} 个条目包含未解析变量:`);
-            unresolvedEntries.forEach(entry => {
-                console.log(`  ${entry.key} = ${entry.value}`);
-            });
-        }
-        console.log('============================\n');
-
         return {
             unresolvedVariables: Array.from(unresolvedVars),
             unresolvedEntries: unresolvedEntries
@@ -784,32 +769,6 @@ export class ArduinoConfigParser {
 
         // 设置编译器路径
         process.env['COMPILER_PATH'] = process.env['COMPILER_PATH'] || platformConfig['compiler.path'] || platformConfig['runtime.tools.avr-gcc.path'];
-        
-        // 调试：检查编译器状态
-        const compilerPath = platformConfig['compiler.path'];
-        const compilerCmd = platformConfig['compiler.cpp.cmd'];
-        const fullCompilerPath = compilerPath + compilerCmd;
-        
-        console.log('=== 编译器状态检查 ===');
-        console.log('compiler.path:', compilerPath);
-        console.log('compiler.cpp.cmd:', compilerCmd); 
-        console.log('完整编译器路径:', fullCompilerPath);
-        
-        // 检查编译器文件是否存在
-        try {
-            const fs = require('fs');
-            const exists = fs.existsSync(fullCompilerPath);
-            console.log('编译器文件存在:', exists);
-            
-            if (exists) {
-                const stats = fs.statSync(fullCompilerPath);
-                console.log('编译器文件权限:', stats.mode.toString(8));
-                console.log('编译器文件是否可执行:', !!(stats.mode & parseInt('111', 8)));
-            }
-        } catch (error) {
-            console.log('检查编译器文件时出错:', error.message);
-        }
-        console.log('=====================');
         
         // console.log(`process.env['COMPILER_PATH']:`, process.env['COMPILER_PATH'], platformConfig);
 
