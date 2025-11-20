@@ -65,10 +65,12 @@ interface BoardParseResult {
 export class ArduinoConfigParser {
     private runtimeProperties: Map<string, string>;
     private globalProperties: Map<string, string>;
+    private selectedMenuOptions: Map<string, string>;
 
     constructor() {
         this.runtimeProperties = new Map<string, string>();
         this.globalProperties = new Map<string, string>();
+        this.selectedMenuOptions = new Map<string, string>();
     }
 
     /**
@@ -493,6 +495,9 @@ export class ArduinoConfigParser {
      * @param {Object} buildProperties 构建属性，用于指定特定菜单选项
      */
     private applyDefaultMenuOptionsToBoard(boardConfig: { [key: string]: string }, buildProperties: { [key: string]: string } = {}): void {
+        // 清空之前的菜单选择记录
+        this.selectedMenuOptions.clear();
+        
         // 动态检测所有可用的菜单选项
         const availableMenuOptions = this.detectAvailableMenuOptions(boardConfig);
         
@@ -509,6 +514,9 @@ export class ArduinoConfigParser {
                     // 选择第一个选项作为默认值（按照在boards.txt中出现的顺序）
                     selectedValue = options[0];
                 }
+                
+                // 记录选择的菜单选项
+                this.selectedMenuOptions.set(menuType, selectedValue);
                 
                 // 直接应用菜单设置到 boardConfig
                 this.applyMenuSettings(boardConfig, menuType, selectedValue);
@@ -681,32 +689,33 @@ export class ArduinoConfigParser {
         }
 
         if (fqbnObj.package == 'esp32') {
-            const cpuFreq = boardConfig['build.f_cpu'] ? boardConfig['build.f_cpu'].replace('000000L', '') : '240';
-            const flashSize = boardConfig['build.flash_size'] ? boardConfig['build.flash_size'].replace(/MB$/i, 'M') : '4M';
-            const flashFreq = boardConfig['build.flash_freq'] || '80m';
-            const flashMode = boardConfig['build.flash_mode'] || 'qio';
-            const psram = boardConfig['build.psram'] || 'disabled';
-            const PartitionScheme = boardConfig['build.partitions'] || 'default';
-            const loopCore = boardConfig['build.loop_core'] || '1';
-            const eventsCore = boardConfig['build.events_core'] || '1';
-            const eraseFlash = boardConfig['build.erase_cmd'] || 'none';
-            const uploadSpeed = boardConfig['upload.speed'] || '921600';
-            const usbMode = boardConfig['build.usb_mode'] || 'hwcdc';
-            const cdcOnBoot = boardConfig['build.cdc_on_boot'] || 'default';
-            const mscOnBoot = boardConfig['build.msc_on_boot'] || 'default';
-            const dfuOnBoot = boardConfig['build.dfu_on_boot'] || 'default';
-            const uploadMode = boardConfig['upload.mode'] || 'default';
-            const debugLevel = boardConfig['build.debug_level'] || 'none';
-            const jtagAdapter = boardConfig['debug.tool'] || 'default';
-            const zigbeeMode = boardConfig['build.zigbee_mode'] || 'default';
-
-            boardConfig['build.fqbn'] = fqbn + ':' +
-                `UploadSpeed=${uploadSpeed},USBMode=${usbMode},CDCOnBoot=${cdcOnBoot},` +
-                `MSCOnBoot=${mscOnBoot},DFUOnBoot=${dfuOnBoot},UploadMode=${uploadMode},` +
-                `CPUFreq=${cpuFreq},FlashMode=${flashMode},FlashSize=${flashSize},` +
-                `PartitionScheme=${PartitionScheme},DebugLevel=${debugLevel},PSRAM=${psram},` +
-                `LoopCore=${loopCore},EventsCore=${eventsCore},EraseFlash=${eraseFlash},` +
-                `JTAGAdapter=${jtagAdapter},ZigbeeMode=${zigbeeMode}`
+            // 专注于菜单项 非菜单项不考虑
+            // // 获取基本参数（不是菜单选项）
+            // const cpuFreq = boardConfig['build.f_cpu'] ? boardConfig['build.f_cpu'].replace('000000L', '') : '240';
+            // const flashSize = boardConfig['build.flash_size'] ? boardConfig['build.flash_size'].replace(/MB$/i, 'M') : '4M';
+            // const uploadSpeed = boardConfig['upload.speed'] || '921600';
+            // const psram = boardConfig['build.psram'] || 'disabled';
+            // const PartitionScheme = boardConfig['build.partitions'] || 'default';
+            // const eraseFlash = boardConfig['build.erase_cmd'] || 'none';
+            
+            // 动态构建 FQBN 参数列表
+            const fqbnParams: string[] = [];
+            
+            // 添加固定参数
+            // fqbnParams.push(`UploadSpeed=${uploadSpeed}`);
+            // fqbnParams.push(`CPUFreq=${cpuFreq}`);
+            // fqbnParams.push(`FlashSize=${flashSize}`);
+            // fqbnParams.push(`PartitionScheme=${PartitionScheme}`);
+            // fqbnParams.push(`PSRAM=${psram}`);
+            // fqbnParams.push(`EraseFlash=${eraseFlash}`);
+            
+            // 动态添加菜单选项参数
+            this.selectedMenuOptions.forEach((selectedValue, menuType) => {
+                fqbnParams.push(`${menuType}=${selectedValue}`);
+            });
+            
+            // 生成最终的 FQBN
+            boardConfig['build.fqbn'] = fqbn + ':' + fqbnParams.join(',');
         }
 
         if (!boardConfig['build.mcu']) {
