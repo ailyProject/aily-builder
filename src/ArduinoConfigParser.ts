@@ -472,7 +472,8 @@ export class ArduinoConfigParser {
         const options: string[] = [];
         const menuPrefix = `menu.${menuName}.`;
         
-        for (const key in boardConfig) {
+        // 使用Object.keys()来保持插入顺序（即文件中的原始顺序）
+        Object.keys(boardConfig).forEach(key => {
             if (key.startsWith(menuPrefix)) {
                 // 提取选项名 (如 menu.flash.2097152_0.build.flash_total -> 2097152_0)
                 const parts = key.replace(menuPrefix, '').split('.');
@@ -480,9 +481,9 @@ export class ArduinoConfigParser {
                     options.push(parts[0]);
                 }
             }
-        }
+        });
         
-        return options; // 保持原始顺序
+        return options; // 保持文件中的原始顺序
     }
 
     /**
@@ -505,8 +506,8 @@ export class ArduinoConfigParser {
                 if (buildProperties[menuType] && options.includes(buildProperties[menuType])) {
                     selectedValue = buildProperties[menuType];
                 } else {
-                    // 优先选择 'default'，如果没有则选择第一个
-                    selectedValue = options.includes('default') ? 'default' : options[0];
+                    // 选择第一个选项作为默认值（按照在boards.txt中出现的顺序）
+                    selectedValue = options[0];
                 }
                 
                 // 直接应用菜单设置到 boardConfig
