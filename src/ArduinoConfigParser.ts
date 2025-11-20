@@ -637,7 +637,11 @@ export class ArduinoConfigParser {
             platformTxtPath = path.join(process.env['SDK_PATH'], 'platform.txt');
             boardsTxtPath = path.join(process.env['SDK_PATH'], 'boards.txt');
         } else {
-            let ARDUINO15_PACKAGE_PATH = path.join(os.homedir(), 'AppData', 'Local', 'Arduino15', 'packages', fqbnObj.package);
+            // 根据操作系统选择Arduino15目录的正确路径
+            const arduino15BasePath = os.platform() === 'win32' 
+                ? path.join(os.homedir(), 'AppData', 'Local', 'Arduino15')
+                : path.join(os.homedir(), 'Library', 'Arduino15');
+            let ARDUINO15_PACKAGE_PATH = path.join(arduino15BasePath, 'packages', fqbnObj.package);
             let ARDUINO15_PACKAGE_HARDWARE_PATH = path.join(ARDUINO15_PACKAGE_PATH, 'hardware', fqbnObj.platform);
             const platformTxtPattern = path.join(ARDUINO15_PACKAGE_HARDWARE_PATH, '**/platform.txt').replace(/\\/g, '/');
             const boardsTxtPattern = path.join(ARDUINO15_PACKAGE_HARDWARE_PATH, '**/boards.txt').replace(/\\/g, '/');
@@ -879,8 +883,11 @@ export class ArduinoConfigParser {
             toolsBasePath = process.env['TOOLS_PATH'];
             // console.log(`使用自定义工具路径: ${toolsBasePath}`);
         } else {
-            // 使用默认 Arduino15 路径
-            let ARDUINO15_PACKAGE_PATH = path.join(os.homedir(), 'AppData', 'Local', 'Arduino15', 'packages', process.env['package']);
+            // 使用默认 Arduino15 路径，根据操作系统选择正确的基础路径
+            const arduino15BasePath = os.platform() === 'win32' 
+                ? path.join(os.homedir(), 'AppData', 'Local', 'Arduino15')
+                : path.join(os.homedir(), 'Library', 'Arduino15');
+            let ARDUINO15_PACKAGE_PATH = path.join(arduino15BasePath, 'packages', process.env['package']);
             toolsBasePath = path.join(ARDUINO15_PACKAGE_PATH, 'tools');
             // console.log(`使用默认工具路径: ${toolsBasePath}`);
         }

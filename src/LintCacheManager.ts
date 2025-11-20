@@ -23,8 +23,14 @@ export class LintCacheManager {
 
   constructor(logger: Logger) {
     this.logger = logger;
-    // 使用专门的lint缓存目录
-    this.cacheDir = path.join(os.homedir(), 'AppData', 'Local', 'aily-builder', 'lint-cache');
+    // 使用专门的lint缓存目录，根据操作系统选择合适的路径
+    this.cacheDir = path.join(
+      os.platform() === 'win32' 
+        ? path.join(os.homedir(), 'AppData', 'Local')
+        : path.join(os.homedir(), 'Library'),
+      'aily-builder', 
+      'lint-cache'
+    );
     fs.ensureDirSync(this.cacheDir);
     
     this.logger.debug(`Lint cache directory: ${this.cacheDir}`);

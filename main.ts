@@ -291,7 +291,15 @@ Note: Accurate mode uses the same compiler toolchain as the compile command.
     const sketchName = path.basename(sketchPath, '.ino');
     const projectPathMD5 = calculateMD5(sketchPath).substring(0, 8);
     const uniqueSketchName = `${sketchName}_${projectPathMD5}`;
-    const defaultBuildPath = path.join(os.homedir(), 'AppData', 'Local', 'aily-builder', 'project', uniqueSketchName);
+    // 修复默认构建路径，使其在不同操作系统上都能正常工作
+    const defaultBuildPath = path.join(
+      os.platform() === 'win32' 
+        ? path.join(os.homedir(), 'AppData', 'Local')
+        : path.join(os.homedir(), 'Library'),
+      'aily-builder', 
+      'project', 
+      uniqueSketchName
+    );
     
     const buildPath = options.buildPath ? path.resolve(options.buildPath) : defaultBuildPath;
 
