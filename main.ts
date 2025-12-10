@@ -35,6 +35,11 @@ program
     memo[key] = value;
     return memo;
   }, {})
+  .option('--build-macros <macro[=value]>', 'Custom macro definitions (e.g., DEBUG, VERSION=1.0.0)', (val, memo) => {
+    if (!memo) memo = [];
+    memo.push(val);
+    return memo;
+  }, [])
   .option('--board-options <key=value>', 'Board menu option (e.g., flash=2097152_0, uploadmethod=default)', (val, memo) => {
     const [key, value] = val.split('=');
     memo[key] = value;
@@ -142,6 +147,7 @@ program
         ...(options.buildProperty || {}),
         ...(options.boardOptions || {}) // 将 board-options 合并到 build-properties
       },
+      buildMacros: options.buildMacros || [],
       toolVersions: toolVersions,
       jobs: parseInt(options.jobs),
       verbose: options.verbose,
@@ -234,6 +240,11 @@ program
     memo[key] = value;
     return memo;
   }, {})
+  .option('--build-macros <macro[=value]>', 'Custom macro definitions (e.g., DEBUG, VERSION=1.0.0)', (val, memo) => {
+    if (!memo) memo = [];
+    memo.push(val);
+    return memo;
+  }, [])
   .option('--board-options <key=value>', 'Board menu option (e.g., flash=2097152_0, uploadmethod=default)', (val, memo) => {
     const [key, value] = val.split('=');
     memo[key] = value;

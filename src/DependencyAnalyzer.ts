@@ -129,13 +129,34 @@ export class DependencyAnalyzer {
   private initializeDefaultMacros(arduinoConfig): void {
     // Arduino平台默认宏
     this.setMacro('ARDUINO', '100', true);
+    
     // 从 arduinoConfig.platform['recipe.cpp.o.pattern'] 中提取宏定义
+    this.logger.debug('[MACRO_DEBUG] Extracting macros from recipe.cpp.o.pattern...');
     const macros = extractMacroDefinitions(arduinoConfig.platform['recipe.cpp.o.pattern'])
+    this.logger.debug(`[MACRO_DEBUG] Found ${macros.length} macros from recipe: ${macros.join(', ')}`);
     macros.forEach(macro => {
       let [key, value] = macro.split('=')
       this.setMacro(key.trim(), value ? value.trim() : '1');
     })
 
+    // 从 build.macros 中提取用户自定义宏定义
+    if (arduinoConfig.platform['build.macros']) {
+      this.logger.debug('[MACRO_DEBUG] Extracting macros from build.macros...');
+      this.logger.debug(`[MACRO_DEBUG] build.macros content: ${arduinoConfig.platform['build.macros']}`);
+      const extraFlagsMacros = extractMacroDefinitions(arduinoConfig.platform['build.macros']);
+      this.logger.debug(`[MACRO_DEBUG] Found ${extraFlagsMacros.length} macros from build.macros: ${extraFlagsMacros.join(', ')}`);
+      extraFlagsMacros.forEach(macro => {
+        let [key, value] = macro.split('=')
+        this.setMacro(key.trim(), value ? value.trim() : '1');
+      });
+    }
+
+    // 打印所有宏定义的详细信息
+    this.logger.debug('[MACRO_DEBUG] All macro definitions:');
+    this.macroDefinitions.forEach((macroDef, name) => {
+      this.logger.debug(`[MACRO_DEBUG]   ${name} = ${macroDef.value} (defined: ${macroDef.isDefined})`);
+    });
+    
     this.logger.info(`Initialized default macros: ${Array.from(this.macroDefinitions.keys()).join(', ')}`);
   }
 
@@ -309,7 +330,7 @@ export class DependencyAnalyzer {
             cwd: libraryObject.path,
             absolute: true,
             nodir: true,
-            maxDepth: 9
+            ignore: ['**/examples/**', '**/extras/**', '**/test/**', '**/tests/**', '**/docs/**']
           });
           includeFilePaths = libraryFiles;
           // console.log('includeFilePaths:', includeFilePaths);
@@ -441,15 +462,265 @@ export class DependencyAnalyzer {
     try {
       const extensions = ['.cpp', '.c', '.S', '.s'];
       // 直接扫描传入的路径（可能是库根目录或src目录）
-      const files = await this.scanDirectoryRecursive(libraryObject.path, extensions);
-      // const filteredFiles = this.filterSourceFiles(files);
-      // console.log(files);
+      const allFiles = await this.scanDirectoryRecursive(libraryObject.path, extensions);
+      
+      // 过滤掉被其他文件 #include 的代码片段文件
+      const includedFiles = new Set<string>();
+      
+      // 第一遍：扫描所有 .cpp 和 .c 文件，找出哪些文件被 #include
+      for (const file of allFiles) {
+        if (file.endsWith('.cpp')) {
+          const includedCpp = await this.findIncludedCppFiles(file, libraryObject.path);
+          includedCpp.forEach(f => includedFiles.add(f));
+          
+          const includedC = await this.findIncludedCFiles(file, libraryObject.path);
+          includedC.forEach(f => includedFiles.add(f));
+        } else if (file.endsWith('.c')) {
+          const includedCpp = await this.findIncludedCppFiles(file, libraryObject.path);
+          includedCpp.forEach(f => includedFiles.add(f));
+          
+          const includedC = await this.findIncludedCFiles(file, libraryObject.path);
+          includedC.forEach(f => includedFiles.add(f));
+        }
+      }
+      
+      // 第二遍：过滤代码片段
+      const validFiles: string[] = [];
+      for (const file of allFiles) {
+        // 1. 被 #include 的文件
+        if (includedFiles.has(file)) {
+          this.logger.debug(`[CODE_FRAGMENT] Skipping included file: ${path.relative(libraryObject.path, file)}`);
+          continue;
+        }
+        
+        // 2. 检查是否在代码片段子目录中（相对于库根目录的子目录）
+        const relativePath = path.relative(libraryObject.path, file);
+        const isInSubdirectory = relativePath.includes(path.sep) && !relativePath.startsWith('src' + path.sep);
+        
+        if (isInSubdirectory) {
+          // 在子目录中（非 src 目录），可能是代码片段
+          // 检查是否是纯数据文件（只包含数据定义，没有函数实现）
+          const isPureDataFile = await this.isPureDataFile(file);
+          if (isPureDataFile) {
+            this.logger.debug(`[CODE_FRAGMENT] Skipping pure data file in subdirectory: ${relativePath}`);
+            continue;
+          }
+          
+          // 检查文件是否有条件编译保护
+          const hasConditionalCompilation = await this.hasTopLevelConditionalCompilation(file);
+          if (hasConditionalCompilation) {
+            this.logger.debug(`[CODE_FRAGMENT] Skipping conditionally compiled file in subdirectory: ${relativePath}`);
+            continue;
+          }
+        }
+        
+        validFiles.push(file);
+      }
 
-      libraryObject.includes.push(...files);
+      libraryObject.includes.push(...validFiles);
       return true
     } catch (error) {
       this.logger.debug(`Failed to create library dependency for ${libraryObject.name}: ${error instanceof Error ? error.message : error}`);
       return null;
+    }
+  }
+
+  /**
+   * 查找文件中通过 #include 引入的 .cpp 文件
+   * @param filePath 要分析的文件路径
+   * @param basePath 库的基础路径
+   * @returns 被 #include 的 .cpp 文件的绝对路径列表
+   */
+  private async findIncludedCppFiles(filePath: string, basePath: string): Promise<string[]> {
+    try {
+      const content = await fs.readFile(filePath, 'utf-8');
+      const lines = content.split('\n');
+      const includedFiles: string[] = [];
+      
+      for (const line of lines) {
+        const trimmed = line.trim();
+        // 匹配 #include "xxx.cpp" 或 #include <xxx.cpp>
+        const match = trimmed.match(/^#include\s+["<]([^">]+\.cpp)[">]/);
+        if (match) {
+          const includedPath = match[1];
+          // 尝试解析相对路径
+          const fileDir = path.dirname(filePath);
+          let resolvedPath = path.resolve(fileDir, includedPath);
+          
+          // 如果文件不存在，尝试相对于库根目录解析
+          if (!await fs.pathExists(resolvedPath)) {
+            resolvedPath = path.resolve(basePath, includedPath);
+          }
+          
+          if (await fs.pathExists(resolvedPath)) {
+            includedFiles.push(resolvedPath);
+          }
+        }
+      }
+      
+      return includedFiles;
+    } catch (error) {
+      this.logger.debug(`Failed to find included cpp files in ${filePath}: ${error instanceof Error ? error.message : error}`);
+      return [];
+    }
+  }
+
+  /**
+   * 查找文件中通过 #include 引入的 .c 文件
+   * @param filePath 要分析的文件路径
+   * @param basePath 库的基础路径
+   * @returns 被 #include 的 .c 文件的绝对路径列表
+   */
+  private async findIncludedCFiles(filePath: string, basePath: string): Promise<string[]> {
+    try {
+      const content = await fs.readFile(filePath, 'utf-8');
+      const lines = content.split('\n');
+      const includedFiles: string[] = [];
+      
+      for (const line of lines) {
+        const trimmed = line.trim();
+        // 匹配 #include "xxx.c" 或 #include <xxx.c>
+        const match = trimmed.match(/^#include\s+["<]([^">]+\.c)[">]/);
+        if (match) {
+          const includedPath = match[1];
+          // 尝试解析相对路径
+          const fileDir = path.dirname(filePath);
+          let resolvedPath = path.resolve(fileDir, includedPath);
+          
+          // 如果文件不存在，尝试相对于库根目录解析
+          if (!await fs.pathExists(resolvedPath)) {
+            resolvedPath = path.resolve(basePath, includedPath);
+          }
+          
+          if (await fs.pathExists(resolvedPath)) {
+            includedFiles.push(resolvedPath);
+          }
+        }
+      }
+      
+      return includedFiles;
+    } catch (error) {
+      this.logger.debug(`Failed to find included cpp files in ${filePath}: ${error instanceof Error ? error.message : error}`);
+      return [];
+    }
+  }
+
+  /**
+   * 检查文件是否为纯数据文件（只包含数据定义，没有函数实现）
+   * @param filePath 文件路径
+   * @returns 如果是纯数据文件返回true
+   */
+  private async isPureDataFile(filePath: string): Promise<boolean> {
+    try {
+      const content = await fs.readFile(filePath, 'utf-8');
+      const lines = content.split('\n');
+      
+      let hasDataDefinition = false;
+      let hasFunctionDefinition = false;
+      
+      // 合并多行，处理跨行的声明
+      const fullContent = content.replace(/\/\*[\s\S]*?\*\//g, '') // 移除块注释
+                                  .replace(/\/\/.*/g, ''); // 移除行注释
+      
+      for (const line of lines) {
+        const trimmed = line.trim();
+        
+        // 跳过空行、注释和预处理指令
+        if (!trimmed || trimmed.startsWith('//') || trimmed.startsWith('/*') || 
+            trimmed.startsWith('*') || trimmed.startsWith('#')) {
+          continue;
+        }
+        
+        // 检查是否有数据定义 (const, PROGMEM等)
+        if (trimmed.includes('PROGMEM') || 
+            (trimmed.includes('const') && (trimmed.includes('[') || trimmed.includes('=')))) {
+          hasDataDefinition = true;
+        }
+        
+        // 检查是否有函数定义
+        // 函数定义的特征：包含 { 但不是数组初始化
+        // 数组初始化通常是: type name[] = { 或 type name[size] = {
+        if (trimmed.includes('{')) {
+          // 检查是否是数组初始化: 包含 = { 或 ]{ 或 [] {
+          const isArrayInit = /=\s*\{/.test(trimmed) || /\]\s*\{/.test(trimmed) || /\[\s*\]\s*\{/.test(trimmed);
+          
+          // 检查是否可能是函数定义: 包含 ) { 模式（函数参数列表后跟左花括号）
+          const isFunctionDef = /\)\s*\{/.test(trimmed);
+          
+          if (isFunctionDef && !isArrayInit) {
+            hasFunctionDefinition = true;
+            break;
+          }
+        }
+      }
+      
+      // 如果有数据定义但没有函数定义，则认为是纯数据文件
+      return hasDataDefinition && !hasFunctionDefinition;
+    } catch (error) {
+      this.logger.debug(`Failed to check if file is pure data ${filePath}: ${error instanceof Error ? error.message : error}`);
+      return false;
+    }
+  }
+
+  /**
+   * 检查文件是否在顶层有条件编译保护
+   * @param filePath 文件路径
+   * @returns 如果整个文件被条件编译包裹返回true
+   */
+  private async hasTopLevelConditionalCompilation(filePath: string): Promise<boolean> {
+    try {
+      const content = await fs.readFile(filePath, 'utf-8');
+      const lines = content.split('\n').map(line => line.trim());
+      
+      let firstDirectiveLine = -1;
+      let lastEndifLine = -1;
+      
+      for (let i = 0; i < lines.length; i++) {
+        const line = lines[i];
+        
+        // 跳过空行和注释
+        if (!line || line.startsWith('//')) continue;
+        
+        // 找到第一个条件编译指令
+        if (firstDirectiveLine === -1 && 
+            (line.startsWith('#if') || line.startsWith('#ifdef') || line.startsWith('#ifndef'))) {
+          firstDirectiveLine = i;
+        }
+        
+        // 找到最后一个 #endif
+        if (line.startsWith('#endif')) {
+          lastEndifLine = i;
+        }
+      }
+      
+      // 如果找到了条件编译指令，检查它们是否包裹了整个文件
+      if (firstDirectiveLine !== -1 && lastEndifLine !== -1) {
+        // 计算条件编译之外的有效代码行
+        let codeBeforeFirst = 0;
+        let codeAfterLast = 0;
+        
+        for (let i = 0; i < firstDirectiveLine; i++) {
+          const line = lines[i];
+          if (line && !line.startsWith('//') && !line.startsWith('/*') && !line.startsWith('*')) {
+            codeBeforeFirst++;
+          }
+        }
+        
+        for (let i = lastEndifLine + 1; i < lines.length; i++) {
+          const line = lines[i];
+          if (line && !line.startsWith('//') && !line.startsWith('/*') && !line.startsWith('*')) {
+            codeAfterLast++;
+          }
+        }
+        
+        // 如果条件编译之外没有实质性代码，则认为整个文件被条件编译包裹
+        return codeBeforeFirst === 0 && codeAfterLast === 0;
+      }
+      
+      return false;
+    } catch (error) {
+      this.logger.debug(`Failed to check conditional compilation ${filePath}: ${error instanceof Error ? error.message : error}`);
+      return false;
     }
   }
 
@@ -671,7 +942,9 @@ export class DependencyAnalyzer {
       this.logger.debug(`Failed to find source directories in ${libPath}: ${error instanceof Error ? error.message : error}`);
     }
 
-    return Array.from(sourceDirs);
+    const result = Array.from(sourceDirs);
+    this.logger.debug(`[SOURCE_DIRS] ${path.basename(libPath)}: found ${result.length} directories: ${result.map(d => path.relative(libPath, d) || '(root)').join(', ')}`);
+    return result;
   }
 
   /**

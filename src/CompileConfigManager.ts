@@ -101,7 +101,11 @@ export class CompileConfigManager {
       }
     }
 
-
+    if (arduinoConfig.platform['build.macros']) {
+      compileConfig.args.c += ` ${arduinoConfig.platform['build.macros']}`;
+      compileConfig.args.cpp += ` ${arduinoConfig.platform['build.macros']}`;
+      compileConfig.args.s += ` ${arduinoConfig.platform['build.macros']}`;
+    }
 
     arduinoConfig.platform['recipe.c.combine.pattern']
     return compileConfig

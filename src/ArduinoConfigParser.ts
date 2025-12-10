@@ -625,9 +625,11 @@ export class ArduinoConfigParser {
      * @param {string} platformDir 平台目录路径
      * @param {string} fqbn FQBN 字符串
      * @param {Object} buildProperties 额外的构建属性
+     * @param {Object} toolVersions 工具版本
+     * @param {string[]} buildMacros 用户自定义宏定义数组
      * @returns {Object} 特定板子的完整配置
      */
-    async parseByFQBN(fqbn: string, buildProperties: { [key: string]: string }, toolVersions: { [key: string]: string } = undefined): Promise<BoardParseResult> {
+    async parseByFQBN(fqbn: string, buildProperties: { [key: string]: string }, toolVersions: { [key: string]: string } = undefined, buildMacros: string[] = []): Promise<BoardParseResult> {
         // 解析 FQBN
         const fqbnObj = this.parseFQBN(fqbn);
         // console.log(`解析 FQBN: ${fqbn}`);
@@ -780,6 +782,17 @@ export class ArduinoConfigParser {
 
         // console.log('moreConfig:', moreConfig);
         let platformConfig: { [key: string]: string } = this.parsePlatformTxt(platformTxtPath, fqbnObj, boardConfig, moreConfig);
+
+        // 处理用户自定义宏定义,添加到 build.macros
+        if (buildMacros && buildMacros.length > 0) {
+            const macroFlags = buildMacros.map(macro => {
+                // 如果宏定义包含等号,格式为 -DMACRO=value
+                // 如果不包含等号,格式为 -DMACRO
+                return macro.includes('=') ? `-D${macro}` : `-D${macro}`;
+            }).join(' ');
+            
+            platformConfig['build.macros'] = macroFlags;
+        }
 
         // 设置编译器路径
         process.env['COMPILER_PATH'] = process.env['COMPILER_PATH'] || platformConfig['compiler.path'] || platformConfig['runtime.tools.avr-gcc.path'];
