@@ -498,18 +498,21 @@ export class DependencyAnalyzer {
         const isInSubdirectory = relativePath.includes(path.sep) && !relativePath.startsWith('src' + path.sep);
         
         if (isInSubdirectory) {
-          // 在子目录中（非 src 目录），可能是代码片段
-          // 检查是否是纯数据文件（只包含数据定义，没有函数实现）
+          // 在子目录中（非 src 目录），可能是代码片段或纯数据文件
+          
+          // 1. 检查是否是纯数据文件（只包含数据定义，没有函数实现）
+          // 纯数据文件特征：没有或极少 include，只有数据定义
+          // 这类文件不需要单独编译，因为它们通常会被其他文件 include
           const isPureDataFile = await this.isPureDataFile(file);
           if (isPureDataFile) {
             this.logger.debug(`[CODE_FRAGMENT] Skipping pure data file in subdirectory: ${relativePath}`);
             continue;
           }
           
-          // 检查文件是否有条件编译保护
-          const hasConditionalCompilation = await this.hasTopLevelConditionalCompilation(file);
-          if (hasConditionalCompilation) {
-            this.logger.debug(`[CODE_FRAGMENT] Skipping conditionally compiled file in subdirectory: ${relativePath}`);
+          // 2. 检查是否是真正的代码片段（被条件编译包裹且缺少完整实现）
+          const isCodeFragment = await this.isCodeFragment(file);
+          if (isCodeFragment) {
+            this.logger.debug(`[CODE_FRAGMENT] Skipping code fragment file in subdirectory: ${relativePath}`);
             continue;
           }
         }
@@ -607,57 +610,183 @@ export class DependencyAnalyzer {
 
   /**
    * 检查文件是否为纯数据文件（只包含数据定义，没有函数实现）
+   * 纯数据文件特征：
+   * 1. 没有 #include 语句（或极少）
+   * 2. 只包含数据定义（const 数组、PROGMEM 等）
+   * 3. 没有函数实现
    * @param filePath 文件路径
    * @returns 如果是纯数据文件返回true
    */
   private async isPureDataFile(filePath: string): Promise<boolean> {
     try {
       const content = await fs.readFile(filePath, 'utf-8');
-      const lines = content.split('\n');
       
-      let hasDataDefinition = false;
-      let hasFunctionDefinition = false;
-      
-      // 合并多行，处理跨行的声明
-      const fullContent = content.replace(/\/\*[\s\S]*?\*\//g, '') // 移除块注释
+      // 移除注释
+      const cleanContent = content.replace(/\/\*[\s\S]*?\*\//g, '') // 移除块注释
                                   .replace(/\/\/.*/g, ''); // 移除行注释
       
-      for (const line of lines) {
-        const trimmed = line.trim();
+      // 统计各种特征
+      let includeCount = 0;
+      let functionCount = 0;
+      let dataDefinitionCount = 0;
+      
+      // 改进的函数检测：分析行模式
+      const lines = cleanContent.split('\n');
+      let inArrayInit = false;
+      let braceBalance = 0;
+      
+      for (let i = 0; i < lines.length; i++) {
+        const line = lines[i].trim();
         
-        // 跳过空行、注释和预处理指令
-        if (!trimmed || trimmed.startsWith('//') || trimmed.startsWith('/*') || 
-            trimmed.startsWith('*') || trimmed.startsWith('#')) {
+        // 跳过空行
+        if (!line) {
           continue;
         }
         
-        // 检查是否有数据定义 (const, PROGMEM等)
-        if (trimmed.includes('PROGMEM') || 
-            (trimmed.includes('const') && (trimmed.includes('[') || trimmed.includes('=')))) {
-          hasDataDefinition = true;
+        // 统计 #include 语句
+        if (line.startsWith('#include')) {
+          includeCount++;
+          continue;
         }
         
-        // 检查是否有函数定义
-        // 函数定义的特征：包含 { 但不是数组初始化
-        // 数组初始化通常是: type name[] = { 或 type name[size] = {
-        if (trimmed.includes('{')) {
-          // 检查是否是数组初始化: 包含 = { 或 ]{ 或 [] {
-          const isArrayInit = /=\s*\{/.test(trimmed) || /\]\s*\{/.test(trimmed) || /\[\s*\]\s*\{/.test(trimmed);
-          
-          // 检查是否可能是函数定义: 包含 ) { 模式（函数参数列表后跟左花括号）
-          const isFunctionDef = /\)\s*\{/.test(trimmed);
-          
-          if (isFunctionDef && !isArrayInit) {
-            hasFunctionDefinition = true;
-            break;
+        // 跳过其他预处理指令
+        if (line.startsWith('#')) {
+          continue;
+        }
+        
+        // 检测数据定义（PROGMEM, const 数组）
+        if (line.includes('PROGMEM') || /\bconst\s+\w+.*\[/.test(line)) {
+          // 排除函数指针和函数声明
+          if (!/\(\s*\*/.test(line) && !/\)\s*;/.test(line)) {
+            dataDefinitionCount++;
           }
+        }
+        
+        // 检测数组初始化的开始
+        if (/=\s*\{/.test(line) || /\[\s*\]\s*=\s*\{/.test(line)) {
+          inArrayInit = true;
+        }
+        
+        // 计算花括号平衡
+        const openBraces = (line.match(/{/g) || []).length;
+        const closeBraces = (line.match(/}/g) || []).length;
+        
+        // 检测函数定义：
+        // 1. 行中包含 ) { 或 ) 后面几行出现 {
+        // 2. 不在数组初始化中
+        // 3. 花括号平衡为0（顶层）
+        if (!inArrayInit && braceBalance === 0) {
+          // 检查当前行或接下来的几行
+          let checkLines = line;
+          for (let j = 1; j <= 3 && (i + j) < lines.length; j++) {
+            checkLines += ' ' + lines[i + j].trim();
+          }
+          
+          // 匹配函数模式：类型 函数名(参数) { 
+          // 或 static/inline 类型 函数名(参数) {
+          if (/\w+\s+\w+\s*\([^)]*\)\s*\{/.test(checkLines) ||
+              /\b(static|inline)\s+\w+\s+\w+\s*\([^)]*\)\s*\{/.test(checkLines)) {
+            // 排除数组初始化（包含 = 在括号前）
+            if (!/=\s*\{/.test(checkLines)) {
+              functionCount++;
+            }
+          }
+        }
+        
+        braceBalance += openBraces - closeBraces;
+        
+        // 数组初始化结束
+        if (inArrayInit && braceBalance === 0 && closeBraces > 0) {
+          inArrayInit = false;
         }
       }
       
-      // 如果有数据定义但没有函数定义，则认为是纯数据文件
-      return hasDataDefinition && !hasFunctionDefinition;
+      this.logger.debug(`[PURE_DATA_CHECK] ${path.basename(filePath)}: includes=${includeCount}, functions=${functionCount}, dataDefinitions=${dataDefinitionCount}`);
+      
+      // 判断标准：
+      // 1. 没有任何 include（includeCount === 0）- 说明是纯数据片段，会被其他文件 include
+      // 2. 函数数量为0
+      // 3. 数据定义数量较多（>= 1）
+      // 注意：如果有 include，说明它是独立编译单元，应该被编译（如 u8g2_fonts.c）
+      const isPureData = includeCount === 0 && functionCount === 0 && dataDefinitionCount >= 1;
+      
+      if (isPureData) {
+        this.logger.debug(`[PURE_DATA_CHECK] ${path.basename(filePath)} is pure data file (0 includes, 0 functions, ${dataDefinitionCount} data definitions)`);
+      }
+      
+      return isPureData;
     } catch (error) {
       this.logger.debug(`Failed to check if file is pure data ${filePath}: ${error instanceof Error ? error.message : error}`);
+      return false;
+    }
+  }
+
+  /**
+   * 检查文件是否为真正的代码片段
+   * 真正的代码片段特征：
+   * 1. 整个文件被条件编译包裹
+   * 2. 且文件内容缺少完整的函数实现（只有声明或宏定义）
+   * 3. 或者文件非常简短（少于50行有效代码）且没有复杂的实现
+   * @param filePath 文件路径
+   * @returns 如果是代码片段返回true
+   */
+  private async isCodeFragment(filePath: string): Promise<boolean> {
+    try {
+      const content = await fs.readFile(filePath, 'utf-8');
+      const lines = content.split('\n').map(line => line.trim());
+      
+      // 统计有效代码行数（排除空行、注释、预处理指令）
+      let effectiveLines = 0;
+      let functionCount = 0;
+      let hasComplexImplementation = false;
+      
+      for (const line of lines) {
+        // 跳过空行、注释和预处理指令
+        if (!line || line.startsWith('//') || line.startsWith('/*') || 
+            line.startsWith('*') || line.startsWith('#')) {
+          continue;
+        }
+        
+        effectiveLines++;
+        
+        // 检测函数实现（包含函数体的函数）
+        if (line.includes('{') && !line.includes('};')) {
+          functionCount++;
+        }
+        
+        // 检测复杂实现的标志
+        if (line.includes('for') || line.includes('while') || line.includes('switch') ||
+            (line.includes('if') && !line.startsWith('#'))) {
+          hasComplexImplementation = true;
+        }
+      }
+      
+      // 如果有条件编译保护
+      const hasTopLevelConditional = await this.hasTopLevelConditionalCompilation(filePath);
+      
+      if (hasTopLevelConditional) {
+        // 有条件编译保护的情况下，进一步检查实现完整性
+        // 如果函数数量少于3个，且没有复杂实现，认为是代码片段
+        if (functionCount < 3 && !hasComplexImplementation) {
+          this.logger.debug(`[CODE_FRAGMENT] File ${filePath} has conditional compilation with limited implementation (${functionCount} functions)`);
+          return true;
+        }
+        
+        // 如果有效代码行数很少（小于50行），且函数数量少于5个，认为是代码片段
+        if (effectiveLines < 50 && functionCount < 5) {
+          this.logger.debug(`[CODE_FRAGMENT] File ${filePath} has conditional compilation with small size (${effectiveLines} lines, ${functionCount} functions)`);
+          return true;
+        }
+        
+        // 如果包含完整实现（多个函数、复杂逻辑），则不是代码片段
+        this.logger.debug(`[CODE_FRAGMENT] File ${filePath} has conditional compilation but contains complete implementation (${functionCount} functions, ${effectiveLines} lines)`);
+        return false;
+      }
+      
+      // 没有条件编译保护的情况下，通常不是代码片段
+      return false;
+    } catch (error) {
+      this.logger.debug(`Failed to check if code fragment ${filePath}: ${error instanceof Error ? error.message : error}`);
       return false;
     }
   }
@@ -743,6 +872,11 @@ export class DependencyAnalyzer {
     const cleanContent = content.replace(/\/\*[\s\S]*?\*\//g, '') // 移除块注释
                                .replace(/\/\/.*/g, ''); // 移除行注释
     
+    // 统计函数实现（包括 C 风格和 C++ 成员函数）
+    const cStyleFunctions = (cleanContent.match(/\n\s*\w+\s+\w+\s*\([^)]*\)\s*\{/g) || []).length;
+    const cppMemberFunctions = (cleanContent.match(/\w+::\w+\s*\([^)]*\)\s*\{/g) || []).length;
+    const totalFunctions = cStyleFunctions + cppMemberFunctions;
+    
     // 检查完整实现的特征
     const indicators = {
       // 命名空间定义
@@ -753,25 +887,31 @@ export class DependencyAnalyzer {
       hasConstructor: /::\w+\s*\(/.test(cleanContent) || /\w+::\w+\s*\(/.test(cleanContent),
       hasDestructor: /::~\w+\s*\(/.test(cleanContent),
       
-      // 多个函数实现（至少3个）
-      functionCount: (cleanContent.match(/\w+::\w+\s*\([^)]*\)\s*\{/g) || []).length +
-                     (cleanContent.match(/^\s*\w+\s+\w+\s*\([^)]*\)\s*\{/gm) || []).length,
+      // 多个函数实现
+      functionCount: totalFunctions,
       
-      // 包含复杂逻辑（循环、条件语句）
+      // 包含复杂逻辑（循环、条件语句、switch）
       hasLoops: /\b(for|while|do)\s*\(/.test(cleanContent),
       hasConditionals: /\bif\s*\(/.test(cleanContent),
+      hasSwitchCase: /\bswitch\s*\(/.test(cleanContent),
       
       // 包含成员变量访问
-      hasMemberAccess: /\w+_/.test(cleanContent) || /this->/.test(cleanContent),
+      hasMemberAccess: /\w+_/.test(cleanContent) || /this->/.test(cleanContent) || /->\w+/.test(cleanContent),
       
-      // 代码行数（排除空行和注释）
+      // 代码行数（排除空行和预处理指令）
       codeLines: cleanContent.split('\n').filter(line => {
         const trimmed = line.trim();
-        return trimmed && !trimmed.startsWith('#') && trimmed !== '{' && trimmed !== '}';
-      }).length
+        return trimmed && !trimmed.startsWith('#') && trimmed !== '{' && trimmed !== '}' && trimmed !== '';
+      }).length,
+      
+      // 计算控制流语句总数
+      controlFlowCount: (cleanContent.match(/\b(for|while|do|if|switch)\s*\(/g) || []).length
     };
     
-    // 判断标准：
+    this.logger.debug(`[IMPLEMENTATION] Functions: ${indicators.functionCount}, ControlFlow: ${indicators.controlFlowCount}, CodeLines: ${indicators.codeLines}`);
+    
+    // 判断标准（放宽条件以包含更多完整实现）：
+    
     // 1. 有命名空间 + 类定义 → 完整实现
     if (indicators.hasNamespace && indicators.hasClassDefinition) {
       return true;
@@ -782,13 +922,23 @@ export class DependencyAnalyzer {
       return true;
     }
     
-    // 3. 有多个函数实现（>= 3个）+ 复杂逻辑 → 完整实现
-    if (indicators.functionCount >= 3 && (indicators.hasLoops || indicators.hasConditionals)) {
+    // 3. 有5个或以上函数实现 → 完整实现
+    if (indicators.functionCount >= 5) {
       return true;
     }
     
-    // 4. 代码量大（> 50行有效代码）→ 完整实现
-    if (indicators.codeLines > 50) {
+    // 4. 有3个或以上函数 + 复杂逻辑（控制流 >= 5） → 完整实现
+    if (indicators.functionCount >= 3 && indicators.controlFlowCount >= 5) {
+      return true;
+    }
+    
+    // 5. 代码量大（> 100行有效代码）→ 完整实现
+    if (indicators.codeLines > 100) {
+      return true;
+    }
+    
+    // 6. 有多个控制流语句（>= 10个）→ 完整实现
+    if (indicators.controlFlowCount >= 10) {
       return true;
     }
     
