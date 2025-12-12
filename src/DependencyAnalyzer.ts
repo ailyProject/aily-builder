@@ -663,9 +663,9 @@ export class DependencyAnalyzer {
   }
 
   /**
-   * 检查文件是否在顶层有条件编译保护
+   * 检查文件是否在顶层有条件编译保护，并且是代码片段而非完整编译单元
    * @param filePath 文件路径
-   * @returns 如果整个文件被条件编译包裹返回true
+   * @returns 如果是被条件编译包裹的代码片段返回true，如果是完整编译单元返回false
    */
   private async hasTopLevelConditionalCompilation(filePath: string): Promise<boolean> {
     try {
@@ -713,8 +713,17 @@ export class DependencyAnalyzer {
           }
         }
         
-        // 如果条件编译之外没有实质性代码，则认为整个文件被条件编译包裹
-        return codeBeforeFirst === 0 && codeAfterLast === 0;
+        // 如果条件编译之外有实质性代码，则不是代码片段
+        if (codeBeforeFirst > 0 || codeAfterLast > 0) {
+          return false;
+        }
+        
+        // 整个文件被条件编译包裹，进一步分析内容
+        // 检查是否包含完整的实现（类定义、命名空间、多个函数等）
+        const hasCompleteImplementation = await this.hasCompleteImplementation(content);
+        
+        // 如果包含完整实现，则不是代码片段
+        return !hasCompleteImplementation;
       }
       
       return false;
@@ -722,6 +731,69 @@ export class DependencyAnalyzer {
       this.logger.debug(`Failed to check conditional compilation ${filePath}: ${error instanceof Error ? error.message : error}`);
       return false;
     }
+  }
+
+  /**
+   * 检查文件是否包含完整的实现（而非简单的占位代码）
+   * @param content 文件内容
+   * @returns 如果包含完整实现返回true
+   */
+  private async hasCompleteImplementation(content: string): Promise<boolean> {
+    // 移除注释
+    const cleanContent = content.replace(/\/\*[\s\S]*?\*\//g, '') // 移除块注释
+                               .replace(/\/\/.*/g, ''); // 移除行注释
+    
+    // 检查完整实现的特征
+    const indicators = {
+      // 命名空间定义
+      hasNamespace: /namespace\s+\w+\s*\{/.test(cleanContent),
+      
+      // 类定义（包括构造函数、析构函数）
+      hasClassDefinition: /class\s+\w+/.test(cleanContent),
+      hasConstructor: /::\w+\s*\(/.test(cleanContent) || /\w+::\w+\s*\(/.test(cleanContent),
+      hasDestructor: /::~\w+\s*\(/.test(cleanContent),
+      
+      // 多个函数实现（至少3个）
+      functionCount: (cleanContent.match(/\w+::\w+\s*\([^)]*\)\s*\{/g) || []).length +
+                     (cleanContent.match(/^\s*\w+\s+\w+\s*\([^)]*\)\s*\{/gm) || []).length,
+      
+      // 包含复杂逻辑（循环、条件语句）
+      hasLoops: /\b(for|while|do)\s*\(/.test(cleanContent),
+      hasConditionals: /\bif\s*\(/.test(cleanContent),
+      
+      // 包含成员变量访问
+      hasMemberAccess: /\w+_/.test(cleanContent) || /this->/.test(cleanContent),
+      
+      // 代码行数（排除空行和注释）
+      codeLines: cleanContent.split('\n').filter(line => {
+        const trimmed = line.trim();
+        return trimmed && !trimmed.startsWith('#') && trimmed !== '{' && trimmed !== '}';
+      }).length
+    };
+    
+    // 判断标准：
+    // 1. 有命名空间 + 类定义 → 完整实现
+    if (indicators.hasNamespace && indicators.hasClassDefinition) {
+      return true;
+    }
+    
+    // 2. 有构造函数或析构函数 → 完整实现
+    if (indicators.hasConstructor || indicators.hasDestructor) {
+      return true;
+    }
+    
+    // 3. 有多个函数实现（>= 3个）+ 复杂逻辑 → 完整实现
+    if (indicators.functionCount >= 3 && (indicators.hasLoops || indicators.hasConditionals)) {
+      return true;
+    }
+    
+    // 4. 代码量大（> 50行有效代码）→ 完整实现
+    if (indicators.codeLines > 50) {
+      return true;
+    }
+    
+    // 否则认为是简单的代码片段
+    return false;
   }
 
   /**
