@@ -1226,6 +1226,12 @@ export class ArduinoLinter {
     compileCmd = compileCmd.replace(/@%OUTPUT_PATH%\/build_opt\.h/g, '');
     compileCmd = compileCmd.replace(/@%OUTPUT_PATH%\/file_opts/g, '');
     
+    // 移除依赖文件生成选项，防止生成 .d 文件
+    compileCmd = compileCmd.replace(/\s+-MMD\s+/g, ' ');
+    compileCmd = compileCmd.replace(/\s+-MP\s+/g, ' ');
+    compileCmd = compileCmd.replace(/\s+-MF\s+"[^"]*"/g, ''); // 移除 -MF "file.d"
+    compileCmd = compileCmd.replace(/\s+-MF\s+\S+/g, ''); // 移除 -MF file.d
+    
     // 添加语法检查标志
     if (!compileCmd.includes('-fsyntax-only')) {
       // 在编译器命令后面添加 -fsyntax-only
