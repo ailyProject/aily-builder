@@ -322,7 +322,7 @@ Note: Accurate mode uses the same compiler toolchain as the compile command.
     }
 
     // 验证分析模式
-    const validModes = ['fast', 'accurate', 'auto'];
+    const validModes = ['fast', 'accurate', 'auto', 'ast-grep'];
     if (!validModes.includes(options.mode)) {
       logger.error(`Invalid mode: ${options.mode}. Must be one of: ${validModes.join(', ')}`);
       process.exit(1);

@@ -31,6 +31,8 @@ async function bundleWithNative() {
       external: [
         'tree-sitter',
         'tree-sitter-cpp',
+        '@ast-grep/napi',
+        '@ast-grep/lang-cpp',
       ],
       banner: {
         js: process.platform === 'win32' ? '' : '#!/usr/bin/env node\n'
@@ -107,6 +109,99 @@ async function bundleWithNative() {
     if (await fs.pathExists(grammarSrc)) {
       await fs.copy(grammarSrc, grammarDest);
       console.log('✅ Copied tree-sitter-cpp grammar');
+    }
+
+    // 3.5 复制 @ast-grep/napi 和 @ast-grep/lang-cpp 模块
+    console.log('📦 Copying @ast-grep native modules...');
+    
+    // 复制 @ast-grep/napi（只复制必要的 JS 文件，不复制预编译的 .node）
+    const astGrepNapiSrc = './node_modules/@ast-grep/napi';
+    const astGrepNapiDest = path.join(bundleDir, 'node_modules/@ast-grep/napi');
+    if (await fs.pathExists(astGrepNapiSrc)) {
+      await fs.ensureDir(astGrepNapiDest);
+      // 只复制 JS 和 JSON 文件
+      const filesToCopy = ['index.js', 'index.d.ts', 'package.json'];
+      for (const file of filesToCopy) {
+        const src = path.join(astGrepNapiSrc, file);
+        if (await fs.pathExists(src)) {
+          await fs.copy(src, path.join(astGrepNapiDest, file));
+        }
+      }
+      console.log('✅ Copied @ast-grep/napi (JS only)');
+    }
+
+    // 复制 @ast-grep/setup-lang（@ast-grep/lang-cpp 的依赖）
+    const astGrepSetupLangSrc = './node_modules/@ast-grep/setup-lang';
+    const astGrepSetupLangDest = path.join(bundleDir, 'node_modules/@ast-grep/setup-lang');
+    if (await fs.pathExists(astGrepSetupLangSrc)) {
+      await fs.ensureDir(astGrepSetupLangDest);
+      const filesToCopy = ['index.js', 'index.d.ts', 'package.json'];
+      for (const file of filesToCopy) {
+        const src = path.join(astGrepSetupLangSrc, file);
+        if (await fs.pathExists(src)) {
+          await fs.copy(src, path.join(astGrepSetupLangDest, file));
+        }
+      }
+      console.log('✅ Copied @ast-grep/setup-lang');
+    }
+
+    // 复制 @ast-grep/lang-cpp（只复制必要文件）
+    const astGrepLangCppSrc = './node_modules/@ast-grep/lang-cpp';
+    const astGrepLangCppDest = path.join(bundleDir, 'node_modules/@ast-grep/lang-cpp');
+    if (await fs.pathExists(astGrepLangCppSrc)) {
+      await fs.ensureDir(astGrepLangCppDest);
+      
+      // 只复制 JS、JSON、类型定义文件
+      const rootFiles = ['index.js', 'index.d.ts', 'package.json'];
+      for (const file of rootFiles) {
+        const src = path.join(astGrepLangCppSrc, file);
+        if (await fs.pathExists(src)) {
+          await fs.copy(src, path.join(astGrepLangCppDest, file));
+        }
+      }
+      
+      // 只复制当前平台的预编译文件
+      const prebuildsDir = path.join(astGrepLangCppSrc, 'prebuilds');
+      if (await fs.pathExists(prebuildsDir)) {
+        const prebuildMap = {
+          'win32': 'prebuild-Windows-X64',
+          'darwin': process.arch === 'arm64' ? 'prebuild-macOS-ARM64' : 'prebuild-macOS-X64',
+          'linux': process.arch === 'arm64' ? 'prebuild-Linux-ARM64' : 'prebuild-Linux-X64',
+        };
+        
+        const targetPrebuild = prebuildMap[process.platform];
+        if (targetPrebuild) {
+          const prebuildSrc = path.join(prebuildsDir, targetPrebuild);
+          const prebuildDest = path.join(astGrepLangCppDest, 'prebuilds', targetPrebuild);
+          if (await fs.pathExists(prebuildSrc)) {
+            await fs.copy(prebuildSrc, prebuildDest);
+            console.log(`✅ Copied @ast-grep/lang-cpp (${targetPrebuild} only)`);
+          }
+        }
+      }
+    }
+
+    // 只复制当前平台需要的原生模块
+    const platformNativeModule = {
+      'win32-x64': '@ast-grep/napi-win32-x64-msvc',
+      'darwin-x64': '@ast-grep/napi-darwin-x64',
+      'darwin-arm64': '@ast-grep/napi-darwin-arm64',
+      'linux-x64': '@ast-grep/napi-linux-x64-gnu',
+      'linux-arm64': '@ast-grep/napi-linux-arm64-gnu',
+    };
+    
+    const platformKey = `${process.platform}-${process.arch}`;
+    const targetModule = platformNativeModule[platformKey];
+    
+    if (targetModule) {
+      const modSrc = `./node_modules/${targetModule}`;
+      const modDest = path.join(bundleDir, 'node_modules', targetModule);
+      if (await fs.pathExists(modSrc)) {
+        await fs.copy(modSrc, modDest);
+        console.log(`✅ Copied ${targetModule} (current platform only)`);
+      }
+    } else {
+      console.log(`⚠️  No ast-grep native module found for platform: ${platformKey}`);
     }
 
     // 4. 复制 ninja 工具（如果存在）
@@ -214,6 +309,8 @@ async function bundleWithNativeMinified() {
       external: [
         'tree-sitter',
         'tree-sitter-cpp',
+        '@ast-grep/napi',
+        '@ast-grep/lang-cpp',
       ],
       banner: {
         js: process.platform === 'win32' ? '' : '#!/usr/bin/env node\n'

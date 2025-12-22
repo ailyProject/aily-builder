@@ -37,6 +37,8 @@
   "author": "coloz",
   "license": "MIT",
   "dependencies": {
+    "@ast-grep/lang-cpp": "^0.0.4",
+    "@ast-grep/napi": "^0.40.3",
     "commander": "^11.1.0",
     "fs-extra": "^11.2.0",
     "glob": "^10.4.5",
