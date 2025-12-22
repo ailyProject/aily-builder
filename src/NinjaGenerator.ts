@@ -409,15 +409,13 @@ export class NinjaGenerator {
     const fileName = path.basename(sourceFile);
 
     if (type === 'library') {
-      // 检查是否需要添加上级目录名称以避免同名文件冲突
-      const sourceDir = path.dirname(sourceFile);
-      const parentDirName = path.basename(sourceDir);
-
-      // 如果上级目录不是库的根目录（即存在架构或其他子目录），则添加目录前缀
+      // 使用完整的相对路径作为前缀，避免同名文件冲突
       const dep = this.dependencies.find(d => d.name === dependencyName);
-      if (dep && sourceDir !== dep.path && parentDirName !== dependencyName) {
-        // 使用上级目录名称作为前缀，避免同名文件冲突
-        const prefixedFileName = `${parentDirName}_${fileName}`;
+      if (dep) {
+        // 计算源文件相对于库根目录的路径
+        const relativePath = path.relative(dep.path, sourceFile);
+        // 将路径分隔符替换为下划线，生成唯一的文件名
+        const prefixedFileName = relativePath.replace(/[\\/]/g, '_');
         return path.join(type, dependencyName, `${prefixedFileName}.o`);
       } else {
         return path.join(type, dependencyName, `${fileName}.o`);
