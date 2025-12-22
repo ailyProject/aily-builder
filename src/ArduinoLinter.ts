@@ -6,6 +6,8 @@ import { CacheManager, CacheKey } from './CacheManager';
 import { LintCacheManager, LintCacheKey } from './LintCacheManager';
 import * as crypto from 'crypto';
 import { ParallelStaticAnalyzer, StaticAnalysisResult } from './ParallelStaticAnalyzer';
+import { AstGrepLinter, AstGrepLintResult, createArduinoLinter, createESP32Linter } from './AstGrepLinter';
+import { getRuleSet } from './ArduinoLintRules';
 import { spawn } from 'child_process';
 import * as path from 'path';
 import * as fs from 'fs-extra';
@@ -39,7 +41,8 @@ export interface LintOptions {
   boardOptions?: Record<string, string>;
   toolVersions?: string;
   format?: 'vscode' | 'json' | 'human';
-  mode?: 'fast' | 'accurate' | 'auto';
+  mode?: 'fast' | 'accurate' | 'auto' | 'ast-grep';
+  ruleSet?: 'minimal' | 'standard' | 'strict' | 'esp32' | 'stm32';
   verbose?: boolean;
 }
 
@@ -58,6 +61,7 @@ export class ArduinoLinter {
   private cacheManager: CacheManager;
   private lintCacheManager: LintCacheManager;
   private staticAnalyzer: ParallelStaticAnalyzer;
+  private astGrepLinter: AstGrepLinter | null = null;
   private cache: Map<string, LintCache> = new Map(); // 向后兼容的内存缓存
 
   constructor(
@@ -69,6 +73,21 @@ export class ArduinoLinter {
     this.cacheManager = new CacheManager(logger);
     this.lintCacheManager = new LintCacheManager(logger);
     this.staticAnalyzer = new ParallelStaticAnalyzer(logger);
+  }
+
+  /**
+   * 获取或创建 ast-grep linter 实例
+   */
+  private getAstGrepLinter(board?: string): AstGrepLinter {
+    if (!this.astGrepLinter) {
+      // 根据开发板类型选择不同的 linter
+      if (board && board.toLowerCase().includes('esp32')) {
+        this.astGrepLinter = createESP32Linter(this.logger);
+      } else {
+        this.astGrepLinter = createArduinoLinter(this.logger);
+      }
+    }
+    return this.astGrepLinter;
   }
 
   /**
@@ -90,6 +109,9 @@ export class ArduinoLinter {
           
         case 'auto':
           return await this.performAutoAnalysis(options, startTime);
+        
+        case 'ast-grep':
+          return await this.performAstGrepAnalysis(options, startTime);
           
         default:
           throw new Error(`Unknown lint mode: ${mode}`);
@@ -1010,6 +1032,51 @@ export class ArduinoLinter {
       notes: analysisResult.notes,
       executionTime: Date.now() - startTime
     };
+  }
+
+  /**
+   * ast-grep 高性能分析模式 - 基于 AST 的精确分析
+   */
+  private async performAstGrepAnalysis(options: LintOptions, startTime: number): Promise<LintResult> {
+    try {
+      // 读取源文件内容
+      const content = await fs.readFile(options.sketchPath, 'utf-8');
+      
+      // 获取 ast-grep linter（根据开发板类型自动选择规则集）
+      const linter = this.getAstGrepLinter(options.board);
+      
+      // 如果指定了规则集，更新规则
+      if (options.ruleSet) {
+        const rules = getRuleSet(options.ruleSet);
+        // 清除现有规则并添加新规则
+        for (const rule of rules) {
+          linter.addRule(rule);
+        }
+      }
+      
+      // 执行分析
+      const result = await linter.analyzeFile(options.sketchPath, content);
+      
+      this.logger.verbose(`ast-grep analysis completed in ${result.executionTime}ms`);
+      this.logger.verbose(`Found ${result.errors.length} errors, ${result.warnings.length} warnings, ${result.notes.length} notes`);
+      
+      return {
+        success: result.success,
+        errors: result.errors,
+        warnings: result.warnings,
+        notes: result.notes,
+        executionTime: Date.now() - startTime
+      };
+      
+    } catch (error) {
+      // 如果 ast-grep 不可用，回退到快速模式
+      if (error instanceof Error && error.message.includes('ast-grep/napi not installed')) {
+        this.logger.warn('ast-grep not available, falling back to fast mode');
+        return await this.performFastAnalysis(options, startTime);
+      }
+      
+      throw error;
+    }
   }
 
   /**
