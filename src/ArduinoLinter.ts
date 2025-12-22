@@ -17,9 +17,15 @@ export interface LintError {
   file: string;
   line: number;
   column: number;
+  endLine?: number;      // 错误结束行（ast-grep 提供）
+  endColumn?: number;    // 错误结束列（ast-grep 提供）
   message: string;
   severity: 'error' | 'warning' | 'note';
   code?: string;
+  fix?: {               // 自动修复建议（ast-grep 提供）
+    range: [number, number];
+    text: string;
+  };
 }
 
 export interface LintResult {
@@ -487,6 +493,7 @@ export class ArduinoLinter {
   /**
    * VS Code Problem Matcher 兼容格式
    * 格式: file(line,col): severity code: message
+   * 支持 endLine/endColumn 用于范围高亮
    */
   private formatVSCode(result: LintResult): string {
     const lines: string[] = [];
@@ -499,7 +506,13 @@ export class ArduinoLinter {
     
     for (const diag of allDiagnostics) {
       // VS Code 格式: file(line,col): severity: message
-      const location = `${diag.file}(${diag.line},${diag.column})`;
+      // 如果有结束位置，使用 file(startLine,startCol,endLine,endCol) 格式
+      let location: string;
+      if (diag.endLine && diag.endColumn) {
+        location = `${diag.file}(${diag.line},${diag.column},${diag.endLine},${diag.endColumn})`;
+      } else {
+        location = `${diag.file}(${diag.line},${diag.column})`;
+      }
       const severity = diag.severity;
       const code = diag.code ? ` ${diag.code}` : '';
       
@@ -511,37 +524,49 @@ export class ArduinoLinter {
 
   /**
    * 人类可读格式（彩色输出）
+   * 支持显示 endLine/endColumn 范围和自动修复建议
    */
   private formatHuman(result: LintResult): string {
     const lines: string[] = [];
     
+    // 格式化诊断条目的辅助函数
+    const formatDiagnostic = (diag: LintError): string[] => {
+      const diagLines: string[] = [];
+      // 显示位置信息（如果有范围，显示范围）
+      if (diag.endLine && diag.endColumn && (diag.endLine !== diag.line || diag.endColumn !== diag.column)) {
+        diagLines.push(`  ${diag.file}:${diag.line}:${diag.column}-${diag.endLine}:${diag.endColumn}`);
+      } else {
+        diagLines.push(`  ${diag.file}:${diag.line}:${diag.column}`);
+      }
+      diagLines.push(`    ${diag.message}`);
+      if (diag.code) {
+        diagLines.push(`    [${diag.code}]`);
+      }
+      // 显示自动修复建议（如果有）
+      if (diag.fix) {
+        diagLines.push(`    💡 Fix: Replace with "${diag.fix.text}"`);
+      }
+      return diagLines;
+    };
+    
     if (result.errors.length > 0) {
       lines.push('\n❌ Errors:');
       result.errors.forEach(err => {
-        lines.push(`  ${err.file}:${err.line}:${err.column}`);
-        lines.push(`    ${err.message}`);
-        if (err.code) {
-          lines.push(`    [${err.code}]`);
-        }
+        lines.push(...formatDiagnostic(err));
       });
     }
     
     if (result.warnings.length > 0) {
       lines.push('\n⚠️  Warnings:');
       result.warnings.forEach(warn => {
-        lines.push(`  ${warn.file}:${warn.line}:${warn.column}`);
-        lines.push(`    ${warn.message}`);
-        if (warn.code) {
-          lines.push(`    [${warn.code}]`);
-        }
+        lines.push(...formatDiagnostic(warn));
       });
     }
     
     if (result.notes.length > 0 && result.errors.length === 0 && result.warnings.length === 0) {
       lines.push('\nℹ️  Notes:');
       result.notes.forEach(note => {
-        lines.push(`  ${note.file}:${note.line}:${note.column}`);
-        lines.push(`    ${note.message}`);
+        lines.push(...formatDiagnostic(note));
       });
     }
     

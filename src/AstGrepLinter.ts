@@ -108,13 +108,8 @@ const ARDUINO_RULES: LintRule[] = [
     kind: 'ERROR'
   },
   
-  // 检测空的函数体可能是错误
-  {
-    id: 'empty-function-body',
-    severity: 'warning',
-    message: 'Empty function body - intentional?',
-    pattern: 'void $FUNC() { }',
-  },
+  // 注意：空函数体检测移除，因为 Arduino 的 setup() 和 loop() 经常为空
+  // 且很难用简单的 pattern 排除它们
   
   // === 警告级别规则 ===
   
@@ -263,8 +258,8 @@ export class AstGrepLinter {
       // 3. Arduino 特定检查
       this.checkArduinoSpecific(root, filePath, warnings, notes);
       
-      // 4. 未定义变量检查
-      this.checkUndefinedVariables(root, filePath, warnings);
+      // 4. 未定义变量检查（错误级别）
+      this.checkUndefinedVariables(root, filePath, errors);
       
       // 5. 去重
       const uniqueErrors = this.deduplicateDiagnostics(errors);
@@ -533,8 +528,9 @@ export class AstGrepLinter {
   /**
    * 检查未定义变量
    * 通过收集声明和使用来检测可能未定义的变量
+   * 未定义变量是错误级别，会导致编译失败
    */
-  private checkUndefinedVariables(root: any, filePath: string, warnings: LintError[]): void {
+  private checkUndefinedVariables(root: any, filePath: string, errors: LintError[]): void {
     // Arduino/C++ 内置标识符和常用库函数
     const builtins = new Set([
       // Arduino 核心
@@ -587,10 +583,10 @@ export class AstGrepLinter {
     // 收集所有变量声明
     const declaredVars = new Set<string>();
     
-    // 1. 查找全局变量声明: type name = ...
+    // 1. 查找全局变量声明: type name = ... 或 type name(args)
     const globalDecls = root.findAll({ rule: { kind: 'declaration' } });
     for (const decl of globalDecls) {
-      // 查找声明中的标识符
+      // 1a. 查找 init_declarator 形式: int x = 0;
       const declarators = decl.findAll({ rule: { kind: 'init_declarator' } });
       for (const d of declarators) {
         const id = d.find({ rule: { kind: 'identifier' } });
@@ -598,7 +594,19 @@ export class AstGrepLinter {
           declaredVars.add(id.text());
         }
       }
-      // 简单声明（无初始化）
+      
+      // 1b. 查找构造函数式声明: ClassName obj(args);
+      // 这种情况下，declaration 包含 function_declarator
+      const funcDeclaratorInDecl = decl.find({ rule: { kind: 'function_declarator' } });
+      if (funcDeclaratorInDecl) {
+        // function_declarator 的第一个 identifier 子节点就是变量名
+        const id = funcDeclaratorInDecl.find({ rule: { kind: 'identifier' } });
+        if (id) {
+          declaredVars.add(id.text());
+        }
+      }
+      
+      // 1c. 简单声明（无初始化）: int x;
       const simpleIds = decl.children().filter((c: any) => c.kind() === 'identifier');
       for (const id of simpleIds) {
         declaredVars.add(id.text());
@@ -679,12 +687,12 @@ export class AstGrepLinter {
           }
         }
         
-        warnings.push({
+        errors.push({
           file: filePath,
           line: range.start.line + 1,
           column: range.start.column + 1,
-          message: `Possibly undefined variable: '${name}'`,
-          severity: 'warning',
+          message: `Undefined variable: '${name}'`,
+          severity: 'error',
           code: 'UNDEFINED_VAR'
         });
       }
@@ -702,12 +710,12 @@ export class AstGrepLinter {
           const range = rhs.range();
           
           if (!builtins.has(name) && !declaredVars.has(name)) {
-            warnings.push({
+            errors.push({
               file: filePath,
               line: range.start.line + 1,
               column: range.start.column + 1,
-              message: `Possibly undefined variable: '${name}'`,
-              severity: 'warning',
+              message: `Undefined variable: '${name}'`,
+              severity: 'error',
               code: 'UNDEFINED_VAR'
             });
           }
@@ -730,12 +738,12 @@ export class AstGrepLinter {
             continue;
           }
           
-          warnings.push({
+          errors.push({
             file: filePath,
             line: range.start.line + 1,
             column: range.start.column + 1,
-            message: `Possibly undefined object: '${name}'`,
-            severity: 'warning',
+            message: `Undefined object: '${name}'`,
+            severity: 'error',
             code: 'UNDEFINED_VAR'
           });
         }
