@@ -766,21 +766,23 @@ export class DependencyAnalyzer {
       
       if (hasTopLevelConditional) {
         // 有条件编译保护的情况下，进一步检查实现完整性
-        // 如果函数数量少于3个，且没有复杂实现，认为是代码片段
-        if (functionCount < 3 && !hasComplexImplementation) {
-          this.logger.debug(`[CODE_FRAGMENT] File ${filePath} has conditional compilation with limited implementation (${functionCount} functions)`);
-          return true;
+        
+        // 如果有至少1个函数实现，就不是代码片段
+        // 这些文件通常是平台特定的实现文件（如 exp_nimble_mem.c 提供内存分配函数）
+        if (functionCount >= 1) {
+          this.logger.debug(`[CODE_FRAGMENT] File ${filePath} has conditional compilation but contains function implementations (${functionCount} functions), keeping it`);
+          return false;
         }
         
-        // 如果有效代码行数很少（小于50行），且函数数量少于5个，认为是代码片段
-        if (effectiveLines < 50 && functionCount < 5) {
-          this.logger.debug(`[CODE_FRAGMENT] File ${filePath} has conditional compilation with small size (${effectiveLines} lines, ${functionCount} functions)`);
-          return true;
+        // 如果有复杂实现逻辑，也不是代码片段
+        if (hasComplexImplementation) {
+          this.logger.debug(`[CODE_FRAGMENT] File ${filePath} has conditional compilation with complex implementation, keeping it`);
+          return false;
         }
         
-        // 如果包含完整实现（多个函数、复杂逻辑），则不是代码片段
-        this.logger.debug(`[CODE_FRAGMENT] File ${filePath} has conditional compilation but contains complete implementation (${functionCount} functions, ${effectiveLines} lines)`);
-        return false;
+        // 没有函数实现且没有复杂逻辑，认为是代码片段
+        this.logger.debug(`[CODE_FRAGMENT] File ${filePath} has conditional compilation with no function implementations (${effectiveLines} lines), treating as fragment`);
+        return true;
       }
       
       // 没有条件编译保护的情况下，通常不是代码片段
