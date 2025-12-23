@@ -77,14 +77,17 @@ async function bundleWithNative() {
     // 复制主要文件
     await fs.copy(path.join(treeSitterCppSrc, 'package.json'), path.join(treeSitterCppDest, 'package.json'));
     
-    // 只复制 bindings/node 目录
+    // 只复制 bindings/node 中的 JS 文件（不复制 binding.cc 源码）
     const bindingsSrc = path.join(treeSitterCppSrc, 'bindings', 'node');
     const bindingsDest = path.join(treeSitterCppDest, 'bindings', 'node');
     await fs.ensureDir(bindingsDest);
     if (await fs.pathExists(bindingsSrc)) {
       const files = await fs.readdir(bindingsSrc);
       for (const file of files) {
-        await fs.copy(path.join(bindingsSrc, file), path.join(bindingsDest, file));
+        // 只复制 JS 文件，跳过 .cc 源码
+        if (file.endsWith('.js')) {
+          await fs.copy(path.join(bindingsSrc, file), path.join(bindingsDest, file));
+        }
       }
       console.log('✅ Copied tree-sitter-cpp bindings');
     }
@@ -103,14 +106,6 @@ async function bundleWithNative() {
       console.log('✅ Copied tree-sitter-cpp native files');
     }
 
-    // 复制 grammar.js（可能需要）
-    const grammarSrc = path.join(treeSitterCppSrc, 'grammar.js');
-    const grammarDest = path.join(treeSitterCppDest, 'grammar.js');
-    if (await fs.pathExists(grammarSrc)) {
-      await fs.copy(grammarSrc, grammarDest);
-      console.log('✅ Copied tree-sitter-cpp grammar');
-    }
-
     // 3.5 复制 @ast-grep/napi 和 @ast-grep/lang-cpp 模块
     console.log('📦 Copying @ast-grep native modules...');
     
@@ -119,8 +114,8 @@ async function bundleWithNative() {
     const astGrepNapiDest = path.join(bundleDir, 'node_modules/@ast-grep/napi');
     if (await fs.pathExists(astGrepNapiSrc)) {
       await fs.ensureDir(astGrepNapiDest);
-      // 只复制 JS 和 JSON 文件
-      const filesToCopy = ['index.js', 'index.d.ts', 'package.json'];
+      // 只复制 JS 和 JSON 文件（排除 .d.ts 类型定义）
+      const filesToCopy = ['index.js', 'package.json'];
       for (const file of filesToCopy) {
         const src = path.join(astGrepNapiSrc, file);
         if (await fs.pathExists(src)) {
@@ -135,7 +130,8 @@ async function bundleWithNative() {
     const astGrepSetupLangDest = path.join(bundleDir, 'node_modules/@ast-grep/setup-lang');
     if (await fs.pathExists(astGrepSetupLangSrc)) {
       await fs.ensureDir(astGrepSetupLangDest);
-      const filesToCopy = ['index.js', 'index.d.ts', 'package.json'];
+      // 只复制 JS 和 JSON 文件（排除 .d.ts 类型定义）
+      const filesToCopy = ['index.js', 'package.json'];
       for (const file of filesToCopy) {
         const src = path.join(astGrepSetupLangSrc, file);
         if (await fs.pathExists(src)) {
@@ -151,8 +147,8 @@ async function bundleWithNative() {
     if (await fs.pathExists(astGrepLangCppSrc)) {
       await fs.ensureDir(astGrepLangCppDest);
       
-      // 只复制 JS、JSON、类型定义文件
-      const rootFiles = ['index.js', 'index.d.ts', 'package.json'];
+      // 只复制 JS 和 JSON 文件（排除 .d.ts 类型定义）
+      const rootFiles = ['index.js', 'package.json'];
       for (const file of rootFiles) {
         const src = path.join(astGrepLangCppSrc, file);
         if (await fs.pathExists(src)) {
@@ -197,22 +193,42 @@ async function bundleWithNative() {
       const modSrc = `./node_modules/${targetModule}`;
       const modDest = path.join(bundleDir, 'node_modules', targetModule);
       if (await fs.pathExists(modSrc)) {
-        await fs.copy(modSrc, modDest);
+        // 复制时排除 .md 和 .d.ts 文件
+        await fs.copy(modSrc, modDest, {
+          filter: (src) => !src.endsWith('.md') && !src.endsWith('.d.ts')
+        });
         console.log(`✅ Copied ${targetModule} (current platform only)`);
       }
     } else {
       console.log(`⚠️  No ast-grep native module found for platform: ${platformKey}`);
     }
 
-    // 4. 复制 ninja 工具（如果存在）
+    // 4. 复制 ninja 工具（只复制当前系统对应的版本）
     console.log('📦 Copying ninja build tool...');
-    const ninjaSrc = './ninja';
+    const ninjaDir = './ninja';
     const ninjaDest = path.join(bundleDir, 'ninja');
-    if (await fs.pathExists(ninjaSrc)) {
-      await fs.copy(ninjaSrc, ninjaDest);
-      console.log('✅ Copied ninja build tool');
+    await fs.ensureDir(ninjaDest);
+    
+    if (process.platform === 'win32') {
+      // Windows: 复制 ninja.exe
+      const ninjaExeSrc = path.join(ninjaDir, 'ninja.exe');
+      if (await fs.pathExists(ninjaExeSrc)) {
+        await fs.copy(ninjaExeSrc, path.join(ninjaDest, 'ninja.exe'));
+        console.log('✅ Copied ninja.exe (Windows)');
+      } else {
+        console.log('ℹ️  ninja.exe not found in ./ninja directory');
+      }
     } else {
-      console.log('ℹ️  Ninja not found in ./ninja directory');
+      // macOS/Linux: 复制 ninja
+      const ninjaBinSrc = path.join(ninjaDir, 'ninja');
+      if (await fs.pathExists(ninjaBinSrc)) {
+        await fs.copy(ninjaBinSrc, path.join(ninjaDest, 'ninja'));
+        // 设置执行权限
+        await fs.chmod(path.join(ninjaDest, 'ninja'), '755');
+        console.log('✅ Copied ninja (Unix)');
+      } else {
+        console.log('ℹ️  ninja not found in ./ninja directory');
+      }
     }
 
     // 5. 创建启动脚本
