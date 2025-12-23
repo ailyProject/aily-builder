@@ -714,79 +714,93 @@ export class AstGrepLinter {
     // 从源代码提取库前缀（如果提供了源代码）
     const libraryPrefixes = sourceContent ? this.extractLibraryPrefixes(sourceContent) : [];
     
-    // 收集所有变量声明
-    const declaredVars = new Set<string>();
+    // ====== 作用域感知的变量收集 ======
     
-    // 1. 查找全局变量声明: type name = ... 或 type name(args)
-    const globalDecls = root.findAll({ rule: { kind: 'declaration' } });
-    for (const decl of globalDecls) {
-      // 1a. 查找 init_declarator 形式: int x = 0;
-      const declarators = decl.findAll({ rule: { kind: 'init_declarator' } });
-      for (const d of declarators) {
-        const id = d.find({ rule: { kind: 'identifier' } });
-        if (id) {
-          declaredVars.add(id.text());
+    // 全局变量（在函数外部定义）
+    const globalVars = new Set<string>();
+    
+    // 每个函数的局部变量和参数: funcName -> Set<varName>
+    const functionScopes = new Map<string, Set<string>>();
+    
+    // 1. 收集全局变量（不在任何函数内部的声明）
+    const allDecls = root.findAll({ rule: { kind: 'declaration' } });
+    for (const decl of allDecls) {
+      // 检查是否在函数内部
+      const parentFunc = this.findParentFunction(decl);
+      
+      if (!parentFunc) {
+        // 这是全局声明
+        this.extractDeclaredVars(decl, globalVars);
+      }
+    }
+    
+    // 2. 收集每个函数的局部变量和参数
+    const funcDefs = root.findAll({ rule: { kind: 'function_definition' } });
+    for (const funcDef of funcDefs) {
+      const funcName = this.getFunctionName(funcDef);
+      if (!funcName) continue;
+      
+      const localVars = new Set<string>();
+      
+      // 2a. 收集函数参数
+      const funcDeclarator = funcDef.find({ rule: { kind: 'function_declarator' } });
+      if (funcDeclarator) {
+        const params = funcDeclarator.findAll({ rule: { kind: 'parameter_declaration' } });
+        for (const param of params) {
+          const id = param.find({ rule: { kind: 'identifier' } });
+          if (id) {
+            localVars.add(id.text());
+          }
         }
       }
       
-      // 1b. 查找构造函数式声明: ClassName obj(args);
-      // 这种情况下，declaration 包含 function_declarator
-      const funcDeclaratorInDecl = decl.find({ rule: { kind: 'function_declarator' } });
-      if (funcDeclaratorInDecl) {
-        // function_declarator 的第一个 identifier 子节点就是变量名
-        const id = funcDeclaratorInDecl.find({ rule: { kind: 'identifier' } });
-        if (id) {
-          declaredVars.add(id.text());
+      // 2b. 收集函数体内的局部变量
+      const body = funcDef.find({ rule: { kind: 'compound_statement' } });
+      if (body) {
+        const localDecls = body.findAll({ rule: { kind: 'declaration' } });
+        for (const decl of localDecls) {
+          this.extractDeclaredVars(decl, localVars);
+        }
+        
+        // 2c. for 循环中的变量也是局部变量
+        const forStmts = body.findAll({ rule: { kind: 'for_statement' } });
+        for (const forStmt of forStmts) {
+          const initDecl = forStmt.find({ rule: { kind: 'declaration' } });
+          if (initDecl) {
+            this.extractDeclaredVars(initDecl, localVars);
+          }
         }
       }
       
-      // 1c. 简单声明（无初始化）: int x;
-      const simpleIds = decl.children().filter((c: any) => c.kind() === 'identifier');
-      for (const id of simpleIds) {
-        declaredVars.add(id.text());
-      }
+      functionScopes.set(funcName, localVars);
     }
     
-    // 2. 查找函数参数
-    const funcDeclarators = root.findAll({ rule: { kind: 'function_declarator' } });
-    for (const fd of funcDeclarators) {
-      const params = fd.findAll({ rule: { kind: 'parameter_declaration' } });
-      for (const param of params) {
-        const id = param.find({ rule: { kind: 'identifier' } });
-        if (id) {
-          declaredVars.add(id.text());
+    // ====== 检查变量使用 ======
+    
+    // 辅助函数：检查变量在指定位置是否可见
+    const isVariableVisible = (varName: string, node: any): boolean => {
+      // 检查内置符号
+      if (builtins.has(varName)) return true;
+      
+      // 检查全局变量
+      if (globalVars.has(varName)) return true;
+      
+      // 检查库符号
+      if (this.isLibrarySymbol(varName, libraryPrefixes)) return true;
+      
+      // 检查当前函数的局部变量
+      const parentFunc = this.findParentFunction(node);
+      if (parentFunc) {
+        const funcName = this.getFunctionName(parentFunc);
+        if (funcName) {
+          const localVars = functionScopes.get(funcName);
+          if (localVars && localVars.has(varName)) return true;
         }
       }
-    }
-    
-    // 3. 查找局部变量（在复合语句中的声明）
-    const localDecls = root.findAll({ rule: { kind: 'declaration', inside: { kind: 'compound_statement' } } });
-    for (const decl of localDecls) {
-      const declarators = decl.findAll({ rule: { kind: 'init_declarator' } });
-      for (const d of declarators) {
-        const id = d.find({ rule: { kind: 'identifier' } });
-        if (id) {
-          declaredVars.add(id.text());
-        }
-      }
-      const simpleIds = decl.children().filter((c: any) => c.kind() === 'identifier');
-      for (const id of simpleIds) {
-        declaredVars.add(id.text());
-      }
-    }
-    
-    // 4. for 循环中的变量
-    const forDecls = root.findAll({ rule: { kind: 'for_statement' } });
-    for (const forStmt of forDecls) {
-      const initDecl = forStmt.find({ rule: { kind: 'declaration' } });
-      if (initDecl) {
-        const id = initDecl.find({ rule: { kind: 'identifier' } });
-        if (id) {
-          declaredVars.add(id.text());
-        }
-      }
-    }
-    
+      
+      return false;
+    };
+
     // 5. 查找所有标识符使用（在函数调用参数中）
     const callExprs = root.findAll({ rule: { kind: 'call_expression' } });
     
@@ -801,13 +815,8 @@ export class AstGrepLinter {
         const name = id.text();
         const range = id.range();
         
-        // 跳过内置和已声明的变量
-        if (builtins.has(name) || declaredVars.has(name)) {
-          continue;
-        }
-        
-        // 跳过库定义的符号（基于前缀匹配）
-        if (this.isLibrarySymbol(name, libraryPrefixes)) {
+        // 使用作用域感知的可见性检查
+        if (isVariableVisible(name, id)) {
           continue;
         }
         
@@ -848,7 +857,7 @@ export class AstGrepLinter {
           const name = rhs.text();
           const range = rhs.range();
           
-          if (!builtins.has(name) && !declaredVars.has(name) && !this.isLibrarySymbol(name, libraryPrefixes)) {
+          if (!isVariableVisible(name, rhs)) {
             errors.push({
               file: filePath,
               line: range.start.line + 1,
@@ -872,8 +881,8 @@ export class AstGrepLinter {
           const name = obj.text();
           const range = obj.range();
           
-          // 跳过已知的内置对象、已声明的变量和库符号
-          if (builtins.has(name) || declaredVars.has(name) || this.isLibrarySymbol(name, libraryPrefixes)) {
+          // 使用作用域感知的可见性检查
+          if (isVariableVisible(name, obj)) {
             continue;
           }
           
@@ -887,6 +896,63 @@ export class AstGrepLinter {
           });
         }
       }
+    }
+  }
+
+  /**
+   * 查找节点所属的父函数定义
+   */
+  private findParentFunction(node: any): any {
+    let current = node.parent();
+    while (current) {
+      if (current.kind() === 'function_definition') {
+        return current;
+      }
+      current = current.parent();
+    }
+    return null;
+  }
+
+  /**
+   * 获取函数定义的名称
+   */
+  private getFunctionName(funcDef: any): string | null {
+    const funcDeclarator = funcDef.find({ rule: { kind: 'function_declarator' } });
+    if (funcDeclarator) {
+      const id = funcDeclarator.find({ rule: { kind: 'identifier' } });
+      if (id) {
+        return id.text();
+      }
+    }
+    return null;
+  }
+
+  /**
+   * 从声明节点中提取变量名到指定集合
+   */
+  private extractDeclaredVars(decl: any, vars: Set<string>): void {
+    // 1. init_declarator 形式: int x = 0;
+    const declarators = decl.findAll({ rule: { kind: 'init_declarator' } });
+    for (const d of declarators) {
+      const id = d.find({ rule: { kind: 'identifier' } });
+      if (id) {
+        vars.add(id.text());
+      }
+    }
+    
+    // 2. 构造函数式声明: ClassName obj(args);
+    const funcDeclaratorInDecl = decl.find({ rule: { kind: 'function_declarator' } });
+    if (funcDeclaratorInDecl) {
+      const id = funcDeclaratorInDecl.find({ rule: { kind: 'identifier' } });
+      if (id) {
+        vars.add(id.text());
+      }
+    }
+    
+    // 3. 简单声明（无初始化）: int x;
+    const simpleIds = decl.children().filter((c: any) => c.kind() === 'identifier');
+    for (const id of simpleIds) {
+      vars.add(id.text());
     }
   }
 
