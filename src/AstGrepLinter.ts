@@ -258,8 +258,8 @@ export class AstGrepLinter {
       // 3. Arduino 特定检查
       this.checkArduinoSpecific(root, filePath, warnings, notes);
       
-      // 4. 未定义变量检查（错误级别）
-      this.checkUndefinedVariables(root, filePath, errors);
+      // 4. 未定义变量检查（错误级别）- 传入源代码以便提取库前缀
+      this.checkUndefinedVariables(root, filePath, errors, content);
       
       // 5. 去重
       const uniqueErrors = this.deduplicateDiagnostics(errors);
@@ -526,11 +526,140 @@ export class AstGrepLinter {
   }
 
   /**
+   * 从代码中提取 #include 的库，并生成对应的符号前缀模式
+   * 这样可以自动识别库中定义的符号，避免误报
+   */
+  private extractLibraryPrefixes(content: string): string[] {
+    const prefixes: string[] = [];
+    
+    // 库名到符号前缀的映射规则
+    // 格式: 库名(不区分大小写) -> 符号前缀数组
+    const libraryPrefixMap: Record<string, string[]> = {
+      // 显示库
+      'u8g2lib': ['u8g2_', 'u8x8_', 'U8G2_', 'U8X8_'],
+      'u8g2': ['u8g2_', 'u8x8_', 'U8G2_', 'U8X8_'],
+      'u8x8lib': ['u8x8_', 'U8X8_'],
+      'adafruit_gfx': ['GFX', 'Adafruit_'],
+      'adafruit_ssd1306': ['SSD1306_', 'Adafruit_'],
+      'tft_espi': ['TFT_', 'tft_'],
+      'lvgl': ['lv_', 'LV_'],
+      'lv_conf': ['lv_', 'LV_'],
+      
+      // 传感器库
+      'dht': ['DHT', 'dht_'],
+      'adafruit_dht': ['DHT'],
+      'adafruit_bme280': ['BME280_', 'Adafruit_'],
+      'adafruit_bmp280': ['BMP280_', 'Adafruit_'],
+      
+      // 通信库
+      'wifi': ['WIFI_', 'WiFi'],
+      'wificlient': ['WiFi'],
+      'wifiserver': ['WiFi'],
+      'esp8266wifi': ['WiFi', 'ESP8266'],
+      'esp32wifi': ['WiFi'],
+      'pubsubclient': ['MQTT_', 'PubSub'],
+      'arduinojson': ['JSON_', 'Json'],
+      'httpclient': ['HTTP_'],
+      'esp_http_client': ['esp_http_', 'ESP_HTTP_'],
+      'websocketsclient': ['WebSocket'],
+      
+      // 存储库
+      'sd': ['SD_', 'File'],
+      'spiffs': ['SPIFFS_'],
+      'littlefs': ['LittleFS_'],
+      'preferences': ['Preferences'],
+      'eeprom': ['EEPROM_'],
+      
+      // 电机/舵机库
+      'servo': ['Servo'],
+      'esp32servo': ['Servo'],
+      'stepper': ['Stepper'],
+      'accelstepper': ['AccelStepper'],
+      
+      // LED库
+      'adafruit_neopixel': ['NEO_', 'Adafruit_'],
+      'fastled': ['CRGB', 'CHSV', 'FastLED', 'FASTLED_'],
+      
+      // FreeRTOS
+      'freertos': ['pdTRUE', 'pdFALSE', 'pdPASS', 'pdFAIL', 'portMAX_DELAY', 
+                   'xTask', 'vTask', 'xQueue', 'xSemaphore', 'xMutex', 'xTimer',
+                   'portTICK_', 'configMAX_', 'task', 'queue'],
+      
+      // ESP-IDF
+      'esp_system': ['esp_', 'ESP_'],
+      'esp_wifi': ['esp_wifi_', 'WIFI_', 'wifi_'],
+      'esp_event': ['esp_event_', 'ESP_EVENT_'],
+      'esp_log': ['ESP_LOG', 'esp_log_'],
+      'driver/gpio': ['gpio_', 'GPIO_'],
+      'driver/i2c': ['i2c_', 'I2C_'],
+      'driver/spi': ['spi_', 'SPI_'],
+      'driver/uart': ['uart_', 'UART_'],
+      'driver/ledc': ['ledc_', 'LEDC_'],
+      'driver/adc': ['adc_', 'ADC_'],
+      'driver/dac': ['dac_', 'DAC_'],
+      'driver/timer': ['timer_', 'TIMER_'],
+      'driver/pcnt': ['pcnt_', 'PCNT_'],
+      'driver/mcpwm': ['mcpwm_', 'MCPWM_'],
+      'nvs_flash': ['nvs_', 'NVS_'],
+      'nvs': ['nvs_', 'NVS_'],
+    };
+    
+    // 提取所有 #include 指令
+    const includeRegex = /#include\s*[<"]([^>"]+)[>"]/g;
+    let match;
+    
+    while ((match = includeRegex.exec(content)) !== null) {
+      const includePath = match[1];
+      
+      // 提取库名（去除路径和扩展名）
+      const libName = includePath
+        .replace(/.*\//, '')      // 去除路径
+        .replace(/\.[^.]+$/, '')  // 去除扩展名
+        .toLowerCase();
+      
+      // 查找匹配的前缀
+      if (libraryPrefixMap[libName]) {
+        prefixes.push(...libraryPrefixMap[libName]);
+      }
+      
+      // 对于未知库，尝试从库名推断前缀
+      // 例如: MyLib.h -> MyLib_, mylib_
+      if (!libraryPrefixMap[libName]) {
+        const baseName = includePath
+          .replace(/.*\//, '')
+          .replace(/\.[^.]+$/, '');
+        
+        // 添加常见的命名模式
+        if (baseName.length > 2) {
+          prefixes.push(baseName + '_');           // MyLib_
+          prefixes.push(baseName.toUpperCase() + '_'); // MYLIB_
+          prefixes.push(baseName.toLowerCase() + '_'); // mylib_
+        }
+      }
+    }
+    
+    // 去重
+    return [...new Set(prefixes)];
+  }
+
+  /**
+   * 检查符号是否匹配任意库前缀
+   */
+  private isLibrarySymbol(name: string, libraryPrefixes: string[]): boolean {
+    for (const prefix of libraryPrefixes) {
+      if (name.startsWith(prefix)) {
+        return true;
+      }
+    }
+    return false;
+  }
+
+  /**
    * 检查未定义变量
    * 通过收集声明和使用来检测可能未定义的变量
    * 未定义变量是错误级别，会导致编译失败
    */
-  private checkUndefinedVariables(root: any, filePath: string, errors: LintError[]): void {
+  private checkUndefinedVariables(root: any, filePath: string, errors: LintError[], sourceContent?: string): void {
     // Arduino/C++ 内置标识符和常用库函数
     const builtins = new Set([
       // Arduino 核心
@@ -577,8 +706,13 @@ export class AstGrepLinter {
       'portTICK_PERIOD_MS', 'IRAM_ATTR',
       // 常用宏
       'F', 'PROGMEM', 'pgm_read_byte', 'pgm_read_word',
-      'EEPROM', 'SD', 'LittleFS', 'SPIFFS'
+      'EEPROM', 'SD', 'LittleFS', 'SPIFFS',
+      // I2C/Wire 常量
+      'SCL', 'SDA', 'SCL1', 'SDA1'
     ]);
+    
+    // 从源代码提取库前缀（如果提供了源代码）
+    const libraryPrefixes = sourceContent ? this.extractLibraryPrefixes(sourceContent) : [];
     
     // 收集所有变量声明
     const declaredVars = new Set<string>();
@@ -672,6 +806,11 @@ export class AstGrepLinter {
           continue;
         }
         
+        // 跳过库定义的符号（基于前缀匹配）
+        if (this.isLibrarySymbol(name, libraryPrefixes)) {
+          continue;
+        }
+        
         // 检查是否是成员访问的一部分（如 Serial.println 中的 Serial）
         const parent = id.parent();
         if (parent && parent.kind() === 'field_expression') {
@@ -709,7 +848,7 @@ export class AstGrepLinter {
           const name = rhs.text();
           const range = rhs.range();
           
-          if (!builtins.has(name) && !declaredVars.has(name)) {
+          if (!builtins.has(name) && !declaredVars.has(name) && !this.isLibrarySymbol(name, libraryPrefixes)) {
             errors.push({
               file: filePath,
               line: range.start.line + 1,
@@ -733,8 +872,8 @@ export class AstGrepLinter {
           const name = obj.text();
           const range = obj.range();
           
-          // 跳过已知的内置对象和已声明的变量
-          if (builtins.has(name) || declaredVars.has(name)) {
+          // 跳过已知的内置对象、已声明的变量和库符号
+          if (builtins.has(name) || declaredVars.has(name) || this.isLibrarySymbol(name, libraryPrefixes)) {
             continue;
           }
           
