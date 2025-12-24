@@ -10,6 +10,7 @@ import { escapeQuotedDefines } from './utils/escapeQuotes';
 export interface NinjaPipelineOptions {
   dependencies: Dependency[];
   compileConfig: any;
+  cacheEnabled?: boolean;
 }
 
 export interface NinjaCompilationResult {
@@ -25,6 +26,7 @@ export class NinjaCompilationPipeline {
   private compileConfig: any;
   private cacheManager: CacheManager;
   private ninjaGenerator: NinjaGenerator;
+  private cacheEnabled: boolean = true;
 
   constructor(logger: Logger) {
     this.logger = logger;
@@ -32,20 +34,24 @@ export class NinjaCompilationPipeline {
     this.ninjaGenerator = new NinjaGenerator(logger);
   }
 
-  async compile({ dependencies, compileConfig }: NinjaPipelineOptions): Promise<NinjaCompilationResult> {
+  async compile({ dependencies, compileConfig, cacheEnabled }: NinjaPipelineOptions): Promise<NinjaCompilationResult> {
     this.dependencies = dependencies;
     this.compileConfig = compileConfig;
+    this.cacheEnabled = cacheEnabled !== false;
 
     try {
       const startTime = Date.now();
 
       // 1. 预处理：从缓存中恢复对象文件
-      this.logger.verbose('Checking cache for compiled objects...');
-      const cacheHits = await this.restoreFromCache(dependencies);
-      // if (cacheHits > 0) {
-      //   this.logger.info(`Cache hit: ${cacheHits} objects restored from cache`);
-      // }
-
+      if (this.cacheEnabled) {
+        this.logger.verbose('Checking cache for compiled objects...');
+        const cacheHits = await this.restoreFromCache(dependencies);
+        // if (cacheHits > 0) {
+        //   this.logger.info(`Cache hit: ${cacheHits} objects restored from cache`);
+        // }
+      } else {
+        this.logger.verbose('Compilation cache disabled; skipping cache restore');
+      }
       // 2. 生成ninja构建文件
       this.logger.verbose('Generating ninja build file...');
       const ninjaOptions: NinjaOptions = {
@@ -158,7 +164,9 @@ export class NinjaCompilationPipeline {
               isInFailureMode = false;
               this.logger.info(line.trim());
               // 检查是否是编译完成的消息，立即存储到缓存
-              this.handleCompilationProgress(line.trim(), buildDir);
+              if (this.cacheEnabled) {
+                this.handleCompilationProgress(line.trim(), buildDir);
+              }
             } else if (line.startsWith('FAILED:')) {
               // 编译失败信息，进入失败模式
               isInFailureMode = true;
@@ -222,6 +230,10 @@ export class NinjaCompilationPipeline {
    * 处理编译进度并立即存储缓存
    */
   private async handleCompilationProgress(progressLine: string, buildDir: string): Promise<void> {
+    if (!this.cacheEnabled) {
+      return;
+    }
+
     // 解析ninja的进度信息，查找编译完成的文件
 
     let objectFileName: string | null = null; // 輸出的文件
@@ -248,6 +260,10 @@ export class NinjaCompilationPipeline {
    * 存储单个编译文件到缓存
    */
   private async storeSingleFileToCache(objectFileName: string, objectFilePath: string): Promise<void> {
+    if (!this.cacheEnabled) {
+      return;
+    }
+
     try {
       // 从对象文件名解析出源文件信息
       const pathParts = objectFileName.split('/');
@@ -451,6 +467,10 @@ export class NinjaCompilationPipeline {
    * 从缓存中恢复对象文件
    */
   private async restoreFromCache(dependencies: Dependency[]): Promise<number> {
+    if (!this.cacheEnabled) {
+      return 0;
+    }
+
     let cacheHits = 0;
     const buildPath = process.env['BUILD_PATH'] || '';
 
@@ -520,6 +540,10 @@ export class NinjaCompilationPipeline {
    * 将新编译的对象文件存储到缓存
    */
   private async storeToCache(dependencies: Dependency[]): Promise<void> {
+    if (!this.cacheEnabled) {
+      return;
+    }
+
     const buildPath = process.env['BUILD_PATH'] || '';
 
     // 只处理依赖文件，跳过sketch文件缓存
