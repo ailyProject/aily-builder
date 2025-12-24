@@ -48,6 +48,7 @@ export class ArduinoCompiler {
 
   async compile(options: any): Promise<CompileResult> {
     const startTime = Date.now();
+    const cacheEnabled = options.cacheEnabled ?? true;
 
     // try {
     this.logger.info(`Starting compilation process...`);
@@ -102,7 +103,7 @@ export class ArduinoCompiler {
     this.logger.verbose(`Starting compilation pipeline...`);
     let compileResult;
 
-    compileResult = await this.ninjaPipeline.compile({ dependencies, compileConfig });
+    compileResult = await this.ninjaPipeline.compile({ dependencies, compileConfig, cacheEnabled });
 
     if (!compileResult.success) {
       return {

@@ -47,13 +47,27 @@ program
   }, {})
   .option('-j, --jobs <number>', 'Number of parallel compilation jobs', (os.cpus().length + 1).toString())
   .option('--verbose', 'Enable verbose output', false)
-  .option('--no-cache', 'Disable compilation cache', false)
+  .option('--no-cache', 'Disable compilation cache')
   .option('--clean-cache', 'Clean cache before compilation', false)
   .option('--log-file', 'Write logs to file in build directory', false)
   .option('--tool-versions <versions>', 'Specify tool versions (format: tool1@version1,tool2@version2)', undefined)
   .action(async (sketch, options) => {
     // console.log('options:', options);
     logger.setVerbose(options.verbose);
+
+    const cacheEnabled = options.cache !== false;
+
+    if (options.cleanCache) {
+      try {
+        logger.info('Cleaning compilation cache before build...');
+        const cacheManager = new CacheManager(logger);
+        await cacheManager.clearAllCache();
+        logger.success('Compilation cache cleared');
+      } catch (error) {
+        logger.error(`Failed to clean cache: ${error instanceof Error ? error.message : error}`);
+        process.exit(1);
+      }
+    }
 
     // 解析工具版本参数
     let toolVersions: Record<string, string> = {};
@@ -151,7 +165,8 @@ program
       toolVersions: toolVersions,
       jobs: parseInt(options.jobs),
       verbose: options.verbose,
-      useSccache: options.useSccache
+      useSccache: options.useSccache,
+      cacheEnabled
     };
 
     logger.info(`Starting compilation of ${sketch}`);
@@ -184,13 +199,15 @@ program
     logger.info(`Total time: ${result.totalTime / 1000}s`);
 
     // 执行缓存维护（在整个程序最后执行）
-    try {
-      logger.verbose('Performing cache maintenance...');
-      const cacheManager = new CacheManager(logger);
-      await cacheManager.maintainCache();
-      logger.verbose('Cache maintenance completed');
-    } catch (maintainError) {
-      logger.debug(`Cache maintenance failed: ${maintainError instanceof Error ? maintainError.message : maintainError}`);
+    if (cacheEnabled) {
+      try {
+        logger.verbose('Performing cache maintenance...');
+        const cacheManager = new CacheManager(logger);
+        await cacheManager.maintainCache();
+        logger.verbose('Cache maintenance completed');
+      } catch (maintainError) {
+        logger.debug(`Cache maintenance failed: ${maintainError instanceof Error ? maintainError.message : maintainError}`);
+      }
     }
   });
 
