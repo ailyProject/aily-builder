@@ -35,7 +35,7 @@
     "embedded"
   ],
   "author": "coloz",
-  "license": "MIT",
+  "license": "GPL-3.0-only",
   "dependencies": {
     "@ast-grep/lang-cpp": "^0.0.4",
     "@ast-grep/napi": "^0.40.3",
