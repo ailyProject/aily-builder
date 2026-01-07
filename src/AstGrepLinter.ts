@@ -681,6 +681,14 @@ export class AstGrepLinter {
       'bitRead', 'bitWrite', 'bitSet', 'bitClear', 'bit',
       'lowByte', 'highByte', 'word',
       'sizeof', 'typeof',
+      // math.h 函数（Arduino.h 已包含）
+      'isnan', 'isinf', 'isfinite', 'fpclassify',
+      'floor', 'ceil', 'round', 'trunc', 'fabs', 'fmod',
+      'exp', 'log', 'log10', 'log2',
+      'asin', 'acos', 'atan', 'atan2',
+      'sinh', 'cosh', 'tanh',
+      'ldexp', 'frexp', 'modf', 'fmin', 'fmax',
+      'copysign', 'nan', 'signbit', 'hypot',
       // C/C++ 标准
       'printf', 'sprintf', 'snprintf', 'scanf', 'sscanf',
       'malloc', 'free', 'realloc', 'calloc',
@@ -803,6 +811,7 @@ export class AstGrepLinter {
 
     // 5. 查找所有标识符使用（在函数调用参数中）
     const callExprs = root.findAll({ rule: { kind: 'call_expression' } });
+    const reportedVars = new Set<string>(); // 避免重复报告
     
     for (const call of callExprs) {
       const args = call.find({ rule: { kind: 'argument_list' } });
@@ -816,7 +825,7 @@ export class AstGrepLinter {
         const range = id.range();
         
         // 使用作用域感知的可见性检查
-        if (isVariableVisible(name, id)) {
+        if (isVariableVisible(name, id) || reportedVars.has(name)) {
           continue;
         }
         
@@ -835,6 +844,7 @@ export class AstGrepLinter {
           }
         }
         
+        reportedVars.add(name);
         errors.push({
           file: filePath,
           line: range.start.line + 1,
@@ -846,18 +856,72 @@ export class AstGrepLinter {
       }
     }
     
-    // 6. 检查赋值表达式右侧的变量
+    // 5.5 检查二元表达式中的变量（如 temperature > HIGH_TEMP）
+    const binaryExprs = root.findAll({ rule: { kind: 'binary_expression' } });
+    for (const binExpr of binaryExprs) {
+      const identifiers = binExpr.findAll({ rule: { kind: 'identifier' } });
+      
+      for (const id of identifiers) {
+        const name = id.text();
+        const range = id.range();
+        
+        // 跳过已检查或可见的变量
+        if (isVariableVisible(name, id) || reportedVars.has(name)) {
+          continue;
+        }
+        
+        // 检查是否是成员访问的一部分
+        const parent = id.parent();
+        if (parent && parent.kind() === 'field_expression') {
+          continue;
+        }
+        
+        reportedVars.add(name);
+        errors.push({
+          file: filePath,
+          line: range.start.line + 1,
+          column: range.start.column + 1,
+          message: `Undefined variable: '${name}' - variable is out of scope or not declared`,
+          severity: 'error',
+          code: 'UNDEFINED_VAR'
+        });
+      }
+    }
+    
+    // 6. 检查赋值表达式中的变量
     const assignments = root.findAll({ rule: { kind: 'assignment_expression' } });
+    
     for (const assign of assignments) {
       const children = assign.children();
       if (children.length >= 3) {
-        // 右侧是第三个子节点
+        // 左侧是第一个子节点 - 检查赋值目标是否已声明
+        const lhs = children[0];
+        if (lhs && lhs.kind() === 'identifier') {
+          const name = lhs.text();
+          const range = lhs.range();
+          
+          // 如果左侧变量未声明，这是一个错误（C++中不能给未声明的变量赋值）
+          if (!isVariableVisible(name, lhs) && !reportedVars.has(name)) {
+            reportedVars.add(name);
+            errors.push({
+              file: filePath,
+              line: range.start.line + 1,
+              column: range.start.column + 1,
+              message: `Undefined variable: '${name}' - did you forget to declare it?`,
+              severity: 'error',
+              code: 'UNDEFINED_VAR'
+            });
+          }
+        }
+        
+        // 右侧是第三个子节点 - 检查使用的变量是否已声明
         const rhs = children[2];
         if (rhs && rhs.kind() === 'identifier') {
           const name = rhs.text();
           const range = rhs.range();
           
-          if (!isVariableVisible(name, rhs)) {
+          if (!isVariableVisible(name, rhs) && !reportedVars.has(name)) {
+            reportedVars.add(name);
             errors.push({
               file: filePath,
               line: range.start.line + 1,
@@ -881,11 +945,12 @@ export class AstGrepLinter {
           const name = obj.text();
           const range = obj.range();
           
-          // 使用作用域感知的可见性检查
-          if (isVariableVisible(name, obj)) {
+          // 使用作用域感知的可见性检查，并避免重复报告
+          if (isVariableVisible(name, obj) || reportedVars.has(name)) {
             continue;
           }
           
+          reportedVars.add(name);
           errors.push({
             file: filePath,
             line: range.start.line + 1,
