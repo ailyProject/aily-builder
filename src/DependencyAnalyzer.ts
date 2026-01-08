@@ -739,8 +739,15 @@ export class DependencyAnalyzer {
       let effectiveLines = 0;
       let functionCount = 0;
       let hasComplexImplementation = false;
+      let includesCFile = false;  // 是否包含对 .c 文件的 #include
       
       for (const line of lines) {
+        // 检测 #include ".c" 模式（如 STM32 SDK 的 system_stm32yyxx.c）
+        // 这种文件通过条件编译 #include 实际的实现文件，不应被视为代码片段
+        if (line.match(/^#include\s+["<][^">]+\.c[">]/)) {
+          includesCFile = true;
+        }
+        
         // 跳过空行、注释和预处理指令
         if (!line || line.startsWith('//') || line.startsWith('/*') || 
             line.startsWith('*') || line.startsWith('#')) {
@@ -759,6 +766,13 @@ export class DependencyAnalyzer {
             (line.includes('if') && !line.startsWith('#'))) {
           hasComplexImplementation = true;
         }
+      }
+      
+      // 如果文件 #include 了 .c 文件，说明这是一个包装器文件，不应被视为代码片段
+      // 这是 STM32 SDK 等平台的常见模式（如 system_stm32yyxx.c 通过条件编译 include 具体平台的实现）
+      if (includesCFile) {
+        this.logger.debug(`[CODE_FRAGMENT] File ${filePath} includes .c files, treating as wrapper file, keeping it`);
+        return false;
       }
       
       // 如果有条件编译保护
