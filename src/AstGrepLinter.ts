@@ -1014,7 +1014,16 @@ export class AstGrepLinter {
       }
     }
     
-    // 3. 简单声明（无初始化）: int x;
+    // 3. 数组声明: byte values[6]; 或 int arr[10];
+    const arrayDeclarators = decl.findAll({ rule: { kind: 'array_declarator' } });
+    for (const arrDecl of arrayDeclarators) {
+      const id = arrDecl.find({ rule: { kind: 'identifier' } });
+      if (id) {
+        vars.add(id.text());
+      }
+    }
+    
+    // 4. 简单声明（无初始化）: int x;
     const simpleIds = decl.children().filter((c: any) => c.kind() === 'identifier');
     for (const id of simpleIds) {
       vars.add(id.text());
