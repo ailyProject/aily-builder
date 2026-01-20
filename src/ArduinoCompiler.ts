@@ -93,7 +93,10 @@ export class ArduinoCompiler {
         options.buildMacros || []
       );
 
-      // 3. 并行执行：预处理钩子、构建编译配置、依赖分析
+      // 3. 确保构建目录存在（pre-build hooks 需要）
+      await fs.ensureDir(options.buildPath);
+
+      // 4. 并行执行：预处理钩子、构建编译配置、依赖分析
       this.logger.info('Starting parallel preprocessing tasks...');
       const [compileConfig, dependencies] = await Promise.all([
         // 构建编译配置
@@ -220,7 +223,7 @@ export class ArduinoCompiler {
 
     // 准备构建目录（将 sketch.ino 转换为 sketch.cpp）
     // 每次编译都需要执行，确保源文件变化能被检测到
-    await this.prepareBuildDirectory(options.buildPath, options.sketchPath);
+    await this.prepareBuildDirectory(options.buildPath);
 
     // 8. 编译pipeline
     this.logger.verbose(`Starting compilation pipeline...`);
@@ -358,7 +361,7 @@ export class ArduinoCompiler {
   /*
   准备构建目录
   */
-  private async prepareBuildDirectory(buildPath: string, sketchPath: string): Promise<void> {
+  private async prepareBuildDirectory(buildPath: string): Promise<void> {
     try {
       // 创建构建目录
       await fs.ensureDir(buildPath);
