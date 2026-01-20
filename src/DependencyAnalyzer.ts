@@ -84,12 +84,6 @@ export class DependencyAnalyzer {
     // 1. 分析主sketch文件
     const mainIncludeFiles = await analyzeFile(sketchPath, this.macroDefinitions);
 
-    // this.dependencyList.add({
-    //   name: sketchName,
-    //   path: sketchDir,
-    //   type: 'sketch',
-    //   includes: [sketchPath]
-    // });
     // 2. 添加核心SDK依赖
     let coreDependency, variantDependency;
     if (coreSDKPath) {
@@ -129,7 +123,7 @@ export class DependencyAnalyzer {
   private initializeDefaultMacros(arduinoConfig): void {
     // Arduino平台默认宏
     this.setMacro('ARDUINO', '100', true);
-    
+
     // 从 arduinoConfig.platform['recipe.cpp.o.pattern'] 中提取宏定义
     this.logger.debug('[MACRO_DEBUG] Extracting macros from recipe.cpp.o.pattern...');
     const macros = extractMacroDefinitions(arduinoConfig.platform['recipe.cpp.o.pattern'])
@@ -156,7 +150,7 @@ export class DependencyAnalyzer {
     this.macroDefinitions.forEach((macroDef, name) => {
       this.logger.debug(`[MACRO_DEBUG]   ${name} = ${macroDef.value} (defined: ${macroDef.isDefined})`);
     });
-    
+
     this.logger.info(`Initialized default macros: ${Array.from(this.macroDefinitions.keys()).join(', ')}`);
   }
 
@@ -168,6 +162,74 @@ export class DependencyAnalyzer {
    */
   public setMacro(name: string, value?: string, isDefined: boolean = true): void {
     this.macroDefinitions.set(name, { name, value, isDefined });
+  }
+
+  /**
+   * 从sketch文件中提取宏定义
+   * 解析 #define 指令，提取宏名称和值
+   * @param sketchPath sketch文件路径
+   * @returns 返回宏定义字符串数组，格式如 ['MACRO_NAME=value', 'MACRO_NAME2=value2']
+   */
+  public async extractMacrosFromSketch(sketchPath: string): Promise<string[]> {
+    const macros: string[] = [];
+    
+    try {
+      if (!await fs.pathExists(sketchPath)) {
+        this.logger.warn(`Sketch file not found: ${sketchPath}`);
+        return macros;
+      }
+
+      const content = await fs.readFile(sketchPath, 'utf-8');
+      const lines = content.split('\n');
+
+      // 正则表达式匹配 #define 指令
+      // 匹配格式：#define MACRO_NAME 或 #define MACRO_NAME value
+      const defineRegex = /^\s*#\s*define\s+([A-Za-z_][A-Za-z0-9_]*)\s*(.*)?$/;
+
+      for (const line of lines) {
+        // 跳过注释行
+        const trimmedLine = line.trim();
+        if (trimmedLine.startsWith('//')) {
+          continue;
+        }
+
+        const match = line.match(defineRegex);
+        if (match) {
+          const name = match[1];
+          let value = match[2] ? match[2].trim() : undefined;
+
+          // 移除行尾注释
+          if (value) {
+            const commentIndex = value.indexOf('//');
+            if (commentIndex !== -1) {
+              value = value.substring(0, commentIndex).trim();
+            }
+            // 处理 /* */ 注释
+            const blockCommentIndex = value.indexOf('/*');
+            if (blockCommentIndex !== -1) {
+              value = value.substring(0, blockCommentIndex).trim();
+            }
+          }
+
+          // 如果值为空字符串，设置为 undefined
+          if (value === '') {
+            value = undefined;
+          }
+
+          // 格式化为 'NAME=value' 或 'NAME' 形式
+          const macroString = value ? `${name}=${value}` : name;
+          macros.push(macroString);
+
+          this.logger.debug(`Found macro in sketch: ${macroString}`);
+        }
+      }
+
+      this.logger.info(`Extracted ${macros.length} macros from sketch: ${macros.join(', ') || 'none'}`);
+      return macros;
+    } catch (error) {
+      this.logger.error(`Failed to extract macros from sketch: ${error instanceof Error ? error.message : error}`);
+      return macros;
+    }
   }
 
   /**
@@ -190,7 +252,7 @@ export class DependencyAnalyzer {
   private evaluateCondition(condition: string): boolean {
     // 移除空白字符
     const cleanCondition = condition.trim();
-    
+
     this.logger.debug(`Evaluating condition: "${condition}" -> "${cleanCondition}"`);
 
     // 处理 ! 否定 - 这需要在其他处理之前
@@ -216,16 +278,16 @@ export class DependencyAnalyzer {
       const macroName = comparisonMatch[1];
       const operator = comparisonMatch[2];
       const targetValue = parseInt(comparisonMatch[3]);
-      
+
       const macro = this.macroDefinitions.get(macroName);
-      
+
       // 如果宏未定义，在数值比较中视为0（这是C预处理器的标准行为）
       let macroValue = 0;
       if (macro && macro.value) {
         const parsedValue = parseInt(macro.value);
         macroValue = isNaN(parsedValue) ? 0 : parsedValue;
       }
-      
+
       let result = false;
       switch (operator) {
         case '<':
@@ -247,7 +309,7 @@ export class DependencyAnalyzer {
           result = macroValue !== targetValue;
           break;
       }
-      
+
       this.logger.debug(`Comparison ${macroName}(${macroValue}) ${operator} ${targetValue} -> ${result}`);
       return result;
     }
@@ -463,27 +525,27 @@ export class DependencyAnalyzer {
       const extensions = ['.cpp', '.c', '.S', '.s'];
       // 直接扫描传入的路径（可能是库根目录或src目录）
       const allFiles = await this.scanDirectoryRecursive(libraryObject.path, extensions);
-      
+
       // 过滤掉被其他文件 #include 的代码片段文件
       const includedFiles = new Set<string>();
-      
+
       // 第一遍：扫描所有 .cpp 和 .c 文件，找出哪些文件被 #include
       for (const file of allFiles) {
         if (file.endsWith('.cpp')) {
           const includedCpp = await this.findIncludedCppFiles(file, libraryObject.path);
           includedCpp.forEach(f => includedFiles.add(f));
-          
+
           const includedC = await this.findIncludedCFiles(file, libraryObject.path);
           includedC.forEach(f => includedFiles.add(f));
         } else if (file.endsWith('.c')) {
           const includedCpp = await this.findIncludedCppFiles(file, libraryObject.path);
           includedCpp.forEach(f => includedFiles.add(f));
-          
+
           const includedC = await this.findIncludedCFiles(file, libraryObject.path);
           includedC.forEach(f => includedFiles.add(f));
         }
       }
-      
+
       // 第二遍：过滤代码片段
       const validFiles: string[] = [];
       for (const file of allFiles) {
@@ -492,14 +554,14 @@ export class DependencyAnalyzer {
           this.logger.debug(`[CODE_FRAGMENT] Skipping included file: ${path.relative(libraryObject.path, file)}`);
           continue;
         }
-        
+
         // 2. 检查是否在代码片段子目录中（相对于库根目录的子目录）
         const relativePath = path.relative(libraryObject.path, file);
         const isInSubdirectory = relativePath.includes(path.sep) && !relativePath.startsWith('src' + path.sep);
-        
+
         if (isInSubdirectory) {
           // 在子目录中（非 src 目录），可能是代码片段或纯数据文件
-          
+
           // 1. 检查是否是纯数据文件（只包含数据定义，没有函数实现）
           // 纯数据文件特征：没有或极少 include，只有数据定义
           // 这类文件不需要单独编译，因为它们通常会被其他文件 include
@@ -508,7 +570,7 @@ export class DependencyAnalyzer {
             this.logger.debug(`[CODE_FRAGMENT] Skipping pure data file in subdirectory: ${relativePath}`);
             continue;
           }
-          
+
           // 2. 检查是否是真正的代码片段（被条件编译包裹且缺少完整实现）
           const isCodeFragment = await this.isCodeFragment(file);
           if (isCodeFragment) {
@@ -516,7 +578,7 @@ export class DependencyAnalyzer {
             continue;
           }
         }
-        
+
         validFiles.push(file);
       }
 
@@ -539,7 +601,7 @@ export class DependencyAnalyzer {
       const content = await fs.readFile(filePath, 'utf-8');
       const lines = content.split('\n');
       const includedFiles: string[] = [];
-      
+
       for (const line of lines) {
         const trimmed = line.trim();
         // 匹配 #include "xxx.cpp" 或 #include <xxx.cpp>
@@ -549,18 +611,18 @@ export class DependencyAnalyzer {
           // 尝试解析相对路径
           const fileDir = path.dirname(filePath);
           let resolvedPath = path.resolve(fileDir, includedPath);
-          
+
           // 如果文件不存在，尝试相对于库根目录解析
           if (!await fs.pathExists(resolvedPath)) {
             resolvedPath = path.resolve(basePath, includedPath);
           }
-          
+
           if (await fs.pathExists(resolvedPath)) {
             includedFiles.push(resolvedPath);
           }
         }
       }
-      
+
       return includedFiles;
     } catch (error) {
       this.logger.debug(`Failed to find included cpp files in ${filePath}: ${error instanceof Error ? error.message : error}`);
@@ -579,7 +641,7 @@ export class DependencyAnalyzer {
       const content = await fs.readFile(filePath, 'utf-8');
       const lines = content.split('\n');
       const includedFiles: string[] = [];
-      
+
       for (const line of lines) {
         const trimmed = line.trim();
         // 匹配 #include "xxx.c" 或 #include <xxx.c>
@@ -589,18 +651,18 @@ export class DependencyAnalyzer {
           // 尝试解析相对路径
           const fileDir = path.dirname(filePath);
           let resolvedPath = path.resolve(fileDir, includedPath);
-          
+
           // 如果文件不存在，尝试相对于库根目录解析
           if (!await fs.pathExists(resolvedPath)) {
             resolvedPath = path.resolve(basePath, includedPath);
           }
-          
+
           if (await fs.pathExists(resolvedPath)) {
             includedFiles.push(resolvedPath);
           }
         }
       }
-      
+
       return includedFiles;
     } catch (error) {
       this.logger.debug(`Failed to find included cpp files in ${filePath}: ${error instanceof Error ? error.message : error}`);
@@ -620,40 +682,40 @@ export class DependencyAnalyzer {
   private async isPureDataFile(filePath: string): Promise<boolean> {
     try {
       const content = await fs.readFile(filePath, 'utf-8');
-      
+
       // 移除注释
       const cleanContent = content.replace(/\/\*[\s\S]*?\*\//g, '') // 移除块注释
-                                  .replace(/\/\/.*/g, ''); // 移除行注释
-      
+        .replace(/\/\/.*/g, ''); // 移除行注释
+
       // 统计各种特征
       let includeCount = 0;
       let functionCount = 0;
       let dataDefinitionCount = 0;
-      
+
       // 改进的函数检测：分析行模式
       const lines = cleanContent.split('\n');
       let inArrayInit = false;
       let braceBalance = 0;
-      
+
       for (let i = 0; i < lines.length; i++) {
         const line = lines[i].trim();
-        
+
         // 跳过空行
         if (!line) {
           continue;
         }
-        
+
         // 统计 #include 语句
         if (line.startsWith('#include')) {
           includeCount++;
           continue;
         }
-        
+
         // 跳过其他预处理指令
         if (line.startsWith('#')) {
           continue;
         }
-        
+
         // 检测数据定义（PROGMEM, const 数组）
         if (line.includes('PROGMEM') || /\bconst\s+\w+.*\[/.test(line)) {
           // 排除函数指针和函数声明
@@ -661,16 +723,16 @@ export class DependencyAnalyzer {
             dataDefinitionCount++;
           }
         }
-        
+
         // 检测数组初始化的开始
         if (/=\s*\{/.test(line) || /\[\s*\]\s*=\s*\{/.test(line)) {
           inArrayInit = true;
         }
-        
+
         // 计算花括号平衡
         const openBraces = (line.match(/{/g) || []).length;
         const closeBraces = (line.match(/}/g) || []).length;
-        
+
         // 检测函数定义：
         // 1. 行中包含 ) { 或 ) 后面几行出现 {
         // 2. 不在数组初始化中
@@ -681,39 +743,39 @@ export class DependencyAnalyzer {
           for (let j = 1; j <= 3 && (i + j) < lines.length; j++) {
             checkLines += ' ' + lines[i + j].trim();
           }
-          
+
           // 匹配函数模式：类型 函数名(参数) { 
           // 或 static/inline 类型 函数名(参数) {
           if (/\w+\s+\w+\s*\([^)]*\)\s*\{/.test(checkLines) ||
-              /\b(static|inline)\s+\w+\s+\w+\s*\([^)]*\)\s*\{/.test(checkLines)) {
+            /\b(static|inline)\s+\w+\s+\w+\s*\([^)]*\)\s*\{/.test(checkLines)) {
             // 排除数组初始化（包含 = 在括号前）
             if (!/=\s*\{/.test(checkLines)) {
               functionCount++;
             }
           }
         }
-        
+
         braceBalance += openBraces - closeBraces;
-        
+
         // 数组初始化结束
         if (inArrayInit && braceBalance === 0 && closeBraces > 0) {
           inArrayInit = false;
         }
       }
-      
+
       this.logger.debug(`[PURE_DATA_CHECK] ${path.basename(filePath)}: includes=${includeCount}, functions=${functionCount}, dataDefinitions=${dataDefinitionCount}`);
-      
+
       // 判断标准：
       // 1. 没有任何 include（includeCount === 0）- 说明是纯数据片段，会被其他文件 include
       // 2. 函数数量为0
       // 3. 数据定义数量较多（>= 1）
       // 注意：如果有 include，说明它是独立编译单元，应该被编译（如 u8g2_fonts.c）
       const isPureData = includeCount === 0 && functionCount === 0 && dataDefinitionCount >= 1;
-      
+
       if (isPureData) {
         this.logger.debug(`[PURE_DATA_CHECK] ${path.basename(filePath)} is pure data file (0 includes, 0 functions, ${dataDefinitionCount} data definitions)`);
       }
-      
+
       return isPureData;
     } catch (error) {
       this.logger.debug(`Failed to check if file is pure data ${filePath}: ${error instanceof Error ? error.message : error}`);
@@ -734,71 +796,71 @@ export class DependencyAnalyzer {
     try {
       const content = await fs.readFile(filePath, 'utf-8');
       const lines = content.split('\n').map(line => line.trim());
-      
+
       // 统计有效代码行数（排除空行、注释、预处理指令）
       let effectiveLines = 0;
       let functionCount = 0;
       let hasComplexImplementation = false;
       let includesCFile = false;  // 是否包含对 .c 文件的 #include
-      
+
       for (const line of lines) {
         // 检测 #include ".c" 模式（如 STM32 SDK 的 system_stm32yyxx.c）
         // 这种文件通过条件编译 #include 实际的实现文件，不应被视为代码片段
         if (line.match(/^#include\s+["<][^">]+\.c[">]/)) {
           includesCFile = true;
         }
-        
+
         // 跳过空行、注释和预处理指令
-        if (!line || line.startsWith('//') || line.startsWith('/*') || 
-            line.startsWith('*') || line.startsWith('#')) {
+        if (!line || line.startsWith('//') || line.startsWith('/*') ||
+          line.startsWith('*') || line.startsWith('#')) {
           continue;
         }
-        
+
         effectiveLines++;
-        
+
         // 检测函数实现（包含函数体的函数）
         if (line.includes('{') && !line.includes('};')) {
           functionCount++;
         }
-        
+
         // 检测复杂实现的标志
         if (line.includes('for') || line.includes('while') || line.includes('switch') ||
-            (line.includes('if') && !line.startsWith('#'))) {
+          (line.includes('if') && !line.startsWith('#'))) {
           hasComplexImplementation = true;
         }
       }
-      
+
       // 如果文件 #include 了 .c 文件，说明这是一个包装器文件，不应被视为代码片段
       // 这是 STM32 SDK 等平台的常见模式（如 system_stm32yyxx.c 通过条件编译 include 具体平台的实现）
       if (includesCFile) {
         this.logger.debug(`[CODE_FRAGMENT] File ${filePath} includes .c files, treating as wrapper file, keeping it`);
         return false;
       }
-      
+
       // 如果有条件编译保护
       const hasTopLevelConditional = await this.hasTopLevelConditionalCompilation(filePath);
-      
+
       if (hasTopLevelConditional) {
         // 有条件编译保护的情况下，进一步检查实现完整性
-        
+
         // 如果有至少1个函数实现，就不是代码片段
         // 这些文件通常是平台特定的实现文件（如 exp_nimble_mem.c 提供内存分配函数）
         if (functionCount >= 1) {
           this.logger.debug(`[CODE_FRAGMENT] File ${filePath} has conditional compilation but contains function implementations (${functionCount} functions), keeping it`);
           return false;
         }
-        
+
         // 如果有复杂实现逻辑，也不是代码片段
         if (hasComplexImplementation) {
           this.logger.debug(`[CODE_FRAGMENT] File ${filePath} has conditional compilation with complex implementation, keeping it`);
           return false;
         }
-        
+
         // 没有函数实现且没有复杂逻辑，认为是代码片段
         this.logger.debug(`[CODE_FRAGMENT] File ${filePath} has conditional compilation with no function implementations (${effectiveLines} lines), treating as fragment`);
         return true;
       }
-      
+
       // 没有条件编译保护的情况下，通常不是代码片段
       return false;
     } catch (error) {
@@ -816,61 +878,61 @@ export class DependencyAnalyzer {
     try {
       const content = await fs.readFile(filePath, 'utf-8');
       const lines = content.split('\n').map(line => line.trim());
-      
+
       let firstDirectiveLine = -1;
       let lastEndifLine = -1;
-      
+
       for (let i = 0; i < lines.length; i++) {
         const line = lines[i];
-        
+
         // 跳过空行和注释
         if (!line || line.startsWith('//')) continue;
-        
+
         // 找到第一个条件编译指令
-        if (firstDirectiveLine === -1 && 
-            (line.startsWith('#if') || line.startsWith('#ifdef') || line.startsWith('#ifndef'))) {
+        if (firstDirectiveLine === -1 &&
+          (line.startsWith('#if') || line.startsWith('#ifdef') || line.startsWith('#ifndef'))) {
           firstDirectiveLine = i;
         }
-        
+
         // 找到最后一个 #endif
         if (line.startsWith('#endif')) {
           lastEndifLine = i;
         }
       }
-      
+
       // 如果找到了条件编译指令，检查它们是否包裹了整个文件
       if (firstDirectiveLine !== -1 && lastEndifLine !== -1) {
         // 计算条件编译之外的有效代码行
         let codeBeforeFirst = 0;
         let codeAfterLast = 0;
-        
+
         for (let i = 0; i < firstDirectiveLine; i++) {
           const line = lines[i];
           if (line && !line.startsWith('//') && !line.startsWith('/*') && !line.startsWith('*')) {
             codeBeforeFirst++;
           }
         }
-        
+
         for (let i = lastEndifLine + 1; i < lines.length; i++) {
           const line = lines[i];
           if (line && !line.startsWith('//') && !line.startsWith('/*') && !line.startsWith('*')) {
             codeAfterLast++;
           }
         }
-        
+
         // 如果条件编译之外有实质性代码，则不是代码片段
         if (codeBeforeFirst > 0 || codeAfterLast > 0) {
           return false;
         }
-        
+
         // 整个文件被条件编译包裹，进一步分析内容
         // 检查是否包含完整的实现（类定义、命名空间、多个函数等）
         const hasCompleteImplementation = await this.hasCompleteImplementation(content);
-        
+
         // 如果包含完整实现，则不是代码片段
         return !hasCompleteImplementation;
       }
-      
+
       return false;
     } catch (error) {
       this.logger.debug(`Failed to check conditional compilation ${filePath}: ${error instanceof Error ? error.message : error}`);
@@ -886,78 +948,78 @@ export class DependencyAnalyzer {
   private async hasCompleteImplementation(content: string): Promise<boolean> {
     // 移除注释
     const cleanContent = content.replace(/\/\*[\s\S]*?\*\//g, '') // 移除块注释
-                               .replace(/\/\/.*/g, ''); // 移除行注释
-    
+      .replace(/\/\/.*/g, ''); // 移除行注释
+
     // 统计函数实现（包括 C 风格和 C++ 成员函数）
     const cStyleFunctions = (cleanContent.match(/\n\s*\w+\s+\w+\s*\([^)]*\)\s*\{/g) || []).length;
     const cppMemberFunctions = (cleanContent.match(/\w+::\w+\s*\([^)]*\)\s*\{/g) || []).length;
     const totalFunctions = cStyleFunctions + cppMemberFunctions;
-    
+
     // 检查完整实现的特征
     const indicators = {
       // 命名空间定义
       hasNamespace: /namespace\s+\w+\s*\{/.test(cleanContent),
-      
+
       // 类定义（包括构造函数、析构函数）
       hasClassDefinition: /class\s+\w+/.test(cleanContent),
       hasConstructor: /::\w+\s*\(/.test(cleanContent) || /\w+::\w+\s*\(/.test(cleanContent),
       hasDestructor: /::~\w+\s*\(/.test(cleanContent),
-      
+
       // 多个函数实现
       functionCount: totalFunctions,
-      
+
       // 包含复杂逻辑（循环、条件语句、switch）
       hasLoops: /\b(for|while|do)\s*\(/.test(cleanContent),
       hasConditionals: /\bif\s*\(/.test(cleanContent),
       hasSwitchCase: /\bswitch\s*\(/.test(cleanContent),
-      
+
       // 包含成员变量访问
       hasMemberAccess: /\w+_/.test(cleanContent) || /this->/.test(cleanContent) || /->\w+/.test(cleanContent),
-      
+
       // 代码行数（排除空行和预处理指令）
       codeLines: cleanContent.split('\n').filter(line => {
         const trimmed = line.trim();
         return trimmed && !trimmed.startsWith('#') && trimmed !== '{' && trimmed !== '}' && trimmed !== '';
       }).length,
-      
+
       // 计算控制流语句总数
       controlFlowCount: (cleanContent.match(/\b(for|while|do|if|switch)\s*\(/g) || []).length
     };
-    
+
     this.logger.debug(`[IMPLEMENTATION] Functions: ${indicators.functionCount}, ControlFlow: ${indicators.controlFlowCount}, CodeLines: ${indicators.codeLines}`);
-    
+
     // 判断标准（放宽条件以包含更多完整实现）：
-    
+
     // 1. 有命名空间 + 类定义 → 完整实现
     if (indicators.hasNamespace && indicators.hasClassDefinition) {
       return true;
     }
-    
+
     // 2. 有构造函数或析构函数 → 完整实现
     if (indicators.hasConstructor || indicators.hasDestructor) {
       return true;
     }
-    
+
     // 3. 有5个或以上函数实现 → 完整实现
     if (indicators.functionCount >= 5) {
       return true;
     }
-    
+
     // 4. 有3个或以上函数 + 复杂逻辑（控制流 >= 5） → 完整实现
     if (indicators.functionCount >= 3 && indicators.controlFlowCount >= 5) {
       return true;
     }
-    
+
     // 5. 代码量大（> 100行有效代码）→ 完整实现
     if (indicators.codeLines > 100) {
       return true;
     }
-    
+
     // 6. 有多个控制流语句（>= 10个）→ 完整实现
     if (indicators.controlFlowCount >= 10) {
       return true;
     }
-    
+
     // 否则认为是简单的代码片段
     return false;
   }
@@ -1079,7 +1141,7 @@ export class DependencyAnalyzer {
     const libraryMap = new Map<string, Dependency>();
     // 同时构建库名称到库信息的映射，用于平台特定库查找
     const libraryByNameMap = new Map<string, Dependency>();
-    
+
     for (const dir of resultDirs) {
       let libName = path.basename(dir);
       if (libName === 'src') {
@@ -1192,11 +1254,11 @@ export class DependencyAnalyzer {
    */
   private async addPlatformSpecificLibraries(arduinoConfig: any): Promise<void> {
     const platformName = arduinoConfig.fqbnParsed?.package;
-    
+
     // 检查是否为 STM32 平台
     if (platformName === 'STMicroelectronics') {
       this.logger.debug('Detected STM32 platform, adding SrcWrapper library...');
-      
+
       // 检查 SrcWrapper 库是否已经在 libraryMap 中
       if (this.libraryMap && this.libraryMap.has('__LIB_SrcWrapper')) {
         const srcWrapperDep = this.libraryMap.get('__LIB_SrcWrapper');

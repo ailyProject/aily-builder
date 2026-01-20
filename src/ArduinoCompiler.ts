@@ -55,8 +55,12 @@ export class ArduinoCompiler {
     // 1. 验证sketch文件
     await this.validateSketch(options.sketchPath);
 
+    // 2-0. 获取sketch.ino中的宏定义并合并到buildMacros
+    const sketchMacros = await this.analyzer.extractMacrosFromSketch(options.sketchPath);
+    options.buildMacros = [...(options.buildMacros || []), ...sketchMacros];
+
     // 2. 获取开发板、平台、编译配置(包含自定义宏定义)
-    const arduinoConfig = await this.arduinoConfigParser.parseByFQBN(options.board, options.buildProperties || {}, options.toolVersions || {}, options.buildMacros || []);
+    const arduinoConfig = await this.arduinoConfigParser.parseByFQBN(options.board, options.buildProperties || {}, options.toolVersions || {}, options.buildMacros || {});
 
     // 3. 准备构建目录
     await this.prepareBuildDirectory(options.buildPath, options.sketchPath);
@@ -93,6 +97,9 @@ export class ArduinoCompiler {
     dependencies.map((dep, index) => {
       this.logger.info(`|- ${dep.name}`)
     });
+
+    console.log(compileConfig);
+
 
 
     // 计算预处理耗时
@@ -287,9 +294,9 @@ export class ArduinoCompiler {
           // 解析变量并清理空的命令部分
           let resolvedScript = this.resolveVariables(script);
           resolvedScript = this.cleanEmptyCommands(resolvedScript);
-          
+
           this.logger.verbose(`Resolved pre-build hook ${i}: ${resolvedScript}`);
-          
+
           const output = await this.runCommand(resolvedScript);
           if (output.trim()) {
             this.logger.verbose(`Pre-build hook ${i} output: ${output.trim()}`);
@@ -308,23 +315,23 @@ export class ArduinoCompiler {
       const isWindows = process.platform === 'win32';
       const windowsKey = `recipe.hooks.objcopy.postobjcopy.${i}.pattern.windows`;
       const defaultKey = `recipe.hooks.objcopy.postobjcopy.${i}.pattern`;
-      
+
       let script;
       if (isWindows && arduinoConfig.platform[windowsKey]) {
         script = arduinoConfig.platform[windowsKey];
       } else {
         script = arduinoConfig.platform[defaultKey];
       }
-      
+
       if (script) {
         this.logger.info(`Post-build hook ${i}: ${script}`);
         try {
           // 解析变量并清理空的命令部分
           let resolvedScript = this.resolveVariables(script);
           resolvedScript = this.cleanEmptyCommands(resolvedScript);
-          
+
           this.logger.verbose(`Resolved post-build hook ${i}: ${resolvedScript}`);
-          
+
           const output = await this.runCommand(resolvedScript);
           if (output.trim()) {
             this.logger.verbose(`Post-build hook ${i} output: ${output.trim()}`);
