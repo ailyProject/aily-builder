@@ -31,6 +31,27 @@ export interface CompileResult {
   warnings?: string[];
 }
 
+export interface PreprocessResult {
+  success: boolean;
+  preprocessTime: number;
+  arduinoConfig?: any;
+  compileConfig?: any;
+  dependencies?: any[];
+  error?: string;
+  // 保存编译所需的环境变量
+  envVars?: Record<string, string>;
+}
+
+export interface CompileOptions {
+  sketchPath: string;
+  board: string;
+  buildPath: string;
+  buildProperties?: Record<string, string>;
+  toolVersions?: Record<string, string>;
+  buildMacros?: string[];
+  preprocessResult?: PreprocessResult;
+}
+
 export class ArduinoCompiler {
   private logger: Logger;
   private ninjaPipeline: NinjaCompilationPipeline;
@@ -46,64 +67,158 @@ export class ArduinoCompiler {
     this.analyzer = new DependencyAnalyzer(logger);
   }
 
-  async compile(options: any): Promise<CompileResult> {
+  /**
+   * 单独执行预处理步骤
+   * 包括：验证sketch、解析配置、准备构建目录、依赖分析、运行预构建钩子
+   */
+  async preprocess(options: CompileOptions): Promise<PreprocessResult> {
     const startTime = Date.now();
 
-    // try {
+    try {
+      this.logger.info(`Starting preprocessing...`);
+
+      // 1. 验证sketch文件
+      await this.validateSketch(options.sketchPath);
+
+      // 2-0. 获取sketch.ino中的宏定义并合并到buildMacros
+      const sketchMacros = await this.analyzer.extractMacrosFromSketch(options.sketchPath);
+      options.buildMacros = [...(options.buildMacros || []), ...sketchMacros];
+
+      // 2. 获取开发板、平台、编译配置(包含自定义宏定义)
+      const arduinoConfig = await this.arduinoConfigParser.parseByFQBN(
+        options.board,
+        options.buildProperties || {},
+        options.toolVersions || {},
+        options.buildMacros || []
+      );
+
+      // 3. 准备构建目录
+      await this.prepareBuildDirectory(options.buildPath, options.sketchPath);
+
+      // 4-6. 并行执行：预处理钩子、构建编译配置、依赖分析
+      this.logger.info('Starting parallel preprocessing tasks...');
+      const [compileConfig, dependencies] = await Promise.all([
+        // 构建编译配置
+        (async () => {
+          this.logger.info('Generating compile configuration...');
+          return await this.compileConfigManager.parseCompileConfig(arduinoConfig);
+        })(),
+
+        // 依赖分析
+        (async () => {
+          this.logger.info('Analyzing dependencies...');
+          const deps = await this.analyzer.preprocess(arduinoConfig);
+          this.logger.info(`Dependency analysis completed.`);
+          return deps;
+        })(),
+
+        // 运行编译前钩子（ESP32需要）
+        (async () => {
+          if (arduinoConfig.platform['recipe.hooks.prebuild.1.pattern']) {
+            this.logger.info('Running prebuild hook scripts...');
+            await this.runPreBuildHooks(arduinoConfig);
+          }
+        })()
+      ]);
+
+      // 输出分析
+      this.logger.info(`Found ${dependencies.length} dependencies.`);
+      dependencies.map((dep) => {
+        this.logger.info(`|- ${dep.name}`);
+      });
+
+      const preprocessTime = Date.now() - startTime;
+      this.logger.info(`Preprocessing completed in ${preprocessTime}ms`);
+
+      // 保存编译所需的环境变量
+      const envVars: Record<string, string> = {};
+      
+      // 保存所有可能与编译相关的环境变量
+      // 包括：路径、工具、编译器等
+      for (const [key, value] of Object.entries(process.env)) {
+        if (value && (
+          // 基本路径变量
+          key === 'SKETCH_NAME' || key === 'SKETCH_PATH' || key === 'SKETCH_DIR_PATH' ||
+          key === 'BUILD_PATH' || key === 'SDK_PATH' || key === 'TOOLS_PATH' ||
+          key === 'LIBRARIES_PATH' || key === 'BUILD_JOBS' ||
+          // 编译器相关
+          key.startsWith('COMPILER_') ||
+          // 运行时路径
+          key.startsWith('RUNTIME_') ||
+          // 工具路径（如 esptool, ctags 等）
+          key.startsWith('TOOLS_') ||
+          // ESP32 相关
+          key.startsWith('ESP_') || key.startsWith('ESPTOOL_') ||
+          // 其他可能的前缀
+          key.endsWith('_PATH') || key.endsWith('_DIR') ||
+          key.includes('ARDUINO')
+        )) {
+          envVars[key] = value;
+        }
+      }
+
+      this.logger.verbose(`Saved ${Object.keys(envVars).length} environment variables for later compilation`);
+
+      return {
+        success: true,
+        preprocessTime,
+        arduinoConfig,
+        compileConfig,
+        dependencies,
+        envVars
+      };
+    } catch (error) {
+      const preprocessTime = Date.now() - startTime;
+      const errorMessage = error instanceof Error ? error.message : String(error);
+      this.logger.error(`Preprocessing failed: ${errorMessage}`);
+      return {
+        success: false,
+        preprocessTime,
+        error: errorMessage
+      };
+    }
+  }
+
+  /**
+   * 编译项目
+   * @param options 编译选项，可以包含预处理结果以跳过预处理步骤
+   */
+  async compile(options: CompileOptions): Promise<CompileResult> {
+    const startTime = Date.now();
+
     this.logger.info(`Starting compilation process...`);
 
-    // 1. 验证sketch文件
-    await this.validateSketch(options.sketchPath);
+    let preprocessTime: number;
+    let arduinoConfig: any;
+    let compileConfig: any;
+    let dependencies: any[];
 
-    // 2-0. 获取sketch.ino中的宏定义并合并到buildMacros
-    const sketchMacros = await this.analyzer.extractMacrosFromSketch(options.sketchPath);
-    options.buildMacros = [...(options.buildMacros || []), ...sketchMacros];
+    // 检查是否提供了预处理结果
+    if (options.preprocessResult && options.preprocessResult.success) {
+      this.logger.info('Using provided preprocess result, skipping preprocessing...');
+      preprocessTime = options.preprocessResult.preprocessTime;
+      arduinoConfig = options.preprocessResult.arduinoConfig;
+      compileConfig = options.preprocessResult.compileConfig;
+      dependencies = options.preprocessResult.dependencies!;
+    } else {
+      // 执行预处理
+      const preprocessResult = await this.preprocess(options);
+      
+      if (!preprocessResult.success) {
+        return {
+          success: false,
+          preprocessTime: preprocessResult.preprocessTime,
+          buildTime: 0,
+          totalTime: Date.now() - startTime,
+          error: preprocessResult.error || 'Preprocessing failed'
+        };
+      }
 
-    // 2. 获取开发板、平台、编译配置(包含自定义宏定义)
-    const arduinoConfig = await this.arduinoConfigParser.parseByFQBN(options.board, options.buildProperties || {}, options.toolVersions || {}, options.buildMacros || {});
-
-    // 3. 准备构建目录
-    await this.prepareBuildDirectory(options.buildPath, options.sketchPath);
-
-    // 4-6. 并行执行：预处理钩子、构建编译配置、依赖分析
-    this.logger.info('Starting parallel preprocessing tasks...');
-    const [compileConfig, dependencies] = await Promise.all([
-      // 6. 构建编译配置
-      (async () => {
-        this.logger.info('Generating compile configuration...');
-        return await this.compileConfigManager.parseCompileConfig(arduinoConfig);
-      })(),
-
-      // 4. 依赖分析
-      (async () => {
-        this.logger.info('Analyzing dependencies...');
-        const deps = await this.analyzer.preprocess(arduinoConfig);
-        this.logger.info(`Dependency analysis completed.`);
-        return deps;
-      })(),
-
-      // 5. 预处理2：运行编译前钩子（ESP32需要）
-      (async () => {
-        if (arduinoConfig.platform['recipe.hooks.prebuild.1.pattern']) {
-          this.logger.info('Running prebuild hook scripts...');
-          await this.runPreBuildHooks(arduinoConfig);
-        }
-      })()
-    ]);
-
-
-    // 输出分析
-    this.logger.info(`Found ${dependencies.length} dependencies.`);
-    dependencies.map((dep, index) => {
-      this.logger.info(`|- ${dep.name}`)
-    });
-
-    console.log(compileConfig);
-
-
-
-    // 计算预处理耗时
-    const preprocessTime = Date.now() - startTime;
+      preprocessTime = preprocessResult.preprocessTime;
+      arduinoConfig = preprocessResult.arduinoConfig;
+      compileConfig = preprocessResult.compileConfig;
+      dependencies = preprocessResult.dependencies!;
+    }
 
     // 8. 编译pipeline
     this.logger.verbose(`Starting compilation pipeline...`);

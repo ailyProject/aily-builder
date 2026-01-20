@@ -1,5 +1,5 @@
 import { Command } from 'commander';
-import { ArduinoCompiler } from './src/ArduinoCompiler';
+import { ArduinoCompiler, PreprocessResult } from './src/ArduinoCompiler';
 import { ArduinoUploader } from './src/ArduinoUploader';
 import { ArduinoLinter } from './src/ArduinoLinter';
 import { ArduinoConfigParser } from './src/ArduinoConfigParser';
@@ -8,6 +8,7 @@ import { CacheManager } from './src/CacheManager';
 import { calculateMD5 } from './src/utils/md5';
 import path from 'path';
 import os from 'os';
+import fs from 'fs-extra';
 
 const program = new Command();
 const logger = new Logger();
@@ -45,12 +46,13 @@ program
     memo[key] = value;
     return memo;
   }, {})
-  .option('-j, --jobs <number>', 'Number of parallel compilation jobs', (os.cpus().length + 1).toString())
+  .option('-j, --jobs <number>', 'Number of parallel compilation jobs', '4')
   .option('--verbose', 'Enable verbose output', false)
   .option('--no-cache', 'Disable compilation cache', false)
   .option('--clean-cache', 'Clean cache before compilation', false)
   .option('--log-file', 'Write logs to file in build directory', false)
   .option('--tool-versions <versions>', 'Specify tool versions (format: tool1@version1,tool2@version2)', undefined)
+  .option('--preprocess-result <path>', 'Path to preprocess result JSON file (skip preprocessing if provided)')
   .action(async (sketch, options) => {
     // console.log('options:', options);
     logger.setVerbose(options.verbose);
@@ -89,17 +91,17 @@ program
     const sketchPath = path.resolve(sketch);
     const sketchDirPath = path.dirname(sketchPath);
     const sketchName = path.basename(sketchPath, '.ino');
-    
+
     // 为了避免不同项目的同名sketch冲突，使用项目路径的MD5哈希值
     const projectPathMD5 = calculateMD5(sketchPath).substring(0, 8); // 只取前8位MD5值
     const uniqueSketchName = `${sketchName}_${projectPathMD5}`;
     // 修复默认构建路径，使其在不同操作系统上都能正常工作
     const defaultBuildPath = path.join(
-      os.platform() === 'win32' 
+      os.platform() === 'win32'
         ? path.join(os.homedir(), 'AppData', 'Local')
         : path.join(os.homedir(), 'Library'),
-      'aily-builder', 
-      'project', 
+      'aily-builder',
+      'project',
       uniqueSketchName
     );
 
@@ -135,13 +137,42 @@ program
       process.env['LIBRARIES_PATH'] = resolvedPaths.join(pathSeparator);
     }
 
+    // 检查是否提供了预处理结果文件
+    let preprocessResult: PreprocessResult | undefined;
+    if (options.preprocessResult) {
+      const preprocessResultPath = path.resolve(options.preprocessResult);
+      if (await fs.pathExists(preprocessResultPath)) {
+        try {
+          const preprocessData = await fs.readJson(preprocessResultPath);
+          preprocessResult = preprocessData as PreprocessResult;
+          logger.info(`Loaded preprocess result from: ${preprocessResultPath}`);
+          logger.info(`Preprocess result contains ${preprocessResult.dependencies?.length || 0} dependencies`);
+          
+          // 恢复预处理时保存的环境变量
+          if (preprocessResult.envVars) {
+            for (const [key, value] of Object.entries(preprocessResult.envVars)) {
+              process.env[key] = value;
+              logger.verbose(`Restored env: ${key}=${value}`);
+            }
+            logger.info(`Restored ${Object.keys(preprocessResult.envVars).length} environment variables from preprocess result`);
+          }
+        } catch (error) {
+          logger.error(`Failed to load preprocess result: ${error instanceof Error ? error.message : error}`);
+          process.exit(1);
+        }
+      } else {
+        logger.error(`Preprocess result file not found: ${preprocessResultPath}`);
+        process.exit(1);
+      }
+    }
+
     const buildOptions = {
       sketchPath,
       sketchDirPath,
       board: options.board,
       buildPath: buildPath,
-      librariesPath: options.librariesPath && options.librariesPath.length > 0 
-        ? options.librariesPath.map((libPath: string) => path.resolve(libPath)) 
+      librariesPath: options.librariesPath && options.librariesPath.length > 0
+        ? options.librariesPath.map((libPath: string) => path.resolve(libPath))
         : [],
       buildProperties: {
         ...(options.buildProperty || {}),
@@ -151,7 +182,8 @@ program
       toolVersions: toolVersions,
       jobs: parseInt(options.jobs),
       verbose: options.verbose,
-      useSccache: options.useSccache
+      useSccache: options.useSccache,
+      preprocessResult: preprocessResult
     };
 
     logger.info(`Starting compilation of ${sketch}`);
@@ -192,6 +224,216 @@ program
     } catch (maintainError) {
       logger.debug(`Cache maintenance failed: ${maintainError instanceof Error ? maintainError.message : maintainError}`);
     }
+  });
+
+program
+  .command('preprocess')
+  .description('Preprocess Arduino sketch without compilation (dependency analysis, config generation, prebuild hooks)')
+  .argument('<sketch>', 'Path to Arduino sketch (.ino file)')
+  .option('-b, --board <board>', 'Target board (e.g., arduino:avr:uno)', 'arduino:avr:uno')
+  .option('--sdk-path <path>', 'Path to Arduino SDK')
+  .option('--tools-path <path>', 'Path to additional tools')
+  .option('--build-path <path>', 'Build output directory')
+  .option('--libraries-path <path>', 'Additional libraries path', (val, libraries) => {
+    libraries.push(val);
+    return libraries;
+  }, [])
+  .option('--build-property <key=value>', 'Additional build property', (val, memo) => {
+    const [key, value] = val.split('=');
+    memo[key] = value;
+    return memo;
+  }, {})
+  .option('--build-macros <macro[=value]>', 'Custom macro definitions (e.g., DEBUG, VERSION=1.0.0)', (val, memo) => {
+    if (!memo) memo = [];
+    memo.push(val);
+    return memo;
+  }, [])
+  .option('--board-options <key=value>', 'Board menu option (e.g., flash=2097152_0, uploadmethod=default)', (val, memo) => {
+    const [key, value] = val.split('=');
+    memo[key] = value;
+    return memo;
+  }, {})
+  .option('--verbose', 'Enable verbose output', false)
+  .option('--log-file', 'Write logs to file in build directory', false)
+  .option('--tool-versions <versions>', 'Specify tool versions (format: tool1@version1,tool2@version2)', undefined)
+  .option('--output-json', 'Output preprocess result as JSON', false)
+  .option('--save-result <path>', 'Save full preprocess result to JSON file for later use with compile --preprocess-result')
+  .addHelpText('after', `
+Examples:
+  # Basic preprocessing
+  $ aily preprocess sketch.ino --board arduino:avr:uno
+  
+  # With external libraries
+  $ aily preprocess sketch.ino --board esp32:esp32:esp32 --libraries-path "C:\\Arduino\\libraries"
+  
+  # Output as JSON for programmatic use
+  $ aily preprocess sketch.ino --board arduino:avr:uno --output-json
+  
+  # Save result for later compilation
+  $ aily preprocess sketch.ino --board arduino:avr:uno --save-result ./preprocess.json
+  $ aily compile sketch.ino --board arduino:avr:uno --preprocess-result ./preprocess.json
+  
+  # With SDK and tools paths
+  $ aily preprocess sketch.ino --sdk-path "C:\\sdk\\esp32" --tools-path "C:\\tools"
+
+Preprocessing Steps:
+  1. Validate sketch file
+  2. Extract macros from sketch
+  3. Parse board and platform configuration
+  4. Prepare build directory
+  5. Analyze dependencies
+  6. Generate compile configuration
+  7. Run prebuild hooks (if configured)
+
+Note: This command only performs preprocessing without actual compilation.
+      Use 'aily compile' to perform full compilation.
+  `)
+  .action(async (sketch, options) => {
+    logger.setVerbose(options.verbose);
+
+    // 解析工具版本参数
+    let toolVersions: Record<string, string> = {};
+    if (options.toolVersions) {
+      try {
+        const versionPairs = options.toolVersions.split(',');
+        for (const pair of versionPairs) {
+          const trimmedPair = pair.trim();
+          if (trimmedPair) {
+            const [toolName, version] = trimmedPair.split('@');
+            if (toolName && version) {
+              toolVersions[toolName.trim()] = version.trim();
+            } else {
+              throw new Error(`Invalid tool version format: ${trimmedPair}. Expected format: tool@version`);
+            }
+          }
+        }
+        logger.verbose(`Parsed tool versions: ${JSON.stringify(toolVersions)}`);
+      } catch (error) {
+        logger.error(`Error parsing tool versions: ${error instanceof Error ? error.message : error}`);
+        logger.error('Expected format: tool1@version1,tool2@version2');
+        process.exit(1);
+      }
+    }
+
+    const compiler = new ArduinoCompiler(logger);
+
+    // 设置路径
+    const sketchPath = path.resolve(sketch);
+    const sketchDirPath = path.dirname(sketchPath);
+    const sketchName = path.basename(sketchPath, '.ino');
+
+    const projectPathMD5 = calculateMD5(sketchPath).substring(0, 8);
+    const uniqueSketchName = `${sketchName}_${projectPathMD5}`;
+    const defaultBuildPath = path.join(
+      os.platform() === 'win32'
+        ? path.join(os.homedir(), 'AppData', 'Local')
+        : path.join(os.homedir(), 'Library'),
+      'aily-builder',
+      'project',
+      uniqueSketchName
+    );
+
+    const buildPath = options.buildPath ? path.resolve(options.buildPath) : defaultBuildPath;
+
+    // 如果启用了日志文件功能，设置日志文件路径
+    if (options.logFile) {
+      const logFilePath = path.join(buildPath, 'aily-preprocess.log');
+      logger.setLogFile(logFilePath);
+      logger.info(`Log file enabled: ${logFilePath}`);
+    }
+
+    // 设置环境变量
+    process.env['SKETCH_NAME'] = sketchName;
+    process.env['SKETCH_PATH'] = sketchPath;
+    process.env['SKETCH_DIR_PATH'] = sketchDirPath;
+    process.env['BUILD_PATH'] = buildPath;
+
+    if (options.sdkPath) {
+      process.env['SDK_PATH'] = options.sdkPath;
+    }
+
+    if (options.toolsPath) {
+      process.env['TOOLS_PATH'] = options.toolsPath;
+    }
+
+    if (options.librariesPath && options.librariesPath.length > 0) {
+      const pathSeparator = os.platform() === 'win32' ? ';' : ':';
+      const resolvedPaths = options.librariesPath.map((libPath: string) => path.resolve(libPath));
+      process.env['LIBRARIES_PATH'] = resolvedPaths.join(pathSeparator);
+    }
+
+    const preprocessOptions = {
+      sketchPath,
+      sketchDirPath,
+      board: options.board,
+      buildPath: buildPath,
+      librariesPath: options.librariesPath && options.librariesPath.length > 0
+        ? options.librariesPath.map((libPath: string) => path.resolve(libPath))
+        : [],
+      buildProperties: {
+        ...(options.buildProperty || {}),
+        ...(options.boardOptions || {})
+      },
+      buildMacros: options.buildMacros || [],
+      toolVersions: toolVersions,
+      verbose: options.verbose
+    };
+
+    if (!options.outputJson) {
+      logger.info(`Starting preprocessing of ${sketch}`);
+      logger.info(`Board: ${options.board}`);
+      logger.info(`Build path: ${buildPath}`);
+      if (options.librariesPath && options.librariesPath.length > 0) {
+        logger.info(`Libraries paths: ${options.librariesPath.join(', ')}`);
+      }
+      if (options.boardOptions && Object.keys(options.boardOptions).length > 0) {
+        logger.info(`Board options: ${JSON.stringify(options.boardOptions)}`);
+      }
+      if (options.buildProperty && Object.keys(options.buildProperty).length > 0) {
+        logger.info(`Build properties: ${JSON.stringify(options.buildProperty)}`);
+      }
+      if (Object.keys(toolVersions).length > 0) {
+        logger.info(`Tool versions: ${JSON.stringify(toolVersions)}`);
+      }
+    }
+
+    const result = await compiler.preprocess(preprocessOptions);
+
+    // 保存完整的预处理结果到文件（用于后续编译）
+    if (options.saveResult && result.success) {
+      const saveResultPath = path.resolve(options.saveResult);
+      try {
+        await fs.ensureDir(path.dirname(saveResultPath));
+        await fs.writeJson(saveResultPath, result, { spaces: 2 });
+        logger.success(`Preprocess result saved to: ${saveResultPath}`);
+        logger.info(`Use with: aily compile sketch.ino --preprocess-result "${saveResultPath}"`);
+      } catch (error) {
+        logger.error(`Failed to save preprocess result: ${error instanceof Error ? error.message : error}`);
+      }
+    }
+
+    if (options.outputJson) {
+      // 输出 JSON 格式结果（用于程序化调用）
+      const jsonOutput = {
+        success: result.success,
+        preprocessTime: result.preprocessTime,
+        dependencyCount: result.dependencies?.length || 0,
+        dependencies: result.dependencies?.map(dep => dep.name) || [],
+        error: result.error
+      };
+      console.log(JSON.stringify(jsonOutput, null, 2));
+    } else {
+      if (result.success) {
+        logger.success(`Preprocessing completed successfully!`);
+        logger.info(`Dependencies found: ${result.dependencies?.length || 0}`);
+        logger.info(`Preprocess time: ${result.preprocessTime / 1000}s`);
+      } else {
+        logger.error(`Preprocessing failed: ${result.error}`);
+        process.exit(1);
+      }
+    }
+
+    process.exit(result.success ? 0 : 1);
   });
 
 program
@@ -304,14 +546,14 @@ Note: Accurate mode uses the same compiler toolchain as the compile command.
     const uniqueSketchName = `${sketchName}_${projectPathMD5}`;
     // 修复默认构建路径，使其在不同操作系统上都能正常工作
     const defaultBuildPath = path.join(
-      os.platform() === 'win32' 
+      os.platform() === 'win32'
         ? path.join(os.homedir(), 'AppData', 'Local')
         : path.join(os.homedir(), 'Library'),
-      'aily-builder', 
-      'project', 
+      'aily-builder',
+      'project',
       uniqueSketchName
     );
-    
+
     const buildPath = options.buildPath ? path.resolve(options.buildPath) : defaultBuildPath;
 
     // 验证输出格式
@@ -332,7 +574,7 @@ Note: Accurate mode uses the same compiler toolchain as the compile command.
     logger.info(`Board: ${options.board}`);
     logger.info(`Mode: ${options.mode}`);
     logger.info(`Build path: ${buildPath}`);
-    
+
     if (options.librariesPath && options.librariesPath.length > 0) {
       logger.info(`Libraries paths: ${options.librariesPath.join(', ')}`);
     }
@@ -362,8 +604,8 @@ Note: Accurate mode uses the same compiler toolchain as the compile command.
         buildPath,
         sdkPath: options.sdkPath ? path.resolve(options.sdkPath) : undefined,
         toolsPath: options.toolsPath ? path.resolve(options.toolsPath) : undefined,
-        librariesPath: options.librariesPath && options.librariesPath.length > 0 
-          ? options.librariesPath.map((libPath: string) => path.resolve(libPath)) 
+        librariesPath: options.librariesPath && options.librariesPath.length > 0
+          ? options.librariesPath.map((libPath: string) => path.resolve(libPath))
           : [],
         buildProperties: options.buildProperty || {},
         boardOptions: options.boardOptions || {},
@@ -464,12 +706,12 @@ program
         try {
           const cacheManager = new CacheManager(logger);
           const stats = await cacheManager.getCacheStats();
-          
+
           logger.info('📊 Cache Statistics:');
           logger.info(`Cache directory: ${stats.cacheDir}`);
           logger.info(`Total files: ${stats.totalFiles}`);
           logger.info(`Total size: ${stats.totalSizeFormatted}`);
-          
+
           if (stats.totalFiles === 0) {
             logger.info('No cached files found.');
           }
@@ -488,7 +730,7 @@ program
       .action(async (options) => {
         try {
           const cacheManager = new CacheManager(logger);
-          
+
           if (options.all) {
             logger.info('🗑️  Clearing all cache files...');
             await cacheManager.clearAllCache();
@@ -501,7 +743,7 @@ program
             if (options.pattern) {
               clearOptions.pattern = options.pattern;
             }
-            
+
             logger.info('🗑️  Clearing cache files...');
             await cacheManager.clearCache(clearOptions);
             logger.success('Cache files cleared!');
@@ -522,19 +764,19 @@ program
     try {
       logger.setVerbose(options.verbose);
       const cacheManager = new CacheManager(logger);
-      
+
       const stats = await cacheManager.getCacheStats();
-      
+
       console.log('\n📊 Cache Statistics:');
       console.log(`   Files: ${stats.totalFiles.toString()}`);
       console.log(`   Size: ${stats.totalSizeFormatted}`);
       console.log(`   Location: ${stats.cacheDir}`);
-      
+
       if (stats.totalFiles > 0) {
         const avgSize = stats.totalSize / stats.totalFiles;
         console.log(`   Average file size: ${(avgSize / 1024).toFixed(1)} KB`);
       }
-      
+
       console.log('\nCache statistics displayed successfully');
     } catch (error) {
       logger.error(`Error getting cache statistics: ${error instanceof Error ? error.message : error}`);
@@ -554,12 +796,12 @@ program
     try {
       logger.setVerbose(options.verbose);
       const cacheManager = new CacheManager(logger);
-      
+
       const days = parseInt(options.days);
       if (isNaN(days) || days < 0) {
         throw new Error('Days must be a non-negative number');
       }
-      
+
       console.log(`\n🧹 Cleaning cache files older than ${days} days...`);
       if (options.pattern) {
         console.log(`   Pattern: ${options.pattern}`);
@@ -567,7 +809,7 @@ program
       if (options.dryRun) {
         console.log('   (Dry run - no files will be deleted)');
       }
-      
+
       if (!options.dryRun) {
         await cacheManager.clearCache({
           olderThanDays: days,
@@ -578,7 +820,7 @@ program
         const stats = await cacheManager.getCacheStats();
         console.log(`   Would analyze ${stats.totalFiles} files in cache`);
       }
-      
+
       console.log('\nCache cleaning completed');
     } catch (error) {
       logger.error(`Error cleaning cache: ${error instanceof Error ? error.message : error}`);
