@@ -390,6 +390,35 @@ export class ArduinoCompiler {
         content = '#include <Arduino.h>\n' + content;
       }
 
+      // 添加前向声明
+      const forwardDeclarations = this.generateForwardDeclarations(content);
+      if (forwardDeclarations.length > 0) {
+        this.logger.verbose(`Adding ${forwardDeclarations.length} forward declarations`);
+        const declarationsBlock = forwardDeclarations.join('\n') + '\n\n';
+        // 在 #include 语句之后插入前向声明
+        const lastIncludeMatch = content.match(/^([\s\S]*#include\s*[<"][^>"]+[>"].*\n)/m);
+        if (lastIncludeMatch) {
+          // 找到所有 #include 的最后一个位置
+          const includeRegex = /#include\s*[<"][^>"]+[>"]/g;
+          let lastIncludeEnd = 0;
+          let match;
+          while ((match = includeRegex.exec(content)) !== null) {
+            // 找到该行的结尾
+            const lineEnd = content.indexOf('\n', match.index);
+            if (lineEnd > lastIncludeEnd) {
+              lastIncludeEnd = lineEnd + 1;
+            }
+          }
+          if (lastIncludeEnd > 0) {
+            content = content.slice(0, lastIncludeEnd) + '\n' + declarationsBlock + content.slice(lastIncludeEnd);
+          } else {
+            content = declarationsBlock + content;
+          }
+        } else {
+          content = declarationsBlock + content;
+        }
+      }
+
       // 添加行号指令（用于更好的错误定位）
       const lineDirective = `# 1 "${process.env['SKETCH_PATH']!.replace(/\\/g, '\\\\')}"\n`;
       content = lineDirective + content;
@@ -668,5 +697,196 @@ export class ArduinoCompiler {
     });
 
     return cleanedParts.join(' ');
+  }
+
+  /**
+   * 分析代码内容，生成需要的前向声明
+   * 用于处理 Arduino sketch 中先使用后定义的函数
+   * @param content 源代码内容
+   * @returns 前向声明数组
+   */
+  private generateForwardDeclarations(content: string): string[] {
+    // 移除注释和字符串，避免误匹配
+    const cleanedContent = this.removeCommentsAndStrings(content);
+    
+    // 解析所有函数定义
+    const functionDefs = this.parseFunctionDefinitions(cleanedContent);
+    
+    // 解析所有函数调用
+    const functionCalls = this.parseFunctionCalls(cleanedContent);
+    
+    // 找出需要前向声明的函数（在调用位置之前未定义的函数）
+    const forwardDeclarations: string[] = [];
+    const declaredFunctions = new Set<string>();
+    
+    // 按照在代码中出现的位置排序函数定义
+    const sortedDefs = [...functionDefs].sort((a, b) => a.position - b.position);
+    
+    for (const call of functionCalls) {
+      // 检查该函数调用是否在其定义之前
+      const funcDef = functionDefs.find(def => def.name === call.name);
+      
+      if (funcDef && call.position < funcDef.position && !declaredFunctions.has(call.name)) {
+        // 该函数在定义之前被调用，需要前向声明
+        forwardDeclarations.push(funcDef.declaration + ';');
+        declaredFunctions.add(call.name);
+        this.logger.verbose(`Forward declaration needed for: ${call.name}`);
+      }
+    }
+    
+    return forwardDeclarations;
+  }
+
+  /**
+   * 移除代码中的注释和字符串字面量
+   * @param content 源代码内容
+   * @returns 清理后的代码
+   */
+  private removeCommentsAndStrings(content: string): string {
+    let result = '';
+    let i = 0;
+    
+    while (i < content.length) {
+      // 检查单行注释
+      if (content[i] === '/' && content[i + 1] === '/') {
+        // 跳过到行尾
+        while (i < content.length && content[i] !== '\n') {
+          result += ' ';
+          i++;
+        }
+      }
+      // 检查多行注释
+      else if (content[i] === '/' && content[i + 1] === '*') {
+        result += '  ';
+        i += 2;
+        while (i < content.length && !(content[i] === '*' && content[i + 1] === '/')) {
+          result += content[i] === '\n' ? '\n' : ' ';
+          i++;
+        }
+        if (i < content.length) {
+          result += '  ';
+          i += 2;
+        }
+      }
+      // 检查字符串字面量
+      else if (content[i] === '"') {
+        result += ' ';
+        i++;
+        while (i < content.length && content[i] !== '"') {
+          if (content[i] === '\\' && i + 1 < content.length) {
+            result += '  ';
+            i += 2;
+          } else {
+            result += ' ';
+            i++;
+          }
+        }
+        if (i < content.length) {
+          result += ' ';
+          i++;
+        }
+      }
+      // 检查字符字面量
+      else if (content[i] === "'") {
+        result += ' ';
+        i++;
+        while (i < content.length && content[i] !== "'") {
+          if (content[i] === '\\' && i + 1 < content.length) {
+            result += '  ';
+            i += 2;
+          } else {
+            result += ' ';
+            i++;
+          }
+        }
+        if (i < content.length) {
+          result += ' ';
+          i++;
+        }
+      }
+      else {
+        result += content[i];
+        i++;
+      }
+    }
+    
+    return result;
+  }
+
+  /**
+   * 解析代码中的函数定义
+   * @param content 已清理的代码内容
+   * @returns 函数定义信息数组
+   */
+  private parseFunctionDefinitions(content: string): Array<{name: string, declaration: string, position: number}> {
+    const functions: Array<{name: string, declaration: string, position: number}> = [];
+    
+    // 匹配函数定义的正则表达式
+    // 支持: 返回类型 函数名(参数列表) { 或 返回类型 函数名(参数列表) 换行 {
+    const functionRegex = /^[ \t]*((?:(?:static|inline|virtual|explicit|constexpr|extern)\s+)*(?:(?:unsigned|signed|long|short)\s+)*(?:void|int|char|float|double|bool|String|byte|word|size_t|uint\d+_t|int\d+_t|[A-Z][a-zA-Z0-9_]*(?:\s*[*&])?)\s*[*&]?\s*)([a-zA-Z_][a-zA-Z0-9_]*)\s*\(([^)]*)\)\s*(?:const)?\s*\{/gm;
+    
+    let match;
+    while ((match = functionRegex.exec(content)) !== null) {
+      const returnType = match[1].trim();
+      const funcName = match[2];
+      const params = match[3].trim();
+      
+      // 跳过 setup 和 loop 函数，它们是 Arduino 的入口函数
+      // 也跳过构造函数风格的定义（类名::函数名）
+      if (funcName === 'setup' || funcName === 'loop' || funcName === 'if' || 
+          funcName === 'while' || funcName === 'for' || funcName === 'switch') {
+        continue;
+      }
+      
+      functions.push({
+        name: funcName,
+        declaration: `${returnType} ${funcName}(${params})`,
+        position: match.index
+      });
+    }
+    
+    return functions;
+  }
+
+  /**
+   * 解析代码中的函数调用
+   * @param content 已清理的代码内容
+   * @returns 函数调用信息数组
+   */
+  private parseFunctionCalls(content: string): Array<{name: string, position: number}> {
+    const calls: Array<{name: string, position: number}> = [];
+    const seenCalls = new Map<string, number>(); // 记录每个函数首次调用的位置
+    
+    // 匹配函数调用: 函数名(
+    // 排除函数定义（后面跟着 { 或参数类型）
+    const callRegex = /\b([a-zA-Z_][a-zA-Z0-9_]*)\s*\(/g;
+    
+    // C++ 关键字和常见内置函数，需要排除
+    const keywords = new Set([
+      'if', 'while', 'for', 'switch', 'catch', 'sizeof', 'typeof', 'alignof',
+      'decltype', 'static_cast', 'dynamic_cast', 'const_cast', 'reinterpret_cast',
+      'return', 'new', 'delete', 'throw'
+    ]);
+    
+    let match;
+    while ((match = callRegex.exec(content)) !== null) {
+      const funcName = match[1];
+      
+      // 跳过关键字
+      if (keywords.has(funcName)) {
+        continue;
+      }
+      
+      // 只记录首次调用位置
+      if (!seenCalls.has(funcName)) {
+        seenCalls.set(funcName, match.index);
+        calls.push({
+          name: funcName,
+          position: match.index
+        });
+      }
+    }
+    
+    return calls;
   }
 }
