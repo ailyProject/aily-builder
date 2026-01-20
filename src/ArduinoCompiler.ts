@@ -69,7 +69,8 @@ export class ArduinoCompiler {
 
   /**
    * 单独执行预处理步骤
-   * 包括：验证sketch、解析配置、准备构建目录、依赖分析、运行预构建钩子
+   * 包括：验证sketch、解析配置、依赖分析、运行预构建钩子
+   * 注意：不包含 prepareBuildDirectory，该步骤在 compile 时执行
    */
   async preprocess(options: CompileOptions): Promise<PreprocessResult> {
     const startTime = Date.now();
@@ -92,10 +93,7 @@ export class ArduinoCompiler {
         options.buildMacros || []
       );
 
-      // 3. 准备构建目录
-      await this.prepareBuildDirectory(options.buildPath, options.sketchPath);
-
-      // 4-6. 并行执行：预处理钩子、构建编译配置、依赖分析
+      // 3. 并行执行：预处理钩子、构建编译配置、依赖分析
       this.logger.info('Starting parallel preprocessing tasks...');
       const [compileConfig, dependencies] = await Promise.all([
         // 构建编译配置
@@ -219,6 +217,10 @@ export class ArduinoCompiler {
       compileConfig = preprocessResult.compileConfig;
       dependencies = preprocessResult.dependencies!;
     }
+
+    // 准备构建目录（将 sketch.ino 转换为 sketch.cpp）
+    // 每次编译都需要执行，确保源文件变化能被检测到
+    await this.prepareBuildDirectory(options.buildPath, options.sketchPath);
 
     // 8. 编译pipeline
     this.logger.verbose(`Starting compilation pipeline...`);

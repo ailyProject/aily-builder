@@ -114,29 +114,6 @@ program
       logger.info(`Log file enabled: ${logFilePath}`);
     }
 
-    process.env['SKETCH_NAME'] = sketchName;
-    process.env['SKETCH_PATH'] = sketchPath;
-    process.env['SKETCH_DIR_PATH'] = sketchDirPath;
-    process.env['BUILD_PATH'] = buildPath;
-    process.env['BUILD_JOBS'] = options.jobs;
-    process.env['USE_SCCACHE'] = options.useSccache;
-
-    if (options.sdkPath) {
-      process.env['SDK_PATH'] = options.sdkPath;
-    }
-
-    if (options.toolsPath) {
-      process.env['TOOLS_PATH'] = options.toolsPath;
-    }
-    // 修复 libraries path 处理
-    if (options.librariesPath && options.librariesPath.length > 0) {
-      // console.log('Setting LIBRARIES_PATH to:', options.librariesPath);
-      // 将多个路径用分号分隔（Windows）或冒号分隔（Unix）
-      const pathSeparator = os.platform() === 'win32' ? ';' : ':';
-      const resolvedPaths = options.librariesPath.map((libPath: string) => path.resolve(libPath));
-      process.env['LIBRARIES_PATH'] = resolvedPaths.join(pathSeparator);
-    }
-
     // 检查是否提供了预处理结果文件
     let preprocessResult: PreprocessResult | undefined;
     if (options.preprocessResult) {
@@ -148,7 +125,7 @@ program
           logger.info(`Loaded preprocess result from: ${preprocessResultPath}`);
           logger.info(`Preprocess result contains ${preprocessResult.dependencies?.length || 0} dependencies`);
           
-          // 恢复预处理时保存的环境变量
+          // 恢复预处理时保存的环境变量（优先使用预处理结果中的环境变量）
           if (preprocessResult.envVars) {
             for (const [key, value] of Object.entries(preprocessResult.envVars)) {
               process.env[key] = value;
@@ -164,6 +141,32 @@ program
         logger.error(`Preprocess result file not found: ${preprocessResultPath}`);
         process.exit(1);
       }
+    }
+
+    // 设置基本环境变量（如果预处理结果中没有提供，则使用当前值）
+    if (!process.env['SKETCH_NAME']) process.env['SKETCH_NAME'] = sketchName;
+    if (!process.env['SKETCH_PATH']) process.env['SKETCH_PATH'] = sketchPath;
+    if (!process.env['SKETCH_DIR_PATH']) process.env['SKETCH_DIR_PATH'] = sketchDirPath;
+    if (!process.env['BUILD_PATH']) process.env['BUILD_PATH'] = buildPath;
+    if (!process.env['BUILD_JOBS']) process.env['BUILD_JOBS'] = options.jobs;
+    if (options.useSccache) process.env['USE_SCCACHE'] = options.useSccache;
+
+    // 如果命令行提供了这些参数，则覆盖预处理结果中的值
+    if (options.sdkPath) {
+      process.env['SDK_PATH'] = options.sdkPath;
+    }
+
+    if (options.toolsPath) {
+      process.env['TOOLS_PATH'] = options.toolsPath;
+    }
+    
+    // 修复 libraries path 处理
+    if (options.librariesPath && options.librariesPath.length > 0) {
+      // console.log('Setting LIBRARIES_PATH to:', options.librariesPath);
+      // 将多个路径用分号分隔（Windows）或冒号分隔（Unix）
+      const pathSeparator = os.platform() === 'win32' ? ';' : ':';
+      const resolvedPaths = options.librariesPath.map((libPath: string) => path.resolve(libPath));
+      process.env['LIBRARIES_PATH'] = resolvedPaths.join(pathSeparator);
     }
 
     const buildOptions = {
