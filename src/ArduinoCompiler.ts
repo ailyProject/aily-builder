@@ -821,22 +821,53 @@ export class ArduinoCompiler {
   private parseFunctionDefinitions(content: string): Array<{name: string, declaration: string, position: number}> {
     const functions: Array<{name: string, declaration: string, position: number}> = [];
     
+    // 首先识别类/结构体的范围，以便排除成员函数
+    const classRanges = this.findClassRanges(content);
+    
     // 匹配函数定义的正则表达式
     // 支持: 返回类型 函数名(参数列表) { 或 返回类型 函数名(参数列表) 换行 {
-    const functionRegex = /^[ \t]*((?:(?:static|inline|virtual|explicit|constexpr|extern)\s+)*(?:(?:unsigned|signed|long|short)\s+)*(?:void|int|char|float|double|bool|String|byte|word|size_t|uint\d+_t|int\d+_t|[A-Z][a-zA-Z0-9_]*(?:\s*[*&])?)\s*[*&]?\s*)([a-zA-Z_][a-zA-Z0-9_]*)\s*\(([^)]*)\)\s*(?:const)?\s*\{/gm;
+    // 改进：支持复合类型如 unsigned long, signed int, long long 等
+    // 返回类型组成：[static/inline/etc] + [unsigned/signed] + [long/short] + [long] + 基本类型/标识符 + [*/&]
+    const typeKeywords = '(?:void|int|char|float|double|bool|String|byte|word|size_t|uint\\d+_t|int\\d+_t|long|short)';
+    const typeModifiers = '(?:(?:static|inline|virtual|explicit|constexpr|extern)\\s+)*';
+    const signModifier = '(?:(?:unsigned|signed)\\s+)?';
+    const sizeModifier = '(?:(?:long|short)\\s+)*';
+    const customType = '(?:[A-Z][a-zA-Z0-9_]*)';
+    const pointerRef = '(?:\\s*[*&])?';
+    
+    // 完整的返回类型模式
+    const returnTypePattern = `(${typeModifiers}${signModifier}${sizeModifier}(?:${typeKeywords}|${customType})${pointerRef}\\s*)`;
+    const functionRegex = new RegExp(
+      `^[ \\t]*${returnTypePattern}([a-zA-Z_][a-zA-Z0-9_]*)\\s*\\(([^{]*?)\\)\\s*(?:const)?\\s*\\{`,
+      'gm'
+    );
     
     let match;
     while ((match = functionRegex.exec(content)) !== null) {
       const returnType = match[1].trim();
       const funcName = match[2];
-      const params = match[3].trim();
+      let params = match[3].trim();
       
       // 跳过 setup 和 loop 函数，它们是 Arduino 的入口函数
-      // 也跳过构造函数风格的定义（类名::函数名）
+      // 也跳过 C++ 关键字
       if (funcName === 'setup' || funcName === 'loop' || funcName === 'if' || 
           funcName === 'while' || funcName === 'for' || funcName === 'switch') {
         continue;
       }
+      
+      // 检查该函数是否在类定义内部
+      const funcPosition = match.index;
+      const isInsideClass = classRanges.some(range => 
+        funcPosition > range.start && funcPosition < range.end
+      );
+      
+      if (isInsideClass) {
+        // 跳过类成员函数
+        continue;
+      }
+      
+      // 处理嵌套括号的参数（如函数指针）
+      params = this.extractBalancedParams(content, match.index + match[0].indexOf('('));
       
       functions.push({
         name: funcName,
@@ -846,6 +877,77 @@ export class ArduinoCompiler {
     }
     
     return functions;
+  }
+
+  /**
+   * 查找代码中所有类和结构体的范围
+   * @param content 代码内容
+   * @returns 类定义的范围数组
+   */
+  private findClassRanges(content: string): Array<{start: number, end: number}> {
+    const ranges: Array<{start: number, end: number}> = [];
+    
+    // 匹配 class 或 struct 关键字
+    const classRegex = /\b(?:class|struct)\s+\w+[^{]*\{/g;
+    
+    let match;
+    while ((match = classRegex.exec(content)) !== null) {
+      const start = match.index;
+      const braceStart = match.index + match[0].length - 1;
+      
+      // 找到匹配的结束大括号
+      let braceCount = 1;
+      let i = braceStart + 1;
+      
+      while (i < content.length && braceCount > 0) {
+        if (content[i] === '{') {
+          braceCount++;
+        } else if (content[i] === '}') {
+          braceCount--;
+        }
+        i++;
+      }
+      
+      ranges.push({ start, end: i });
+    }
+    
+    return ranges;
+  }
+
+  /**
+   * 提取平衡括号内的参数
+   * 处理嵌套括号的情况，如函数指针参数
+   * @param content 代码内容
+   * @param openParenIndex 开括号位置
+   * @returns 参数字符串
+   */
+  private extractBalancedParams(content: string, openParenIndex: number): string {
+    let parenCount = 0;
+    let start = -1;
+    let i = openParenIndex;
+    
+    // 找到开括号
+    while (i < content.length && content[i] !== '(') {
+      i++;
+    }
+    
+    if (i >= content.length) return '';
+    
+    start = i + 1;
+    parenCount = 1;
+    i++;
+    
+    // 找到匹配的闭括号
+    while (i < content.length && parenCount > 0) {
+      if (content[i] === '(') {
+        parenCount++;
+      } else if (content[i] === ')') {
+        parenCount--;
+      }
+      i++;
+    }
+    
+    return content.slice(start, i - 1).trim();
   }
 
   /**
