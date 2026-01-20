@@ -33,15 +33,14 @@ ts-node .\main.ts preprocess "C:\Users\coloz\Documents\aily-project\project_dec2
   --sdk-path "C:\Users\coloz\AppData\Local\aily-project\sdk\esp32_3.3.1" \
   --tools-path "C:\Users\coloz\AppData\Local\aily-project\tools" \
   --tool-versions "esp-x32@14.2.0,esptool_py@5.1.0,esp32-arduino-libs@5.5.1,ctags@5.8.0" \
-  --save-result "D:\project\build\preprocess.json"
+  --save-result "preprocess.json"
 ```
 
 #### 步骤 2：使用预处理结果进行编译
 
 ```bash
 ts-node .\main.ts compile "C:\Users\coloz\Documents\aily-project\project_dec24a_356734\.temp\sketch\sketch.ino" \
-  --board "esp32:esp32:XIAO_ESP32S3" \
-  --preprocess-result "D:\project\build\preprocess.json"
+  --preprocess-result "preprocess.json"
 ```
 
 ## 命令选项说明
