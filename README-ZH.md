@@ -43,21 +43,53 @@ ts-node main.ts compile sketch.ino --libraries-path "C:\Arduino\libraries"
 ts-node main.ts compile sketch.ino --verbose
 ```
 
-### 仅预处理
+### 预处理与编译分离
 
-执行预处理但不编译（依赖分析、配置生成）：
+该工具支持将预处理与编译分离，适用于以下场景：
+- **CI/CD 流水线**: 执行一次预处理，多次编译
+- **并行构建**: 在构建节点之间共享预处理结果
+- **调试**: 在编译前检查预处理结果
+- **性能优化**: 当依赖未变化时跳过预处理
+
+#### 仅预处理
+
+执行预处理但不编译（依赖分析、配置生成、prebuild 钩子）：
 
 ```bash
 # 基本预处理
 ts-node main.ts preprocess sketch.ino --board arduino:avr:uno
+
+# 使用外部库
+ts-node main.ts preprocess sketch.ino --board esp32:esp32:esp32 --libraries-path "C:\Arduino\libraries"
 
 # 以JSON格式输出（用于程序化调用）
 ts-node main.ts preprocess sketch.ino --output-json
 
 # 保存预处理结果供后续编译使用（适用于CI/CD）
 ts-node main.ts preprocess sketch.ino --save-result ./preprocess.json
-ts-node main.ts compile sketch.ino --preprocess-result ./preprocess.json
 ```
+
+#### 使用预处理结果编译
+
+使用已保存的预处理结果跳过预处理阶段：
+
+```bash
+# 使用保存的预处理结果编译（跳过预处理）
+ts-node main.ts compile sketch.ino --preprocess-result ./preprocess.json
+
+# 完整工作流示例
+ts-node main.ts preprocess sketch.ino --board arduino:avr:uno --save-result ./preprocess.json
+ts-node main.ts compile sketch.ino --board arduino:avr:uno --preprocess-result ./preprocess.json
+```
+
+**预处理步骤：**
+1. 验证 sketch 文件
+2. 从 sketch 中提取宏
+3. 解析开发板和平台配置
+4. 准备构建目录
+5. 分析依赖
+6. 生成编译配置
+7. 运行 prebuild 钩子（如配置）
 
 ### 语法检查 (Lint)
 
@@ -130,6 +162,29 @@ ts-node main.ts compile sketch.ino --no-cache
   --verbose                        启用详细输出
   --no-cache                       禁用编译缓存
   --clean-cache                    编译前清理缓存
+  --log-file                       将日志写入构建目录
+  -h, --help                       显示帮助信息
+```
+
+### 预处理命令选项
+
+```bash
+参数:
+  sketch                           Arduino sketch 文件路径 (.ino 文件)
+
+选项:
+  -b, --board <board>              目标开发板 (默认: "arduino:avr:uno")
+  --sdk-path <path>                Arduino SDK 路径
+  --tools-path <path>              附加工具路径
+  --build-path <path>              构建输出目录
+  --libraries-path <path>          附加库路径（可多次使用）
+  --build-property <key=value>     附加构建属性
+  --build-macros <macro[=value]>   自定义宏定义
+  --board-options <key=value>      开发板菜单选项
+  --tool-versions <versions>       指定工具版本
+  --output-json                    以 JSON 格式输出预处理结果
+  --save-result <path>             保存完整预处理结果到 JSON 文件
+  --verbose                        启用详细输出
   --log-file                       将日志写入构建目录
   -h, --help                       显示帮助信息
 ```

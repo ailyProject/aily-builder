@@ -44,21 +44,53 @@ ts-node main.ts compile sketch.ino --libraries-path "C:\Arduino\libraries"
 ts-node main.ts compile sketch.ino --verbose
 ```
 
-### Preprocess Only
+### Preprocess and Compile Separation
 
-Perform preprocessing without compilation (dependency analysis, config generation):
+The tool supports separating preprocessing from compilation, which is useful for:
+- **CI/CD pipelines**: Run preprocessing once, compile multiple times
+- **Parallel builds**: Share preprocessing results across build workers
+- **Debugging**: Inspect preprocessing results before compilation
+- **Performance optimization**: Skip preprocessing when dependencies haven't changed
+
+#### Preprocessing Only
+
+Perform preprocessing without compilation (dependency analysis, config generation, prebuild hooks):
 
 ```bash
 # Basic preprocessing
 ts-node main.ts preprocess sketch.ino --board arduino:avr:uno
+
+# With external libraries
+ts-node main.ts preprocess sketch.ino --board esp32:esp32:esp32 --libraries-path "C:\Arduino\libraries"
 
 # Output as JSON for programmatic use
 ts-node main.ts preprocess sketch.ino --output-json
 
 # Save result for later compilation (useful for CI/CD)
 ts-node main.ts preprocess sketch.ino --save-result ./preprocess.json
-ts-node main.ts compile sketch.ino --preprocess-result ./preprocess.json
 ```
+
+#### Compile with Preprocess Result
+
+Use saved preprocessing results to skip the preprocessing phase:
+
+```bash
+# Compile using saved preprocess result (skips preprocessing)
+ts-node main.ts compile sketch.ino --preprocess-result ./preprocess.json
+
+# Full workflow example
+ts-node main.ts preprocess sketch.ino --board arduino:avr:uno --save-result ./preprocess.json
+ts-node main.ts compile sketch.ino --board arduino:avr:uno --preprocess-result ./preprocess.json
+```
+
+**Preprocessing Steps:**
+1. Validate sketch file
+2. Extract macros from sketch
+3. Parse board and platform configuration
+4. Prepare build directory
+5. Analyze dependencies
+6. Generate compile configuration
+7. Run prebuild hooks (if configured)
 
 ### Lint / Syntax Check
 
@@ -131,6 +163,29 @@ Options:
   --verbose                        Enable verbose output
   --no-cache                       Disable compilation cache
   --clean-cache                    Clean cache before compilation
+  --log-file                       Write logs to file in build directory
+  -h, --help                       Display help for command
+```
+
+### Preprocess Command Options
+
+```bash
+Arguments:
+  sketch                           Path to Arduino sketch (.ino file)
+
+Options:
+  -b, --board <board>              Target board (default: "arduino:avr:uno")
+  --sdk-path <path>                Path to Arduino SDK
+  --tools-path <path>              Path to additional tools
+  --build-path <path>              Build output directory
+  --libraries-path <path>          Additional libraries path (can be used multiple times)
+  --build-property <key=value>     Additional build property
+  --build-macros <macro[=value]>   Custom macro definitions
+  --board-options <key=value>      Board menu options
+  --tool-versions <versions>       Specify tool versions
+  --output-json                    Output preprocess result as JSON
+  --save-result <path>             Save full preprocess result to JSON file
+  --verbose                        Enable verbose output
   --log-file                       Write logs to file in build directory
   -h, --help                       Display help for command
 ```
