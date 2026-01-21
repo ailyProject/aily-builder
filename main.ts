@@ -23,7 +23,6 @@ program
   .description('Compile Arduino sketch')
   .argument('<sketch>', 'Path to Arduino sketch (.ino file)')
   .option('-b, --board <board>', 'Target board (e.g., arduino:avr:uno)', 'arduino:avr:uno')
-  .option('-p, --port <port>', 'Serial port for upload')
   .option('--sdk-path <path>', 'Path to Arduino SDK')
   .option('--tools-path <path>', 'Path to additional tools')
   .option('--build-path <path>', 'Build output directory')
@@ -48,8 +47,6 @@ program
   }, {})
   .option('-j, --jobs <number>', 'Number of parallel compilation jobs', '4')
   .option('--verbose', 'Enable verbose output', false)
-  .option('--no-cache', 'Disable compilation cache', false)
-  .option('--clean-cache', 'Clean cache before compilation', false)
   .option('--log-file', 'Write logs to file in build directory', false)
   .option('--tool-versions <versions>', 'Specify tool versions (format: tool1@version1,tool2@version2)', undefined)
   .option('--preprocess-result <path>', 'Path to preprocess result JSON file (skip preprocessing if provided)')
@@ -82,10 +79,7 @@ program
       }
     }
 
-    // 确定使用的编译方式
-    const useNinja = options.useLegacy ? false : options.useNinja;
-
-    const compiler = new ArduinoCompiler(logger, { useNinja });
+    const compiler = new ArduinoCompiler(logger);
 
     // 设置默认的 build 路径到 AppData\Local\aily-builder\project\<sketchname>_<md5>
     const sketchPath = path.resolve(sketch);
@@ -149,7 +143,6 @@ program
     if (!process.env['SKETCH_DIR_PATH']) process.env['SKETCH_DIR_PATH'] = sketchDirPath;
     if (!process.env['BUILD_PATH']) process.env['BUILD_PATH'] = buildPath;
     if (!process.env['BUILD_JOBS']) process.env['BUILD_JOBS'] = options.jobs;
-    if (options.useSccache) process.env['USE_SCCACHE'] = options.useSccache;
 
     // 如果命令行提供了这些参数，则覆盖预处理结果中的值
     if (options.sdkPath) {
@@ -185,7 +178,6 @@ program
       toolVersions: toolVersions,
       jobs: parseInt(options.jobs),
       verbose: options.verbose,
-      useSccache: options.useSccache,
       preprocessResult: preprocessResult
     };
 
@@ -203,7 +195,6 @@ program
       logger.info(`Tool versions: ${JSON.stringify(toolVersions)}`);
     }
     logger.info(`Parallel jobs: ${options.jobs}`);
-    logger.info(`Build system: ${useNinja ? 'ninja' : 'legacy parallel'}`);
 
     const result = await compiler.compile(buildOptions);
 
