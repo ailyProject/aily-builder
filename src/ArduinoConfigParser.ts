@@ -2,6 +2,7 @@ import fs from 'fs-extra';
 import path from 'path';
 import os from 'os';
 import { glob } from 'glob';
+import { escapeDefineForShell } from './utils/escapeQuotes';
 
 interface FQBNObject {
     package: string;
@@ -786,9 +787,8 @@ export class ArduinoConfigParser {
         // 处理用户自定义宏定义,添加到 build.macros
         if (buildMacros && buildMacros.length > 0) {
             const macroFlags = buildMacros.map(macro => {
-                // 如果宏定义包含等号,格式为 -DMACRO=value
-                // 如果不包含等号,格式为 -DMACRO
-                return macro.includes('=') ? `-D${macro}` : `-D${macro}`;
+                // 使用 escapeDefineForShell 正确处理 shell 特殊字符（如括号）
+                return escapeDefineForShell(macro);
             }).join(' ');
             
             platformConfig['build.macros'] = macroFlags;
