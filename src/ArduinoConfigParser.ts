@@ -760,6 +760,7 @@ export class ArduinoConfigParser {
             'runtime.tools.CMSIS-5.9.0.path': await this.findToolPath('CMSIS', toolVersions?.['CMSIS'] || ''),
             'runtime.tools.STM32_SVD.path': await this.findToolPath('STM32_SVD'),
             'runtime.tools.arm-none-eabi-gcc-4.8.3-2014q1.path': await this.findToolPath('arm-none-eabi-gcc', toolVersions?.['arm-none-eabi-gcc'] || ''),
+            'runtime.tools.gcc-arm-none-eabi-5_2-2015q4.path': await this.findToolPath('arm-none-eabi-gcc', toolVersions?.['arm-none-eabi-gcc'] || ''),
             'runtime.tools.CMSIS-5.7.0.path': await this.findToolPath('CMSIS', toolVersions?.['CMSIS'] || ''),
             'build.system.path': path.join(process.env['SDK_PATH'], 'system'),
             'build.toolchainpkg': toolchainPkg,
