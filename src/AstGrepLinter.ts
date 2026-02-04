@@ -624,17 +624,17 @@ export class AstGrepLinter {
       
       // 对于未知库，尝试从库名推断前缀
       // 例如: MyLib.h -> MyLib_, mylib_
-      if (!libraryPrefixMap[libName]) {
-        const baseName = includePath
-          .replace(/.*\//, '')
-          .replace(/\.[^.]+$/, '');
-        
-        // 添加常见的命名模式
-        if (baseName.length > 2) {
-          prefixes.push(baseName + '_');           // MyLib_
-          prefixes.push(baseName.toUpperCase() + '_'); // MYLIB_
-          prefixes.push(baseName.toLowerCase() + '_'); // mylib_
-        }
+      const baseName = includePath
+        .replace(/.*\//, '')
+        .replace(/\.[^.]+$/, '');
+      
+      // 添加常见的命名模式
+      if (baseName.length > 2) {
+        prefixes.push(baseName + '_');           // MyLib_
+        prefixes.push(baseName.toUpperCase() + '_'); // MYLIB_
+        prefixes.push(baseName.toLowerCase() + '_'); // mylib_
+        // 也把库名本身加入（作为主对象名，如 Blinker, WiFi 等）
+        prefixes.push(baseName);                  // MyLib (作为主对象名)
       }
     }
     
@@ -727,8 +727,46 @@ export class AstGrepLinter {
     // 全局变量（在函数外部定义）
     const globalVars = new Set<string>();
     
+    // 用户定义的函数名（可以作为函数指针/回调传递）
+    const userFunctions = new Set<string>();
+    
     // 每个函数的局部变量和参数: funcName -> Set<varName>
     const functionScopes = new Map<string, Set<string>>();
+    
+    // 0. 收集所有用户定义的函数名
+    const allFuncDefs = root.findAll({ rule: { kind: 'function_definition' } });
+    for (const funcDef of allFuncDefs) {
+      const funcName = this.getFunctionName(funcDef);
+      if (funcName) {
+        userFunctions.add(funcName);
+      }
+    }
+    
+    // 0.5 收集枚举值（enum 成员是全局常量）
+    const enumSpecifiers = root.findAll({ rule: { kind: 'enum_specifier' } });
+    for (const enumSpec of enumSpecifiers) {
+      const enumerators = enumSpec.findAll({ rule: { kind: 'enumerator' } });
+      for (const enumerator of enumerators) {
+        // enumerator 的第一个 identifier 子节点就是枚举值名称
+        const id = enumerator.find({ rule: { kind: 'identifier' } });
+        if (id) {
+          globalVars.add(id.text());
+        }
+      }
+    }
+    
+    // 0.6 收集宏定义常量（#define NAME value）
+    const preprocDefs = root.findAll({ rule: { kind: 'preproc_def' } });
+    for (const preprocDef of preprocDefs) {
+      // preproc_def 的结构: #define identifier preproc_arg
+      const children = preprocDef.children();
+      for (const child of children) {
+        if (child.kind() === 'identifier') {
+          globalVars.add(child.text());
+          break; // 只取第一个 identifier（宏名称）
+        }
+      }
+    }
     
     // 1. 收集全局变量（不在任何函数内部的声明）
     const allDecls = root.findAll({ rule: { kind: 'declaration' } });
@@ -792,6 +830,9 @@ export class AstGrepLinter {
       
       // 检查全局变量
       if (globalVars.has(varName)) return true;
+      
+      // 检查用户定义的函数名（可能作为回调/函数指针使用）
+      if (userFunctions.has(varName)) return true;
       
       // 检查库符号
       if (this.isLibrarySymbol(varName, libraryPrefixes)) return true;
@@ -1023,7 +1064,25 @@ export class AstGrepLinter {
       }
     }
     
-    // 4. 简单声明（无初始化）: int x;
+    // 4. 指针声明: int *ptr; 或 char *str;
+    const pointerDeclarators = decl.findAll({ rule: { kind: 'pointer_declarator' } });
+    for (const ptrDecl of pointerDeclarators) {
+      const id = ptrDecl.find({ rule: { kind: 'identifier' } });
+      if (id) {
+        vars.add(id.text());
+      }
+    }
+    
+    // 5. 引用声明: int &ref = x;
+    const refDeclarators = decl.findAll({ rule: { kind: 'reference_declarator' } });
+    for (const refDecl of refDeclarators) {
+      const id = refDecl.find({ rule: { kind: 'identifier' } });
+      if (id) {
+        vars.add(id.text());
+      }
+    }
+    
+    // 6. 简单声明（无初始化）: int x;
     const simpleIds = decl.children().filter((c: any) => c.kind() === 'identifier');
     for (const id of simpleIds) {
       vars.add(id.text());
