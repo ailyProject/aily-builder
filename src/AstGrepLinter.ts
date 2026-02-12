@@ -201,8 +201,13 @@ export class LibrarySymbolExtractor {
       if (match[1]) {
         symbols.add(match[1]);
       }
-      // 枚举值
-      const enumBody = match[2];
+      // 枚举值 - 先移除注释再分割
+      let enumBody = match[2];
+      // 移除单行注释 // ...
+      enumBody = enumBody.replace(/\/\/[^\n]*/g, '');
+      // 移除多行注释 /* ... */
+      enumBody = enumBody.replace(/\/\*[\s\S]*?\*\//g, '');
+      
       const enumValues = enumBody.split(',');
       for (const val of enumValues) {
         const valueName = val.trim().split(/[\s=]/)[0].trim();
