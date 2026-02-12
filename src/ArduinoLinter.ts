@@ -6,7 +6,7 @@ import { CacheManager, CacheKey } from './CacheManager';
 import { LintCacheManager, LintCacheKey } from './LintCacheManager';
 import * as crypto from 'crypto';
 import { ParallelStaticAnalyzer, StaticAnalysisResult } from './ParallelStaticAnalyzer';
-import { AstGrepLinter, AstGrepLintResult, createArduinoLinter, createESP32Linter } from './AstGrepLinter';
+import { AstGrepLinter, AstGrepLintResult, createArduinoLinter, createESP32Linter, LintOptions as AstGrepLintOptions } from './AstGrepLinter';
 import { getRuleSet } from './ArduinoLintRules';
 import { spawn } from 'child_process';
 import * as path from 'path';
@@ -94,6 +94,44 @@ export class ArduinoLinter {
       }
     }
     return this.astGrepLinter;
+  }
+
+  /**
+   * 构建库搜索路径列表 - 用于 AstGrepLinter 符号提取
+   * 包括: SDK 核心路径、SDK 内置库路径、用户库路径
+   */
+  private buildLibrarySearchPaths(options: LintOptions): string[] {
+    const paths: string[] = [];
+    
+    // 1. 添加 SDK 路径下的核心和库目录
+    if (options.sdkPath) {
+      // ESP32 SDK 结构: {sdkPath}/cores/{variant}/, {sdkPath}/libraries/
+      const coresPath = path.join(options.sdkPath, 'cores');
+      const sdkLibrariesPath = path.join(options.sdkPath, 'libraries');
+      
+      if (fs.existsSync(coresPath)) {
+        paths.push(coresPath);
+      }
+      if (fs.existsSync(sdkLibrariesPath)) {
+        paths.push(sdkLibrariesPath);
+      }
+      
+      // 也添加 SDK 根目录（某些 SDK 头文件直接在根目录）
+      paths.push(options.sdkPath);
+    }
+    
+    // 2. 添加用户库路径
+    if (options.librariesPath && options.librariesPath.length > 0) {
+      for (const libPath of options.librariesPath) {
+        if (fs.existsSync(libPath)) {
+          paths.push(libPath);
+        }
+      }
+    }
+    
+    this.logger.verbose(`Library search paths for symbol extraction: ${paths.join(', ')}`);
+    
+    return paths;
   }
 
   /**
@@ -1079,8 +1117,13 @@ export class ArduinoLinter {
         }
       }
       
+      // 构建库路径列表用于符号提取
+      const astGrepOptions: AstGrepLintOptions = {
+        libraryPaths: this.buildLibrarySearchPaths(options)
+      };
+      
       // 执行分析
-      const result = await linter.analyzeFile(options.sketchPath, content);
+      const result = await linter.analyzeFile(options.sketchPath, content, astGrepOptions);
       
       this.logger.verbose(`ast-grep analysis completed in ${result.executionTime}ms`);
       this.logger.verbose(`Found ${result.errors.length} errors, ${result.warnings.length} warnings, ${result.notes.length} notes`);

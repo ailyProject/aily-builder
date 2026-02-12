@@ -8,6 +8,9 @@
  */
 
 import { Logger } from './utils/Logger';
+import * as fs from 'fs-extra';
+import * as path from 'path';
+import { glob } from 'glob';
 
 // ast-grep NAPI 类型定义
 // 需要安装: npm install @ast-grep/napi @ast-grep/lang-cpp
@@ -75,6 +78,188 @@ export interface AstGrepLintResult {
   warnings: LintError[];
   notes: LintError[];
   executionTime: number;
+}
+
+/**
+ * Lint 选项接口
+ */
+export interface LintOptions {
+  /** 库路径列表 - 用于提取库中定义的符号 */
+  libraryPaths?: string[];
+  
+  /** 额外的已知符号（如从其他地方获取的符号表） */
+  knownSymbols?: string[];
+  
+  /** 是否启用库符号提取（默认 true） */
+  extractLibrarySymbols?: boolean;
+  
+  /** 符号提取缓存 */
+  symbolCache?: LibrarySymbolCache;
+}
+
+/**
+ * 库符号缓存接口
+ */
+export interface LibrarySymbolCache {
+  /** 获取缓存的符号 */
+  get(libraryPath: string): Set<string> | undefined;
+  
+  /** 设置缓存 */
+  set(libraryPath: string, symbols: Set<string>): void;
+  
+  /** 检查是否有缓存 */
+  has(libraryPath: string): boolean;
+}
+
+/**
+ * 库符号提取器 - 从库头文件中提取 #define、enum、class 等符号
+ */
+export class LibrarySymbolExtractor {
+  private logger: Logger;
+  private cache: Map<string, Set<string>> = new Map();
+  
+  constructor(logger: Logger) {
+    this.logger = logger;
+  }
+  
+  /**
+   * 从多个库路径提取符号
+   */
+  async extractFromPaths(libraryPaths: string[]): Promise<Set<string>> {
+    const allSymbols = new Set<string>();
+    
+    for (const libPath of libraryPaths) {
+      try {
+        // 检查缓存
+        if (this.cache.has(libPath)) {
+          const cached = this.cache.get(libPath)!;
+          cached.forEach(s => allSymbols.add(s));
+          continue;
+        }
+        
+        const symbols = await this.extractFromLibrary(libPath);
+        this.cache.set(libPath, symbols);
+        symbols.forEach(s => allSymbols.add(s));
+        
+      } catch (error) {
+        this.logger.debug(`Failed to extract symbols from ${libPath}: ${error}`);
+      }
+    }
+    
+    return allSymbols;
+  }
+  
+  /**
+   * 从单个库目录提取符号
+   */
+  async extractFromLibrary(libraryPath: string): Promise<Set<string>> {
+    const symbols = new Set<string>();
+    
+    if (!await fs.pathExists(libraryPath)) {
+      return symbols;
+    }
+    
+    // 查找所有头文件
+    const headerFiles = await glob('**/*.{h,hpp}', {
+      cwd: libraryPath,
+      absolute: true,
+      nodir: true,
+      ignore: ['**/examples/**', '**/test/**', '**/tests/**']
+    });
+    
+    this.logger.debug(`Extracting symbols from ${headerFiles.length} headers in ${libraryPath}`);
+    
+    for (const headerFile of headerFiles) {
+      try {
+        const content = await fs.readFile(headerFile, 'utf-8');
+        this.extractSymbolsFromHeader(content, symbols);
+      } catch (error) {
+        // 忽略读取失败的文件
+      }
+    }
+    
+    return symbols;
+  }
+  
+  /**
+   * 从头文件内容中提取符号
+   */
+  private extractSymbolsFromHeader(content: string, symbols: Set<string>): void {
+    // 1. 提取 #define 宏定义
+    // 匹配: #define NAME 或 #define NAME value 或 #define NAME(args)
+    const defineRegex = /^\s*#\s*define\s+([A-Za-z_][A-Za-z0-9_]*)/gm;
+    let match;
+    while ((match = defineRegex.exec(content)) !== null) {
+      symbols.add(match[1]);
+    }
+    
+    // 2. 提取枚举值
+    // 匹配: enum Name { VALUE1, VALUE2 = x, VALUE3 }
+    const enumRegex = /enum\s+(?:class\s+)?(\w+)?\s*\{([^}]+)\}/g;
+    while ((match = enumRegex.exec(content)) !== null) {
+      // 枚举类型名
+      if (match[1]) {
+        symbols.add(match[1]);
+      }
+      // 枚举值
+      const enumBody = match[2];
+      const enumValues = enumBody.split(',');
+      for (const val of enumValues) {
+        const valueName = val.trim().split(/[\s=]/)[0].trim();
+        if (valueName && /^[A-Za-z_][A-Za-z0-9_]*$/.test(valueName)) {
+          symbols.add(valueName);
+        }
+      }
+    }
+    
+    // 3. 提取 class/struct 名称
+    const classRegex = /(?:class|struct)\s+([A-Za-z_][A-Za-z0-9_]*)\s*[:{]/g;
+    while ((match = classRegex.exec(content)) !== null) {
+      symbols.add(match[1]);
+    }
+    
+    // 4. 提取 typedef
+    // 匹配: typedef ... TypeName;
+    const typedefRegex = /typedef\s+[\w\s*]+\s+([A-Za-z_][A-Za-z0-9_]*)\s*;/g;
+    while ((match = typedefRegex.exec(content)) !== null) {
+      symbols.add(match[1]);
+    }
+    
+    // 5. 提取 using 别名 (C++11)
+    // 匹配: using Name = ...;
+    const usingRegex = /using\s+([A-Za-z_][A-Za-z0-9_]*)\s*=/g;
+    while ((match = usingRegex.exec(content)) !== null) {
+      symbols.add(match[1]);
+    }
+    
+    // 6. 提取全局常量
+    // 匹配: const Type NAME = 或 constexpr Type NAME =
+    const constRegex = /(?:const|constexpr)\s+\w+\s+([A-Z_][A-Z0-9_]*)\s*=/g;
+    while ((match = constRegex.exec(content)) !== null) {
+      symbols.add(match[1]);
+    }
+    
+    // 7. 提取 extern 声明
+    // 匹配: extern Type Name;
+    const externRegex = /extern\s+\w+\s+([A-Za-z_][A-Za-z0-9_]*)\s*;/g;
+    while ((match = externRegex.exec(content)) !== null) {
+      symbols.add(match[1]);
+    }
+  }
+  
+  /**
+   * 清除缓存
+   */
+  clearCache(): void {
+    this.cache.clear();
+  }
+  
+  /**
+   * 获取缓存大小
+   */
+  getCacheSize(): number {
+    return this.cache.size;
+  }
 }
 
 /**
@@ -178,10 +363,22 @@ export class AstGrepLinter {
   private logger: Logger;
   private rules: LintRule[];
   private initialized: boolean = false;
+  private symbolExtractor: LibrarySymbolExtractor;
+  private librarySymbolsCache: Set<string> | null = null;
 
   constructor(logger: Logger, customRules?: LintRule[]) {
     this.logger = logger;
     this.rules = customRules ? [...ARDUINO_RULES, ...customRules] : ARDUINO_RULES;
+    this.symbolExtractor = new LibrarySymbolExtractor(logger);
+  }
+
+  /**
+   * 预加载库符号（可选，用于提升性能）
+   */
+  async preloadLibrarySymbols(libraryPaths: string[]): Promise<void> {
+    this.logger.info(`Preloading symbols from ${libraryPaths.length} library paths...`);
+    this.librarySymbolsCache = await this.symbolExtractor.extractFromPaths(libraryPaths);
+    this.logger.info(`Loaded ${this.librarySymbolsCache.size} library symbols`);
   }
 
   /**
@@ -196,8 +393,11 @@ export class AstGrepLinter {
 
   /**
    * 分析单个文件
+   * @param filePath 文件路径
+   * @param content 文件内容
+   * @param options 可选的 lint 选项（包含库路径等）
    */
-  async analyzeFile(filePath: string, content: string): Promise<AstGrepLintResult> {
+  async analyzeFile(filePath: string, content: string, options?: LintOptions): Promise<AstGrepLintResult> {
     const startTime = Date.now();
     
     try {
@@ -258,10 +458,27 @@ export class AstGrepLinter {
       // 3. Arduino 特定检查
       this.checkArduinoSpecific(root, filePath, warnings, notes);
       
-      // 4. 未定义变量检查（错误级别）- 传入源代码以便提取库前缀
-      this.checkUndefinedVariables(root, filePath, errors, content);
+      // 4. 获取库符号
+      let librarySymbols: Set<string> = new Set();
       
-      // 5. 去重
+      // 优先使用缓存的符号
+      if (this.librarySymbolsCache) {
+        librarySymbols = this.librarySymbolsCache;
+      } 
+      // 或者使用选项中提供的库路径
+      else if (options?.libraryPaths && options.libraryPaths.length > 0 && options.extractLibrarySymbols !== false) {
+        librarySymbols = await this.symbolExtractor.extractFromPaths(options.libraryPaths);
+      }
+      
+      // 添加选项中额外指定的已知符号
+      if (options?.knownSymbols) {
+        options.knownSymbols.forEach(s => librarySymbols.add(s));
+      }
+      
+      // 5. 未定义变量检查（错误级别）- 传入源代码和库符号
+      this.checkUndefinedVariables(root, filePath, errors, content, librarySymbols);
+      
+      // 6. 去重
       const uniqueErrors = this.deduplicateDiagnostics(errors);
       const uniqueWarnings = this.deduplicateDiagnostics(warnings);
       const uniqueNotes = this.deduplicateDiagnostics(notes);
@@ -658,8 +875,19 @@ export class AstGrepLinter {
    * 检查未定义变量
    * 通过收集声明和使用来检测可能未定义的变量
    * 未定义变量是错误级别，会导致编译失败
+   * @param root AST 根节点
+   * @param filePath 文件路径
+   * @param errors 错误列表（会被修改）
+   * @param sourceContent 源代码内容
+   * @param librarySymbols 从库中提取的符号集合
    */
-  private checkUndefinedVariables(root: any, filePath: string, errors: LintError[], sourceContent?: string): void {
+  private checkUndefinedVariables(
+    root: any, 
+    filePath: string, 
+    errors: LintError[], 
+    sourceContent?: string,
+    librarySymbols?: Set<string>
+  ): void {
     // Arduino/C++ 内置标识符和常用库函数
     const builtins = new Set([
       // Arduino 核心
@@ -834,7 +1062,10 @@ export class AstGrepLinter {
       // 检查用户定义的函数名（可能作为回调/函数指针使用）
       if (userFunctions.has(varName)) return true;
       
-      // 检查库符号
+      // 检查库符号（从库头文件中提取的符号）
+      if (librarySymbols && librarySymbols.has(varName)) return true;
+      
+      // 检查库前缀符号
       if (this.isLibrarySymbol(varName, libraryPrefixes)) return true;
       
       // 检查当前函数的局部变量
@@ -1233,16 +1464,21 @@ function createSimpleLogger(): Logger {
 
 /**
  * 快速分析函数 - 简化的接口
+ * @param content 代码内容
+ * @param filePath 文件路径（用于错误报告）
+ * @param options Lint 选项（包含库路径等）
+ * @param logger 日志记录器
  */
 export async function quickLint(
   content: string,
   filePath: string = 'sketch.ino',
+  options?: LintOptions,
   logger?: Logger
 ): Promise<AstGrepLintResult> {
   const defaultLogger = logger || createSimpleLogger();
   
   const linter = new AstGrepLinter(defaultLogger);
-  return linter.analyzeFile(filePath, content);
+  return linter.analyzeFile(filePath, content, options);
 }
 
 /**
