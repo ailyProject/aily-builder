@@ -15,9 +15,6 @@ const JUNCTION_BASE = 'C:\\.aily-builder';
 // junction 自增编号
 let junctionCounter = 0;
 
-// 是否已初始化
-let initialized = false;
-
 // 匹配 Windows 绝对路径
 const WIN_ABS_PATH_RE = /[A-Za-z]:[\\/][^\s"'<>|*?]*/g;
 
@@ -52,6 +49,9 @@ function createJunctionForPrefix(targetPath: string): string | null {
   if (shortPathCache.has(cacheKey)) {
     return shortPathCache.get(cacheKey)!;
   }
+
+  // 懒初始化：首次创建 junction 时才创建基础目录
+  initJunctionBase();
 
   try {
     const junctionPath = path.join(JUNCTION_BASE, String(junctionCounter++));
@@ -161,23 +161,14 @@ function resolveAsciiPath(longPath: string): string {
 
 /**
  * 初始化短路径系统。在 Windows 上调用。
- * 初始化 junction 基础目录，清理旧缓存。
+ * 清理旧缓存和遗留 junction。
  */
 export function initShortPath(): void {
   shortPathCache.clear();
   junctionCounter = 0;
 
-  if (os.platform() !== 'win32') {
-    initialized = false;
-    return;
-  }
-
-  // 先清理上次可能遗留的 junction
+  // 清理上次可能遗留的 junction
   cleanupJunctions();
-
-  // 初始化 junction 基础目录
-  initJunctionBase();
-  initialized = true;
 
   // 注册进程退出时清理 junction
   process.once('exit', cleanupJunctions);
