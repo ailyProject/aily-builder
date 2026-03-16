@@ -8,6 +8,7 @@
 /out
 /build
 /examples/build
+/.test
 
 # Node
 /node_modules

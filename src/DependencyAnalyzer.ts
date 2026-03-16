@@ -523,8 +523,10 @@ export class DependencyAnalyzer {
   private async updateLibraryDependency(libraryObject: Dependency): Promise<boolean> {
     try {
       const extensions = ['.cpp', '.c', '.S', '.s'];
-      // 直接扫描传入的路径（可能是库根目录或src目录）
-      const allFiles = await this.scanDirectoryRecursive(libraryObject.path, extensions);
+
+      // FlatLayout: 只扫描根目录（非递归）+ utility/ 顶层（非递归）
+      // 匹配 arduino-cli 的行为：不递归进入 utility 子目录（如 pigpio/、RPi/ 等平台特定目录）
+      const allFiles = await this.scanDirectoryFlat(libraryObject.path, extensions);
 
       // 过滤掉被其他文件 #include 的代码片段文件
       const includedFiles = new Set<string>();
@@ -1022,6 +1024,49 @@ export class DependencyAnalyzer {
 
     // 否则认为是简单的代码片段
     return false;
+  }
+
+  /**
+   * 按 Arduino FlatLayout 规则扫描源文件
+   * 只扫描根目录（非递归）和 utility/ 顶层目录（非递归）
+   * @param dir 库根目录
+   * @param extensions 要查找的文件扩展名数组
+   * @returns 返回找到的所有匹配文件的绝对路径列表
+   */
+  private async scanDirectoryFlat(dir: string, extensions: string[]): Promise<string[]> {
+    if (!await fs.pathExists(dir)) {
+      return [];
+    }
+
+    try {
+      const allFiles: string[] = [];
+      const globPattern = `*.{${extensions.map(ext => ext.slice(1)).join(',')}}`;
+
+      // 只扫描根目录的源文件（非递归）
+      const rootFiles = await glob(globPattern, {
+        cwd: dir,
+        absolute: true,
+        nodir: true
+      });
+      allFiles.push(...rootFiles);
+
+      // 扫描 utility/ 顶层目录（非递归），匹配 arduino-cli 的 FlatLayout 行为
+      const utilityDir = path.join(dir, 'utility');
+      if (await fs.pathExists(utilityDir)) {
+        const utilityFiles = await glob(globPattern, {
+          cwd: utilityDir,
+          absolute: true,
+          nodir: true
+        });
+        allFiles.push(...utilityFiles);
+      }
+
+      this.logger.debug(`[FLAT_LAYOUT] ${path.basename(dir)}: found ${allFiles.length} files (root + utility top-level)`);
+      return [...new Set(allFiles)];
+    } catch (error) {
+      this.logger.debug(`Failed to scan directory flat ${dir}: ${error instanceof Error ? error.message : error}`);
+      return [];
+    }
   }
 
   /**
