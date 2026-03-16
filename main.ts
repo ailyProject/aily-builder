@@ -6,6 +6,7 @@ import { ArduinoConfigParser } from './src/ArduinoConfigParser';
 import { Logger } from './src/utils/Logger';
 import { CacheManager } from './src/CacheManager';
 import { calculateMD5 } from './src/utils/md5';
+import { initShortPath, sanitizeNonAsciiPaths } from './src/utils/ShortPath';
 import path from 'path';
 import os from 'os';
 import fs from 'fs-extra';
@@ -126,6 +127,16 @@ program
               logger.verbose(`Restored env: ${key}=${value}`);
             }
             logger.info(`Restored ${Object.keys(preprocessResult.envVars).length} environment variables from preprocess result`);
+          }
+
+          // 在 Windows 上，将含非 ASCII 字符的路径替换为 junction 别名
+          if (os.platform() === 'win32') {
+            initShortPath();
+            for (const key of Object.keys(process.env)) {
+              if (process.env[key]) {
+                process.env[key] = sanitizeNonAsciiPaths(process.env[key]!);
+              }
+            }
           }
         } catch (error) {
           logger.error(`Failed to load preprocess result: ${error instanceof Error ? error.message : error}`);

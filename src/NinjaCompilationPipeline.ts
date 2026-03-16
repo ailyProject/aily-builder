@@ -6,6 +6,7 @@ import { Dependency } from './DependencyAnalyzer';
 import { CacheManager, CacheKey } from './CacheManager';
 import { NinjaGenerator, NinjaOptions } from './NinjaGenerator';
 import { escapeQuotedDefines } from './utils/escapeQuotes';
+import { sanitizeNonAsciiPaths } from './utils/ShortPath';
 
 export interface NinjaPipelineOptions {
   dependencies: Dependency[];
@@ -115,7 +116,7 @@ export class NinjaCompilationPipeline {
   private async executeNinjaBuild(ninjaFilePath: string): Promise<{ success: boolean; warnings?: string[] }> {
     return new Promise((resolve, reject) => {
       const ninjaPath = this.getNinjaExecutablePath();
-      const buildDir = path.dirname(ninjaFilePath);
+      const buildDir = sanitizeNonAsciiPaths(path.dirname(ninjaFilePath));
       const jobs = parseInt(process.env['BUILD_JOBS'] || '4');
 
       const args = [
@@ -127,17 +128,23 @@ export class NinjaCompilationPipeline {
       this.logger.verbose(`Executing: ${ninjaPath} ${args.join(' ')}`);
       this.logger.verbose(`Working directory: ${buildDir}`);
 
+      // 清洗所有环境变量中的非 ASCII 路径
+      const sanitizedEnv: Record<string, string> = {};
+      for (const [key, value] of Object.entries(process.env)) {
+        if (value !== undefined) {
+          sanitizedEnv[key] = sanitizeNonAsciiPaths(value);
+        }
+      }
+      sanitizedEnv['PATH'] = [
+        sanitizedEnv['COMPILER_PATH'],
+        sanitizedEnv['ESPTOOL_PY_PATH'],
+        sanitizedEnv['PATH']
+      ].filter(Boolean).join(path.delimiter);
+
       const childProcess = spawn(ninjaPath, args, {
         cwd: buildDir,
         stdio: ['ignore', 'pipe', 'pipe'],
-        env: {
-          ...process.env,
-          PATH: [
-            process.env['COMPILER_PATH'],
-            process.env['ESPTOOL_PY_PATH'],
-            process.env['PATH']
-          ].filter(Boolean).join(path.delimiter)
-        }
+        env: sanitizedEnv
       });
 
       let stdout = '';

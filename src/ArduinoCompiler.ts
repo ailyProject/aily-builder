@@ -7,6 +7,7 @@ import { CompileConfigManager } from './CompileConfigManager';
 import { ArduinoConfigParser } from './ArduinoConfigParser';
 import { DependencyAnalyzer } from './DependencyAnalyzer';
 import { escapeQuotedDefines } from './utils/escapeQuotes';
+import { sanitizeNonAsciiPaths, sanitizeObjectPaths } from './utils/ShortPath';
 
 export interface ExecutableSectionSize {
   name: string;
@@ -220,6 +221,10 @@ export class ArduinoCompiler {
       compileConfig = preprocessResult.compileConfig;
       dependencies = preprocessResult.dependencies!;
     }
+
+    // 在 Windows 上，对 compileConfig 和 dependencies 中嵌入的所有路径做 sanitize
+    compileConfig = sanitizeObjectPaths(compileConfig);
+    dependencies = sanitizeObjectPaths(dependencies);
 
     // 准备构建目录（将 sketch.ino 转换为 sketch.cpp）
     // 每次编译都需要执行，确保源文件变化能被检测到
@@ -494,6 +499,7 @@ export class ArduinoCompiler {
   }
 
   private async runCommand(command: string): Promise<string> {
+    command = sanitizeNonAsciiPaths(command);
     return new Promise((resolve, reject) => {
       const child = spawn(command, [], {
         shell: true,
