@@ -99,13 +99,24 @@ export class NinjaGenerator {
   }
 
   private setupGlobalVariables(): void {
+    // 如果编译器名称是裸名（不含路径分隔符），拼接 COMPILER_PATH 成完整路径。
+    // 这确保 argv[0] 是全 ASCII 的 junction 路径，使 gcc 内部通过 argv[0] 计算
+    // 工具链前缀时不会解析到含非 ASCII 字符的物理路径，避免编码乱码导致找不到
+    // crti.o / crtbegin.o 等启动文件。
+    const compilerDir = process.env['COMPILER_PATH'];
+    const withFullPath = (name: string | undefined): string | undefined => {
+      if (!name || !compilerDir) return name;
+      if (name.includes('/') || name.includes('\\')) return name;
+      return path.join(compilerDir, name).replace(/\\/g, '/');
+    };
+
     // 设置编译器路径变量
     this.ninjaFile.variables = {
-      cpp_compiler: this.compileConfig.compiler.cpp,
-      c_compiler: this.compileConfig.compiler.c,
-      ar: this.compileConfig.compiler.ar,
-      ld: this.compileConfig.compiler.ld,
-      objcopy: this.compileConfig.compiler.objcopy,
+      cpp_compiler: withFullPath(this.compileConfig.compiler.cpp),
+      c_compiler: withFullPath(this.compileConfig.compiler.c),
+      ar: withFullPath(this.compileConfig.compiler.ar),
+      ld: withFullPath(this.compileConfig.compiler.ld),
+      objcopy: withFullPath(this.compileConfig.compiler.objcopy),
       build_path: this.buildPath.replace(/\\/g, '/'),
       sketch_name: process.env['SKETCH_NAME'] || 'sketch'
     };
@@ -212,7 +223,7 @@ export class NinjaGenerator {
     // 归档规则
     this.ninjaFile.rules.push({
       name: 'archive',
-      command: '$ar rcs $out $in',
+      command: '"$ar" rcs $out $in',
       description: 'Archiving $out'
     });
 
@@ -620,9 +631,9 @@ export class NinjaGenerator {
     command = command.replace(new RegExp(`"[^"]*/${sketchName}\\.eep"`, 'g'), `${sketchName}.eep`);
     command = command.replace(new RegExp(`"[^"]*/${sketchName}\\.bin"`, 'g'), `${sketchName}.bin`);
 
-    // 最后添加编译器命令
+    // 最后添加编译器命令（用引号包围以处理路径中的空格）
     if (replacements.compiler) {
-      command = `${replacements.compiler} ${command}`;
+      command = `"${replacements.compiler}" ${command}`;
     }
 
     // 清理多余的空格
