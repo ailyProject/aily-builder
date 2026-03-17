@@ -2,12 +2,26 @@ export function removeCompilerPath(str: string): string {
   if (!str || typeof str !== 'string') {
     return '';
   }
-  
-  const firstSpaceIndex = str.indexOf(' ');
-  if (firstSpaceIndex === -1) {
-    // 如果没有空格，说明只有一个参数，返回空字符串
-    return '';
+
+  let endIdx: number;
+  if (str.startsWith('"')) {
+    // 引号包围的编译器路径：找到对应的闭合引号
+    const closeQuote = str.indexOf('"', 1);
+    if (closeQuote === -1) {
+      return '';
+    }
+    endIdx = closeQuote + 1;
+  } else {
+    // 无引号：找第一个空格
+    endIdx = str.indexOf(' ');
+    if (endIdx === -1) {
+      return '';
+    }
   }
-  
-  return str.substring(firstSpaceIndex + 1);
+
+  // 跳过编译器路径后的空格
+  if (str[endIdx] === ' ') {
+    return str.substring(endIdx + 1);
+  }
+  return str.substring(endIdx + 1);
 }

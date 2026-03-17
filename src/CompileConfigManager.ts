@@ -3,6 +3,7 @@ import { extractCompilerName, extractToolName } from './utils/ExtractCompilerNam
 import { Logger } from './utils/Logger';
 import { escapeQuotedDefines } from './utils/escapeQuotes';
 
+
 export class CompileConfigManager {
   private logger: Logger;
 
@@ -81,15 +82,16 @@ export class CompileConfigManager {
         size: arduinoConfig.platform['compiler.size.cmd']
       },
       args: {
-        c: escapeQuotedDefines(arduinoConfig.platform['recipe.c.o.pattern'].substring(arduinoConfig.platform['recipe.c.o.pattern'].indexOf(' ') + 1)),
-        cpp: escapeQuotedDefines(arduinoConfig.platform['recipe.cpp.o.pattern'].substring(arduinoConfig.platform['recipe.cpp.o.pattern'].indexOf(' ') + 1)),
+        c: escapeQuotedDefines(removeCompilerPath(arduinoConfig.platform['recipe.c.o.pattern'])),
+        cpp: escapeQuotedDefines(removeCompilerPath(arduinoConfig.platform['recipe.cpp.o.pattern'])),
         ld: escapeQuotedDefines(flag_ld),
-        s: escapeQuotedDefines(arduinoConfig.platform['recipe.S.o.pattern'].substring(arduinoConfig.platform['recipe.S.o.pattern'].indexOf(' ') + 1)),
+        s: escapeQuotedDefines(removeCompilerPath(arduinoConfig.platform['recipe.S.o.pattern'])),
+
         eep: escapeQuotedDefines(flag_eep),
         hex: escapeQuotedDefines(flag_hex),
         bin: escapeQuotedDefines(flag_bin),
         zip: escapeQuotedDefines(flag_zip),
-        size: escapeQuotedDefines(arduinoConfig.platform['recipe.size.pattern'].substring(arduinoConfig.platform['recipe.size.pattern'].indexOf(' ') + 1))
+        size: escapeQuotedDefines(removeCompilerPath(arduinoConfig.platform['recipe.size.pattern']))
       },
       includes: [
         // process.env['SDK_CORE_PATH'], // core sdk

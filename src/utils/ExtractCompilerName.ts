@@ -17,16 +17,21 @@ export function extractCompilerName(commandString) {
 }
 
 export function extractToolName(commandString) {
-    // 使用空格切割命令字符串，取第一个元素作为路径
-    const parts = commandString.split(' ');
-    const toolPath = parts[0];
-    
-    // 提取路径中的文件名
-    // 处理 Windows 和 Unix 风格的路径分隔符
-    const pathSeparatorRegex = /[\\\/]/;
-    const pathParts = toolPath.split(pathSeparatorRegex);
+    // 提取第一个 token（编译器/工具路径），支持带引号的路径（路径内可含空格）
+    let toolPath: string;
+    if (commandString.startsWith('"')) {
+        const closeQuote = commandString.indexOf('"', 1);
+        toolPath = closeQuote !== -1
+            ? commandString.substring(1, closeQuote)
+            : commandString.substring(1);
+    } else {
+        toolPath = commandString.split(' ')[0];
+    }
+
+    // 提取路径中的文件名（处理 Windows 和 Unix 风格的路径分隔符）
+    const pathParts = toolPath.split(/[\\\/]/);
     const fileName = pathParts[pathParts.length - 1];
-    
+
     // 移除可能的引号
     return fileName.replace(/^["']|["']$/g, '');
 }
