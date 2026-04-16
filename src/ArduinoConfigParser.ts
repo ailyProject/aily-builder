@@ -670,7 +670,7 @@ export class ArduinoConfigParser {
         process.env['SDK_PATH'] = path.dirname(platformTxtPath);
 
 
-        if (fqbnObj.package == 'esp32') {
+        if (fqbnObj.platform == 'esp32') {
             const [ESP32_ARDUINO_LIBS_PATH, ESPTOOL_PY_PATH] = await Promise.all([
                 this.findToolPath('esp32-arduino-libs', toolVersions?.['esp32-arduino-libs'] || ''),
                 this.findToolPath('esptool_py', toolVersions?.['esptool_py'] || ''),
@@ -691,7 +691,7 @@ export class ArduinoConfigParser {
             boardConfig['build.arch'] = fqbnObj.platform.toUpperCase();
         }
 
-        if (fqbnObj.package == 'esp32') {
+        if (fqbnObj.platform == 'esp32') {
             // 专注于菜单项 非菜单项不考虑
             // // 获取基本参数（不是菜单选项）
             // const cpuFreq = boardConfig['build.f_cpu'] ? boardConfig['build.f_cpu'].replace('000000L', '') : '240';

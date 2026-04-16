@@ -844,8 +844,9 @@ export class ArduinoCompiler {
     // 完整的返回类型模式
     const returnTypePattern = `(${typeModifiers}${signModifier}${sizeModifier}(?:${typeKeywords}|${customType})${pointerRef}\\s*)`;
     const functionRegex = new RegExp(
-      `^[ \\t]*${returnTypePattern}([a-zA-Z_][a-zA-Z0-9_]*)\\s*\\(([^{]*?)\\)\\s*(?:const)?\\s*\\{`,
-      'gm'
+      `^[ \\t]*${returnTypePattern}([\\p{L}_][\\p{L}\\p{N}_]*)\\s*\\(([^{]*?)\\)\\s*(?:const)?\\s*\\{`,
+      // `^[ \\t]*${returnTypePattern}([a-zA-Z_][a-zA-Z0-9_]*)\\s*\\(([^{]*?)\\)\\s*(?:const)?\\s*\\{`,
+      'gmu'
     );
     
     let match;
@@ -967,7 +968,8 @@ export class ArduinoCompiler {
     
     // 匹配函数调用: 函数名(
     // 排除函数定义（后面跟着 { 或参数类型）
-    const callRegex = /\b([a-zA-Z_][a-zA-Z0-9_]*)\s*\(/g;
+    const callRegex = /(?<![\p{L}\p{N}_])([\p{L}_][\p{L}\p{N}_]*)\s*\(/gu;
+    // const callRegex = /\b([a-zA-Z_][a-zA-Z0-9_]*)\s*\(/g;
     
     // C++ 关键字和常见内置函数，需要排除
     const keywords = new Set([
