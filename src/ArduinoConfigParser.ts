@@ -787,6 +787,11 @@ export class ArduinoConfigParser {
             'build.core.path': path.join(process.env['SDK_PATH'], 'cores', boardConfig['build.core']),
         }
 
+        // 自动扫描 platform.txt 中带版本号的 runtime.tools.*.path 变量，
+        // 去掉版本号后使用 findToolPath 解析其真实路径
+        const versionedToolPaths = await this.resolveVersionedToolPaths(platformTxtPath, toolVersions);
+        Object.assign(moreConfig, versionedToolPaths);
+
         // console.log('moreConfig:', moreConfig);
         let platformConfig: { [key: string]: string } = this.parsePlatformTxt(platformTxtPath, fqbnObj, boardConfig, moreConfig);
 
@@ -903,6 +908,64 @@ export class ArduinoConfigParser {
         } catch (error) {
             throw new Error(`解析文件失败 ${boardsPath}: ${error}`);
         }
+    }
+
+    /**
+     * 去掉工具名中的版本号后缀
+     * 识别以数字开头的段作为版本号起点，例如：
+     *   arm-none-eabi-gcc-7-2017q4     -> arm-none-eabi-gcc
+     *   xpack-arm-none-eabi-gcc-14.2.1 -> xpack-arm-none-eabi-gcc
+     *   gcc-arm-none-eabi-5_2-2015q4   -> gcc-arm-none-eabi
+     *   CMSIS-5.7.0                    -> CMSIS
+     * @param toolId 可能带版本号的工具标识
+     * @returns 去掉版本号后的基础工具名
+     */
+    private stripToolVersion(toolId: string): string {
+        const parts = toolId.split('-');
+        for (let i = 1; i < parts.length; i++) {
+            if (/^\d/.test(parts[i])) {
+                return parts.slice(0, i).join('-');
+            }
+        }
+        return toolId;
+    }
+
+    /**
+     * 扫描 platform.txt 中带版本号的 runtime.tools.*.path 键，
+     * 自动去掉版本号后使用 findToolPath 解析其真实路径。
+     * @param platformPath platform.txt 路径
+     * @param toolVersions 工具版本映射
+     * @returns runtime.tools.<name-with-version>.path 到实际路径的映射
+     */
+    private async resolveVersionedToolPaths(
+        platformPath: string,
+        toolVersions: { [key: string]: string } = {}
+    ): Promise<{ [key: string]: string }> {
+        const result: { [key: string]: string } = {};
+        try {
+            const content = fs.readFileSync(platformPath, 'utf8');
+            const regex = /runtime\.tools\.([^=\s{}]+)\.path/g;
+            const seen = new Set<string>();
+            let match: RegExpExecArray | null;
+            while ((match = regex.exec(content)) !== null) {
+                const toolId = match[1];
+                const fullKey = `runtime.tools.${toolId}.path`;
+                if (seen.has(fullKey)) { continue; }
+                seen.add(fullKey);
+
+                const baseName = this.stripToolVersion(toolId);
+                // 未检测到版本号则跳过（非版本化键由主流程处理）
+                if (baseName === toolId) { continue; }
+
+                const toolPath = await this.findToolPath(baseName, toolVersions?.[baseName] || '');
+                if (toolPath) {
+                    result[fullKey] = toolPath;
+                }
+            }
+        } catch (e) {
+            console.warn(`解析版本化工具路径失败: ${e}`);
+        }
+        return result;
     }
 
     async findToolPath(toolName, version = '') {
