@@ -301,7 +301,7 @@ export class ArduinoConfigParser {
     private applyBuildProperties(boardConfig: { [key: string]: string }, buildProperties: { [key: string]: string }): void {
         // 动态检测 boardConfig 中所有可用的菜单选项
         const availableMenuOptions = this.detectAvailableMenuOptions(boardConfig);
-        
+
         // 应用用户指定的菜单选项（大部分过滤工作已在 parseBoardsTxt 中完成）
         availableMenuOptions.forEach(menuType => {
             if (buildProperties[menuType]) {
@@ -447,7 +447,7 @@ export class ArduinoConfigParser {
      */
     private detectAvailableMenuOptions(boardConfig: { [key: string]: string }): string[] {
         const menuTypes = new Set<string>();
-        
+
         for (const key in boardConfig) {
             // 查找所有以 menu. 开头的配置项
             if (key.startsWith('menu.')) {
@@ -459,7 +459,7 @@ export class ArduinoConfigParser {
                 }
             }
         }
-        
+
         const result = Array.from(menuTypes); // 保持原始顺序
         // console.log(`检测到可用的菜单选项: ${result.join(', ')}`);
         return result;
@@ -474,7 +474,7 @@ export class ArduinoConfigParser {
     private getAvailableMenuOptions(boardConfig: { [key: string]: string }, menuName: string): string[] {
         const options: string[] = [];
         const menuPrefix = `menu.${menuName}.`;
-        
+
         // 使用Object.keys()来保持插入顺序（即文件中的原始顺序）
         Object.keys(boardConfig).forEach(key => {
             if (key.startsWith(menuPrefix)) {
@@ -485,7 +485,7 @@ export class ArduinoConfigParser {
                 }
             }
         });
-        
+
         return options; // 保持文件中的原始顺序
     }
 
@@ -498,16 +498,16 @@ export class ArduinoConfigParser {
     private applyDefaultMenuOptionsToBoard(boardConfig: { [key: string]: string }, buildProperties: { [key: string]: string } = {}): void {
         // 清空之前的菜单选择记录
         this.selectedMenuOptions.clear();
-        
+
         // 动态检测所有可用的菜单选项
         const availableMenuOptions = this.detectAvailableMenuOptions(boardConfig);
-        
+
         // 为所有检测到的菜单选项应用默认值或用户指定值（直接设置到 boardConfig）
         availableMenuOptions.forEach(menuType => {
             const options = this.getAvailableMenuOptions(boardConfig, menuType);
             if (options.length > 0) {
                 let selectedValue: string;
-                
+
                 // 检查用户是否在 buildProperties 中指定了这个菜单类型的值
                 if (buildProperties[menuType] && options.includes(buildProperties[menuType])) {
                     selectedValue = buildProperties[menuType];
@@ -515,10 +515,10 @@ export class ArduinoConfigParser {
                     // 选择第一个选项作为默认值（按照在boards.txt中出现的顺序）
                     selectedValue = options[0];
                 }
-                
+
                 // 记录选择的菜单选项
                 this.selectedMenuOptions.set(menuType, selectedValue);
-                
+
                 // 直接应用菜单设置到 boardConfig
                 this.applyMenuSettings(boardConfig, menuType, selectedValue);
             }
@@ -649,7 +649,7 @@ export class ArduinoConfigParser {
             boardsTxtPath = path.join(process.env['SDK_PATH'], 'boards.txt');
         } else {
             // 根据操作系统选择Arduino15目录的正确路径
-            const arduino15BasePath = os.platform() === 'win32' 
+            const arduino15BasePath = os.platform() === 'win32'
                 ? path.join(os.homedir(), 'AppData', 'Local', 'Arduino15')
                 : path.join(os.homedir(), 'Library', 'Arduino15');
             let ARDUINO15_PACKAGE_PATH = path.join(arduino15BasePath, 'packages', fqbnObj.package);
@@ -700,10 +700,10 @@ export class ArduinoConfigParser {
             // const psram = boardConfig['build.psram'] || 'disabled';
             // const PartitionScheme = boardConfig['build.partitions'] || 'default';
             // const eraseFlash = boardConfig['build.erase_cmd'] || 'none';
-            
+
             // 动态构建 FQBN 参数列表
             const fqbnParams: string[] = [];
-            
+
             // 添加固定参数
             // fqbnParams.push(`UploadSpeed=${uploadSpeed}`);
             // fqbnParams.push(`CPUFreq=${cpuFreq}`);
@@ -711,12 +711,12 @@ export class ArduinoConfigParser {
             // fqbnParams.push(`PartitionScheme=${PartitionScheme}`);
             // fqbnParams.push(`PSRAM=${psram}`);
             // fqbnParams.push(`EraseFlash=${eraseFlash}`);
-            
+
             // 动态添加菜单选项参数
             this.selectedMenuOptions.forEach((selectedValue, menuType) => {
                 fqbnParams.push(`${menuType}=${selectedValue}`);
             });
-            
+
             // 生成最终的 FQBN
             boardConfig['build.fqbn'] = fqbn + ':' + fqbnParams.join(',');
         }
@@ -751,19 +751,22 @@ export class ArduinoConfigParser {
             'runtime.tools.xtensa-esp32s3-elf-gcc.path': process.env['COMPILER_PATH'] || await this.findToolPath('xtensa-esp32s3-elf-gcc', toolVersions?.['xtensa-esp32s3-elf-gcc'] || ''),
             'runtime.tools.riscv32-esp-elf-gcc.path': process.env['COMPILER_PATH'] || await this.findToolPath('riscv32-esp-elf-gcc', toolVersions?.['riscv32-esp-elf-gcc'] || ''),
             'runtime.tools.arm-none-eabi-gcc.path': process.env['COMPILER_PATH'] || await this.findToolPath('arm-none-eabi-gcc', toolVersions?.['arm-none-eabi-gcc'] || ''),
-            'runtime.tools.arm-none-eabi-gcc-7-2017q4.path': process.env['COMPILER_PATH'] || await this.findToolPath('arm-none-eabi-gcc', toolVersions?.['arm-none-eabi-gcc'] || ''),
+            'runtime.tools.xpack-arm-none-eabi-gcc.path': process.env['COMPILER_PATH'] || await this.findToolPath('xpack-arm-none-eabi-gcc', toolVersions?.['xpack-arm-none-eabi-gcc'] || ''),
+            // 'runtime.tools.arm-none-eabi-gcc-7-2017q4.path': process.env['COMPILER_PATH'] || await this.findToolPath('arm-none-eabi-gcc', toolVersions?.['arm-none-eabi-gcc'] || ''),
+
+
             'runtime.tools.esp32-arduino-libs.path': process.env['ESP32_ARDUINO_LIBS_PATH'] || '%ESP32_ARDUINO_LIBS_PATH%',
             'runtime.tools.esptool_py.path': process.env['ESPTOOL_PY_PATH'],
             'runtime.tools.pqt-gcc.path': process.env['PQT_GCC_PATH'] || await this.findToolPath('pqt-gcc'),
             'runtime.tools.pqt-python3.path': await this.findToolPath('pqt-python3'),
             'runtime.tools.pqt-picotool.path': await this.findToolPath('pqt-picotool'),
-            'runtime.tools.xpack-arm-none-eabi-gcc-14.2.1-1.1.path': await this.findToolPath('xpack-arm-none-eabi-gcc'),
+            // 'runtime.tools.xpack-arm-none-eabi-gcc-14.2.1-1.1.path': await this.findToolPath('xpack-arm-none-eabi-gcc'),
             'runtime.tools.STM32Tools.path': await this.findToolPath('STM32Tools'),
-            'runtime.tools.CMSIS-5.9.0.path': await this.findToolPath('CMSIS', toolVersions?.['CMSIS'] || ''),
+            'runtime.tools.CMSIS.path': await this.findToolPath('CMSIS', toolVersions?.['CMSIS'] || ''),
             'runtime.tools.STM32_SVD.path': await this.findToolPath('STM32_SVD'),
-            'runtime.tools.arm-none-eabi-gcc-4.8.3-2014q1.path': await this.findToolPath('arm-none-eabi-gcc', toolVersions?.['arm-none-eabi-gcc'] || ''),
-            'runtime.tools.gcc-arm-none-eabi-5_2-2015q4.path': await this.findToolPath('arm-none-eabi-gcc', toolVersions?.['arm-none-eabi-gcc'] || ''),
-            'runtime.tools.CMSIS-5.7.0.path': await this.findToolPath('CMSIS', toolVersions?.['CMSIS'] || ''),
+            // 'runtime.tools.arm-none-eabi-gcc-4.8.3-2014q1.path': await this.findToolPath('arm-none-eabi-gcc', toolVersions?.['arm-none-eabi-gcc'] || ''),
+            // 'runtime.tools.gcc-arm-none-eabi-5_2-2015q4.path': await this.findToolPath('arm-none-eabi-gcc', toolVersions?.['arm-none-eabi-gcc'] || ''),
+            // 'runtime.tools.CMSIS-5.7.0.path': await this.findToolPath('CMSIS', toolVersions?.['CMSIS'] || ''),
             'build.system.path': path.join(process.env['SDK_PATH'], 'system'),
             'build.toolchainpkg': toolchainPkg,
             'build.toolchain': boardConfig['build.toolchain'] || (fqbnObj.package === 'rp2040' ? 'arm-none-eabi' : ''),
@@ -793,13 +796,17 @@ export class ArduinoConfigParser {
                 // 使用 escapeDefineForShell 正确处理 shell 特殊字符（如括号）
                 return escapeDefineForShell(macro);
             }).join(' ');
-            
+
             platformConfig['build.macros'] = macroFlags;
         }
 
         // 设置编译器路径
-        process.env['COMPILER_PATH'] = process.env['COMPILER_PATH'] || platformConfig['compiler.path'] || platformConfig['runtime.tools.avr-gcc.path'];
-        
+        process.env['COMPILER_PATH'] =
+            process.env['COMPILER_PATH'] ||
+            platformConfig['compiler.path'] ||
+            platformConfig['runtime.tools.avr-gcc.path'];
+
+        process.env['COMPILER_GPP_PATH'] = platformConfig['compiler.path'] + platformConfig['compiler.cpp.cmd'];
         // console.log(`process.env['COMPILER_PATH']:`, process.env['COMPILER_PATH'], platformConfig);
 
         // 设置 SDK_CORE_PATH
@@ -812,8 +819,6 @@ export class ArduinoConfigParser {
         if (platformConfig['compiler.sdk.path']) {
             process.env['COMPILER_SDK_PATH'] = platformConfig['compiler.sdk.path']
         }
-        // console.log(platformConfig);
-        process.env['COMPILER_GPP_PATH'] = platformConfig['compiler.path'] + platformConfig['compiler.cpp.cmd'];
 
         // 构建最终配置
         const result: BoardParseResult = {
@@ -864,14 +869,14 @@ export class ArduinoConfigParser {
 
                     // 移除板卡名称前缀，只保留配置项名称
                     const configKey = key.substring(boardPrefix.length);
-                    
+
                     // 检查是否为菜单项配置（格式：menu.menuType.option.xxx）
                     if (configKey.startsWith('menu.')) {
                         const menuMatch = configKey.match(/^menu\.([^.]+)\.([^.]+)/);
                         if (menuMatch) {
                             const menuType = menuMatch[1];
                             const menuOption = menuMatch[2];
-                            
+
                             // 如果用户指定了这个菜单类型的值，只保留用户选择的选项
                             if (buildProperties[menuType]) {
                                 if (menuOption === buildProperties[menuType]) {
@@ -900,7 +905,7 @@ export class ArduinoConfigParser {
         }
     }
 
-    async findToolPath(toolName, version='') {
+    async findToolPath(toolName, version = '') {
         let toolsBasePath: string;
 
         if (process.env['TOOLS_PATH']) {
@@ -909,7 +914,7 @@ export class ArduinoConfigParser {
             // console.log(`使用自定义工具路径: ${toolsBasePath}`);
         } else {
             // 使用默认 Arduino15 路径，根据操作系统选择正确的基础路径
-            const arduino15BasePath = os.platform() === 'win32' 
+            const arduino15BasePath = os.platform() === 'win32'
                 ? path.join(os.homedir(), 'AppData', 'Local', 'Arduino15')
                 : path.join(os.homedir(), 'Library', 'Arduino15');
             let ARDUINO15_PACKAGE_PATH = path.join(arduino15BasePath, 'packages', process.env['package']);
@@ -940,6 +945,28 @@ export class ArduinoConfigParser {
                 return result[0];
             }
         }
+
+        // 精确匹配未找到时，尝试包含匹配（如 arm-none-eabi-gcc -> xpack-arm-none-eabi-gcc）
+        const fuzzyPatterns = [
+            path.join(toolsBasePath, `*${toolName}@*`).replace(/\\/g, '/'),
+            path.join(toolsBasePath, `*${toolName}*`, '*').replace(/\\/g, '/')
+        ];
+
+        for (const pattern of fuzzyPatterns) {
+            const result = await glob(pattern, { absolute: true });
+            if (result && result.length > 0) {
+                if (result.length > 1 && version) {
+                    for (const p of result) {
+                        const pVersion = path.basename(p).split('@')[1];
+                        if (pVersion === version) {
+                            return p;
+                        }
+                    }
+                }
+                return result[0];
+            }
+        }
+
         // console.warn(`未找到工具: ${toolName} 在路径: ${toolsBasePath}`);
         return null;
     }
