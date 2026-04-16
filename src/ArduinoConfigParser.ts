@@ -196,7 +196,7 @@ export class ArduinoConfigParser {
                     const expanded = this.expandVariablesOptimized(original, variables, variableNames);
 
                     // 检测间接循环引用：如果扩展后的字符串变得过长
-                    if (expanded.length > 5000) { // 增加阈值，从2000增加到5000
+                    if (expanded.length > 500000) { // 增加阈值，从2000增加到5000
                         console.warn(`⚠️  检测到可能的间接循环引用: ${key}`);
                         // console.log(`   变量值: ${original}`);
                         // console.log(`   扩展后: ${expanded}`);
@@ -748,6 +748,8 @@ export class ArduinoConfigParser {
             'runtime.tools.avr-gcc.path': process.env['COMPILER_PATH'] || await this.findToolPath('avr-gcc', toolVersions?.['avr-gcc'] || ''),
             'runtime.tools.esp-x32.path': process.env['COMPILER_PATH'] || await this.findToolPath('esp-x32', toolVersions?.['esp-x32'] || ''),
             'runtime.tools.esp-rv32.path': process.env['COMPILER_PATH'] || await this.findToolPath('esp-rv32', toolVersions?.['esp-rv32'] || ''),
+            'runtime.tools.xtensa-esp32s3-elf-gcc.path': process.env['COMPILER_PATH'] || await this.findToolPath('xtensa-esp32s3-elf-gcc', toolVersions?.['xtensa-esp32s3-elf-gcc'] || ''),
+            'runtime.tools.riscv32-esp-elf-gcc.path': process.env['COMPILER_PATH'] || await this.findToolPath('riscv32-esp-elf-gcc', toolVersions?.['riscv32-esp-elf-gcc'] || ''),
             'runtime.tools.arm-none-eabi-gcc.path': process.env['COMPILER_PATH'] || await this.findToolPath('arm-none-eabi-gcc', toolVersions?.['arm-none-eabi-gcc'] || ''),
             'runtime.tools.arm-none-eabi-gcc-7-2017q4.path': process.env['COMPILER_PATH'] || await this.findToolPath('arm-none-eabi-gcc', toolVersions?.['arm-none-eabi-gcc'] || ''),
             'runtime.tools.esp32-arduino-libs.path': process.env['ESP32_ARDUINO_LIBS_PATH'] || '%ESP32_ARDUINO_LIBS_PATH%',
