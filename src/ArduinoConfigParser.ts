@@ -745,33 +745,29 @@ export class ArduinoConfigParser {
         let moreConfig = {
             'runtime.os': os.platform() === 'win32' ? 'windows' : 'unknown',
             'runtime.ide.version': '10607',
-            'runtime.tools.avr-gcc.path': process.env['COMPILER_PATH'] || await this.findToolPath('avr-gcc', toolVersions?.['avr-gcc'] || ''),
-            'runtime.tools.esp-x32.path': process.env['COMPILER_PATH'] || await this.findToolPath('esp-x32', toolVersions?.['esp-x32'] || ''),
-            'runtime.tools.esp-rv32.path': process.env['COMPILER_PATH'] || await this.findToolPath('esp-rv32', toolVersions?.['esp-rv32'] || ''),
-            'runtime.tools.xtensa-esp32s3-elf-gcc.path': process.env['COMPILER_PATH'] || await this.findToolPath('xtensa-esp32s3-elf-gcc', toolVersions?.['xtensa-esp32s3-elf-gcc'] || ''),
-            'runtime.tools.riscv32-esp-elf-gcc.path': process.env['COMPILER_PATH'] || await this.findToolPath('riscv32-esp-elf-gcc', toolVersions?.['riscv32-esp-elf-gcc'] || ''),
-            'runtime.tools.arm-none-eabi-gcc.path': process.env['COMPILER_PATH'] || await this.findToolPath('arm-none-eabi-gcc', toolVersions?.['arm-none-eabi-gcc'] || ''),
-            'runtime.tools.xpack-arm-none-eabi-gcc.path': process.env['COMPILER_PATH'] || await this.findToolPath('xpack-arm-none-eabi-gcc', toolVersions?.['xpack-arm-none-eabi-gcc'] || ''),
-            // 'runtime.tools.arm-none-eabi-gcc-7-2017q4.path': process.env['COMPILER_PATH'] || await this.findToolPath('arm-none-eabi-gcc', toolVersions?.['arm-none-eabi-gcc'] || ''),
-
-
-            'runtime.tools.esp32-arduino-libs.path': process.env['ESP32_ARDUINO_LIBS_PATH'] || '%ESP32_ARDUINO_LIBS_PATH%',
-            'runtime.tools.esptool_py.path': process.env['ESPTOOL_PY_PATH'],
-            'runtime.tools.pqt-gcc.path': process.env['PQT_GCC_PATH'] || await this.findToolPath('pqt-gcc'),
-            'runtime.tools.pqt-python3.path': await this.findToolPath('pqt-python3'),
-            'runtime.tools.pqt-picotool.path': await this.findToolPath('pqt-picotool'),
-            // 'runtime.tools.xpack-arm-none-eabi-gcc-14.2.1-1.1.path': await this.findToolPath('xpack-arm-none-eabi-gcc'),
-            'runtime.tools.STM32Tools.path': await this.findToolPath('STM32Tools'),
-            'runtime.tools.CMSIS.path': await this.findToolPath('CMSIS', toolVersions?.['CMSIS'] || ''),
-            'runtime.tools.STM32_SVD.path': await this.findToolPath('STM32_SVD'),
+            // 'runtime.tools.avr-gcc.path': await this.findToolPath('avr-gcc', toolVersions?.['avr-gcc'] || ''),
+            // 'runtime.tools.esp-x32.path': await this.findToolPath('esp-x32', toolVersions?.['esp-x32'] || ''),
+            // 'runtime.tools.esp-rv32.path': await this.findToolPath('esp-rv32', toolVersions?.['esp-rv32'] || ''),
+            // 'runtime.tools.xtensa-esp32s3-elf-gcc.path': await this.findToolPath('xtensa-esp32s3-elf-gcc', toolVersions?.['xtensa-esp32s3-elf-gcc'] || ''),
+            // 'runtime.tools.riscv32-esp-elf-gcc.path': await this.findToolPath('riscv32-esp-elf-gcc', toolVersions?.['riscv32-esp-elf-gcc'] || ''),
+            // 'runtime.tools.arm-none-eabi-gcc.path': await this.findToolPath('arm-none-eabi-gcc', toolVersions?.['arm-none-eabi-gcc'] || ''),
+            // 'runtime.tools.xpack-arm-none-eabi-gcc.path': await this.findToolPath('xpack-arm-none-eabi-gcc', toolVersions?.['xpack-arm-none-eabi-gcc'] || ''),
+            // 'runtime.tools.arm-none-eabi-gcc-7-2017q4.path': await this.findToolPath('arm-none-eabi-gcc', toolVersions?.['arm-none-eabi-gcc'] || ''),
+            // 'runtime.tools.esp32-arduino-libs.path': process.env['ESP32_ARDUINO_LIBS_PATH'] || '%ESP32_ARDUINO_LIBS_PATH%',
+            // 'runtime.tools.esptool_py.path': process.env['ESPTOOL_PY_PATH'],
+            // 'runtime.tools.pqt-gcc.path': process.env['PQT_GCC_PATH'] || await this.findToolPath('pqt-gcc'),
+            // 'runtime.tools.pqt-python3.path': await this.findToolPath('pqt-python3'),
+            // 'runtime.tools.pqt-picotool.path': await this.findToolPath('pqt-picotool'),
+            // // 'runtime.tools.xpack-arm-none-eabi-gcc-14.2.1-1.1.path': await this.findToolPath('xpack-arm-none-eabi-gcc'),
+            // 'runtime.tools.STM32Tools.path': await this.findToolPath('STM32Tools'),
+            // 'runtime.tools.CMSIS.path': await this.findToolPath('CMSIS', toolVersions?.['CMSIS'] || ''),
+            // 'runtime.tools.STM32_SVD.path': await this.findToolPath('STM32_SVD'),
             // 'runtime.tools.arm-none-eabi-gcc-4.8.3-2014q1.path': await this.findToolPath('arm-none-eabi-gcc', toolVersions?.['arm-none-eabi-gcc'] || ''),
             // 'runtime.tools.gcc-arm-none-eabi-5_2-2015q4.path': await this.findToolPath('arm-none-eabi-gcc', toolVersions?.['arm-none-eabi-gcc'] || ''),
             // 'runtime.tools.CMSIS-5.7.0.path': await this.findToolPath('CMSIS', toolVersions?.['CMSIS'] || ''),
             'build.system.path': path.join(process.env['SDK_PATH'], 'system'),
             'build.toolchainpkg': toolchainPkg,
             'build.toolchain': boardConfig['build.toolchain'] || (fqbnObj.package === 'rp2040' ? 'arm-none-eabi' : ''),
-            // 'build.debug_port': '',
-            // 'build.debug_level': '',
             'build.flash_total': boardConfig['build.flash_total'] || '2097152', // 使用菜单配置或默认值
             'build.project_name': process.env['SKETCH_NAME'],
             'includes': '%INCLUDE_PATHS%',
@@ -931,11 +927,11 @@ export class ArduinoConfigParser {
     }
 
     /**
-     * 扫描 platform.txt 中带版本号的 runtime.tools.*.path 键，
+     * 扫描 platform.txt 中所有 runtime.tools.*.path 键，
      * 自动去掉版本号后使用 findToolPath 解析其真实路径。
      * @param platformPath platform.txt 路径
      * @param toolVersions 工具版本映射
-     * @returns runtime.tools.<name-with-version>.path 到实际路径的映射
+     * @returns runtime.tools.<toolId>.path 到实际路径的映射
      */
     private async resolveVersionedToolPaths(
         platformPath: string,
@@ -954,16 +950,13 @@ export class ArduinoConfigParser {
                 seen.add(fullKey);
 
                 const baseName = this.stripToolVersion(toolId);
-                // 未检测到版本号则跳过（非版本化键由主流程处理）
-                if (baseName === toolId) { continue; }
-
                 const toolPath = await this.findToolPath(baseName, toolVersions?.[baseName] || '');
                 if (toolPath) {
                     result[fullKey] = toolPath;
                 }
             }
         } catch (e) {
-            console.warn(`解析版本化工具路径失败: ${e}`);
+            console.warn(`解析工具路径失败: ${e}`);
         }
         return result;
     }
