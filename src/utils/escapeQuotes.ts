@@ -13,6 +13,14 @@ export function escapeQuotedDefines(args: string): string {
     // 去掉外层单引号，转义内部双引号，添加外层双引号（Arduino IDE 格式）
     return `"-D${macroName}=\\"${value}\\""`;
   });
+
+  // 处理被单引号包围的简单 -D 宏定义（无双引号值）
+  // 匹配 '-DMACRO' 或 '-DMACRO=value' 格式（值不含双引号和空格）
+  // Windows 上单引号不被 shell 去除，会导致 GCC 无法识别这些宏定义
+  args = args.replace(/'(-D[A-Za-z_][A-Za-z0-9_]*(?:=[^\s'"]*)?)'/g, '$1');
+
+  // 处理被单引号包围的 -I 路径（来自 platform.txt）
+  args = args.replace(/'(-I[^\s'"]*)'/g, '$1');
   
   // 然后处理普通的 -D 宏定义（带双引号的值）
   const quotedDefineRegex = /-D([A-Z_][A-Z0-9_]*)="([^"]*)"/g;
