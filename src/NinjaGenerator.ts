@@ -221,7 +221,7 @@ export class NinjaGenerator {
       name: 'link',
       command: this.formatCommand(this.compileConfig.args.ld, {
         compiler: '$ld',
-        inputs: '$in',
+        inputs: '$link_inputs',
         output: '$out',
         ldflags: '$ldflags'
       }),
@@ -503,6 +503,14 @@ export class NinjaGenerator {
     const hexFile = `${sketchName}.hex`;
     const eepFile = `${sketchName}.eep`;
     const binFile = `${sketchName}.bin`;
+    const directLinkInputs = this.objectFiles.filter(file => !file.endsWith('.a'));
+    const archiveLinkInputs = this.objectFiles.filter(file => file.endsWith('.a'));
+    const wholeArchiveInputs = directLinkInputs.length > 0
+      ? `-Wl,--whole-archive ${directLinkInputs.join(' ')} -Wl,--no-whole-archive`
+      : '';
+    const linkInputsArg = [wholeArchiveInputs, ...archiveLinkInputs]
+      .filter(Boolean)
+      .join(' ');
 
     // 准备预编译库标志
     const precompiledLibFlags: string[] = [];
@@ -525,9 +533,10 @@ export class NinjaGenerator {
       rule: 'link',
       inputs: linkInputs,
       implicit: ['core.a'], // core.a作为隐式依赖，确保在链接前被构建
-      variables: precompiledLibFlags.length > 0 ? {
+      variables: {
+        link_inputs: linkInputsArg,
         ldflags: precompiledLibFlags.join(' ')
-      } : undefined
+      }
     };
 
     this.ninjaFile.builds.push(linkBuild);
@@ -604,8 +613,7 @@ export class NinjaGenerator {
 
     // 处理链接时的对象文件路径
     if (command.includes('%OBJECT_FILE_PATHS%')) {
-      const objectPattern = replacements.inputs || '$in';
-      command = command.replace(/%OBJECT_FILE_PATHS%/g, `-Wl,--whole-archive ${objectPattern} -Wl,--no-whole-archive`);
+      command = command.replace(/%OBJECT_FILE_PATHS%/g, replacements.inputs || '$in');
     }
 
     // 处理预编译库
