@@ -21,6 +21,10 @@ function isTruthyEnv(name: string): boolean {
   return value === '1' || value?.toLowerCase() === 'true';
 }
 
+function getSourceBaseName(sourcePath: string): string {
+  return path.parse(sourcePath).name;
+}
+
 /**
  * 生成同名 sketch 不冲突的默认构建目录。
  * 路径布局保持现有 CLI 约定，项目路径哈希用于区分不同目录下的同名文件。
@@ -108,8 +112,8 @@ program
 
 program
   .command('compile')
-  .description('Compile Arduino sketch')
-  .argument('<sketch>', 'Path to Arduino sketch (.ino file)')
+  .description('Compile Arduino source')
+  .argument('<sketch>', 'Path to Arduino source (.ino or .cpp file)')
   .option('-b, --board <board>', 'Target board (e.g., arduino:avr:uno)', 'arduino:avr:uno')
   .option('--sdk-path <path>', 'Path to Arduino SDK')
   .option('--tools-path <path>', 'Path to additional tools')
@@ -195,7 +199,7 @@ program
     // 设置默认的 build 路径到 AppData\Local\aily-builder\project\<sketchname>_<md5>
     const sketchPath = path.resolve(sketch);
     const sketchDirPath = path.dirname(sketchPath);
-    const sketchName = path.basename(sketchPath, '.ino');
+    const sketchName = getSourceBaseName(sketchPath);
 
     // 为了避免不同项目的同名sketch冲突，使用项目路径的MD5哈希值
     const defaultBuildPath = getDefaultBuildPath(sketchPath, sketchName);
@@ -326,8 +330,8 @@ program
 
 program
   .command('preprocess')
-  .description('Preprocess Arduino sketch without compilation (dependency analysis, config generation, prebuild hooks)')
-  .argument('<sketch>', 'Path to Arduino sketch (.ino file)')
+  .description('Preprocess Arduino source without compilation (dependency analysis, config generation, prebuild hooks)')
+  .argument('<sketch>', 'Path to Arduino source (.ino or .cpp file)')
   .option('-b, --board <board>', 'Target board (e.g., arduino:avr:uno)', 'arduino:avr:uno')
   .option('--sdk-path <path>', 'Path to Arduino SDK')
   .option('--tools-path <path>', 'Path to additional tools')
@@ -418,7 +422,7 @@ Note: This command only performs preprocessing without actual compilation.
     // 设置路径
     const sketchPath = path.resolve(sketch);
     const sketchDirPath = path.dirname(sketchPath);
-    const sketchName = path.basename(sketchPath, '.ino');
+    const sketchName = getSourceBaseName(sketchPath);
 
     const defaultBuildPath = getDefaultBuildPath(sketchPath, sketchName);
 
