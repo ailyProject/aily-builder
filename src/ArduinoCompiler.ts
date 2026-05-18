@@ -351,8 +351,9 @@ export class ArduinoCompiler {
       throw new Error(`Sketch file not found: ${sketchPath}`);
     }
 
-    if (!sketchPath.endsWith('.ino')) {
-      throw new Error(`Invalid sketch file extension. Expected .ino file: ${sketchPath}`);
+    const sourceExt = path.extname(sketchPath).toLowerCase();
+    if (sourceExt !== '.ino' && sourceExt !== '.cpp') {
+      throw new Error(`Invalid sketch file extension. Expected .ino or .cpp file: ${sketchPath}`);
     }
 
     const content = await fs.readFile(sketchPath, 'utf-8');
@@ -371,6 +372,11 @@ export class ArduinoCompiler {
       // 创建构建目录
       await fs.ensureDir(buildPath);
 
+      const sourcePath = process.env['SKETCH_PATH']!;
+      const sourceExt = path.extname(sourcePath).toLowerCase();
+      const isInoSource = sourceExt === '.ino';
+      const isCppSource = sourceExt === '.cpp';
+
       // 使用GCC预处理
       // let command = `${process.env['COMPILER_GPP_PATH']} -o "${path.join(process.env['BUILD_PATH'], process.env['SKETCH_NAME'] + '.cpp')}" -x c++ -fpreprocessed -dD -E ${process.env['SKETCH_PATH']}`
       // try {
@@ -380,22 +386,28 @@ export class ArduinoCompiler {
       //   console.error(error);
       // }
 
-      // 直接复制并转换为 .cpp 文件
+      // 准备构建目录中的 .cpp 文件
       const targetPath = path.join(process.env['BUILD_PATH']!, process.env['SKETCH_NAME'] + '.cpp');
 
-      // 读取原始 .ino 文件内容
-      let content = await fs.readFile(process.env['SKETCH_PATH']!, 'utf-8');
-
-      // 检查是否已包含 Arduino.h
-      const hasArduinoInclude = /#include\s*[<"]Arduino\.h[>"]/i.test(content);
-
-      if (!hasArduinoInclude) {
-        this.logger.verbose('Adding #include <Arduino.h> to sketch');
-        // 在文件开头添加 Arduino.h
-        content = '#include <Arduino.h>\n' + content;
+      if (!isInoSource && !isCppSource) {
+        throw new Error(`Unsupported sketch extension for build preparation: ${sourceExt}`);
       }
 
-      // 添加前向声明
+      // 读取原始源文件内容
+      let content = await fs.readFile(sourcePath, 'utf-8');
+
+      if (isInoSource) {
+        // 检查是否已包含 Arduino.h
+        const hasArduinoInclude = /#include\s*[<"]Arduino\.h[>"]/i.test(content);
+
+        if (!hasArduinoInclude) {
+          this.logger.verbose('Adding #include <Arduino.h> to sketch');
+          // 在文件开头添加 Arduino.h
+          content = '#include <Arduino.h>\n' + content;
+        }
+      }
+
+      // 为 .ino 和“sketch 风格”的 .cpp 都尝试补前向声明
       const forwardDeclarations = this.generateForwardDeclarations(content);
       if (forwardDeclarations.length > 0) {
         this.logger.verbose(`Adding ${forwardDeclarations.length} forward declarations`);
@@ -424,8 +436,17 @@ export class ArduinoCompiler {
         }
       }
 
+      if (isCppSource && forwardDeclarations.length === 0) {
+        if (path.resolve(sourcePath) !== path.resolve(targetPath)) {
+          await fs.copyFile(sourcePath, targetPath);
+        }
+        this.logger.verbose(`Copied .cpp source to build directory: ${targetPath}`);
+        process.env['SKETCH_PATH'] = targetPath;
+        return;
+      }
+
       // 添加行号指令（用于更好的错误定位）
-      const lineDirective = `# 1 "${process.env['SKETCH_PATH']!.replace(/\\/g, '\\\\')}"\n`;
+      const lineDirective = `# 1 "${sourcePath.replace(/\\/g, '\\\\')}"\n`;
       content = lineDirective + content;
 
       // 写入新的 .cpp 文件
