@@ -1,3 +1,6 @@
+import path from 'path';
+import { extractCommandExecutable } from './ExtractCompilerArgs';
+
 // 提取编译程序名称
 export function extractCompilerName(commandString) {
     // 正则表达式说明：
@@ -17,16 +20,6 @@ export function extractCompilerName(commandString) {
 }
 
 export function extractToolName(commandString) {
-    // 使用空格切割命令字符串，取第一个元素作为路径
-    const parts = commandString.split(' ');
-    const toolPath = parts[0];
-    
-    // 提取路径中的文件名
-    // 处理 Windows 和 Unix 风格的路径分隔符
-    const pathSeparatorRegex = /[\\\/]/;
-    const pathParts = toolPath.split(pathSeparatorRegex);
-    const fileName = pathParts[pathParts.length - 1];
-    
-    // 移除可能的引号
-    return fileName.replace(/^["']|["']$/g, '');
+    const toolPath = extractCommandExecutable(commandString);
+    return path.basename(toolPath);
 }

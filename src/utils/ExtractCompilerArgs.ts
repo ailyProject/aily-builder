@@ -1,13 +1,43 @@
+export function extractCommandExecutable(str: string): string {
+  const parsed = splitCommand(str);
+  return parsed.executable;
+}
+
 export function removeCompilerPath(str: string): string {
+  const parsed = splitCommand(str);
+  return parsed.args;
+}
+
+function splitCommand(str: string): { executable: string; args: string } {
   if (!str || typeof str !== 'string') {
-    return '';
+    return { executable: '', args: '' };
   }
-  
-  const firstSpaceIndex = str.indexOf(' ');
+
+  const command = str.trim();
+  if (!command) {
+    return { executable: '', args: '' };
+  }
+
+  const quote = command[0];
+  if (quote === '"' || quote === "'") {
+    const endQuoteIndex = command.indexOf(quote, 1);
+    if (endQuoteIndex === -1) {
+      return { executable: command.substring(1), args: '' };
+    }
+
+    return {
+      executable: command.substring(1, endQuoteIndex),
+      args: command.substring(endQuoteIndex + 1).trimStart()
+    };
+  }
+
+  const firstSpaceIndex = command.search(/\s/);
   if (firstSpaceIndex === -1) {
-    // 如果没有空格，说明只有一个参数，返回空字符串
-    return '';
+    return { executable: command, args: '' };
   }
-  
-  return str.substring(firstSpaceIndex + 1);
+
+  return {
+    executable: command.substring(0, firstSpaceIndex),
+    args: command.substring(firstSpaceIndex + 1).trimStart()
+  };
 }
