@@ -96,6 +96,13 @@ export class ArduinoCompiler {
 
       // 3. 确保构建目录存在（pre-build hooks 需要）
       await fs.ensureDir(options.buildPath);
+      // 检测buildpath中是否有partitions.csv，如果有则删除
+      const partitionsPath = path.join(options.buildPath, 'partitions.csv');
+      if (await fs.pathExists(partitionsPath)) {
+        await fs.remove(partitionsPath);
+        // this.logger.debug(`Removed existing partitions.csv from build directory: ${partitionsPath}`);
+      }
+
 
       // 4. 并行执行：预处理钩子、构建编译配置、依赖分析
       this.logger.info('Starting parallel preprocessing tasks...');
@@ -134,7 +141,7 @@ export class ArduinoCompiler {
 
       // 保存编译所需的环境变量
       const envVars: Record<string, string> = {};
-      
+
       // 保存所有可能与编译相关的环境变量
       // 包括：路径、工具、编译器等
       for (const [key, value] of Object.entries(process.env)) {
@@ -205,7 +212,7 @@ export class ArduinoCompiler {
     } else {
       // 执行预处理
       const preprocessResult = await this.preprocess(options);
-      
+
       if (!preprocessResult.success) {
         return {
           success: false,
@@ -500,6 +507,7 @@ export class ArduinoCompiler {
 
   private async runCommand(command: string): Promise<string> {
     command = sanitizeNonAsciiPaths(command);
+    this.logger.info(`Executing command: ${command}`);
     return new Promise((resolve, reject) => {
       const child = spawn(command, [], {
         shell: true,
@@ -714,24 +722,24 @@ export class ArduinoCompiler {
   private generateForwardDeclarations(content: string): string[] {
     // 移除注释和字符串，避免误匹配
     const cleanedContent = this.removeCommentsAndStrings(content);
-    
+
     // 解析所有函数定义
     const functionDefs = this.parseFunctionDefinitions(cleanedContent);
-    
+
     // 解析所有函数调用
     const functionCalls = this.parseFunctionCalls(cleanedContent);
-    
+
     // 找出需要前向声明的函数（在调用位置之前未定义的函数）
     const forwardDeclarations: string[] = [];
     const declaredFunctions = new Set<string>();
-    
+
     // 按照在代码中出现的位置排序函数定义
     const sortedDefs = [...functionDefs].sort((a, b) => a.position - b.position);
-    
+
     for (const call of functionCalls) {
       // 检查该函数调用是否在其定义之前
       const funcDef = functionDefs.find(def => def.name === call.name);
-      
+
       if (funcDef && call.position < funcDef.position && !declaredFunctions.has(call.name)) {
         // 该函数在定义之前被调用，需要前向声明
         forwardDeclarations.push(funcDef.declaration + ';');
@@ -739,7 +747,7 @@ export class ArduinoCompiler {
         this.logger.verbose(`Forward declaration needed for: ${call.name}`);
       }
     }
-    
+
     return forwardDeclarations;
   }
 
@@ -751,7 +759,7 @@ export class ArduinoCompiler {
   private removeCommentsAndStrings(content: string): string {
     let result = '';
     let i = 0;
-    
+
     while (i < content.length) {
       // 检查单行注释
       if (content[i] === '/' && content[i + 1] === '/') {
@@ -815,7 +823,7 @@ export class ArduinoCompiler {
         i++;
       }
     }
-    
+
     return result;
   }
 
@@ -824,12 +832,12 @@ export class ArduinoCompiler {
    * @param content 已清理的代码内容
    * @returns 函数定义信息数组
    */
-  private parseFunctionDefinitions(content: string): Array<{name: string, declaration: string, position: number}> {
-    const functions: Array<{name: string, declaration: string, position: number}> = [];
-    
+  private parseFunctionDefinitions(content: string): Array<{ name: string, declaration: string, position: number }> {
+    const functions: Array<{ name: string, declaration: string, position: number }> = [];
+
     // 首先识别类/结构体的范围，以便排除成员函数
     const classRanges = this.findClassRanges(content);
-    
+
     // 匹配函数定义的正则表达式
     // 支持: 返回类型 函数名(参数列表) { 或 返回类型 函数名(参数列表) 换行 {
     // 改进：支持复合类型如 unsigned long, signed int, long long 等
@@ -840,7 +848,7 @@ export class ArduinoCompiler {
     const sizeModifier = '(?:(?:long|short)\\s+)*';
     const customType = '(?:[A-Z][a-zA-Z0-9_]*)';
     const pointerRef = '(?:\\s*[*&])?';
-    
+
     // 完整的返回类型模式
     const returnTypePattern = `(${typeModifiers}${signModifier}${sizeModifier}(?:${typeKeywords}|${customType})${pointerRef}\\s*)`;
     const functionRegex = new RegExp(
@@ -848,41 +856,41 @@ export class ArduinoCompiler {
       // `^[ \\t]*${returnTypePattern}([a-zA-Z_][a-zA-Z0-9_]*)\\s*\\(([^{]*?)\\)\\s*(?:const)?\\s*\\{`,
       'gmu'
     );
-    
+
     let match;
     while ((match = functionRegex.exec(content)) !== null) {
       const returnType = match[1].trim();
       const funcName = match[2];
       let params = match[3].trim();
-      
+
       // 跳过 setup 和 loop 函数，它们是 Arduino 的入口函数
       // 也跳过 C++ 关键字
-      if (funcName === 'setup' || funcName === 'loop' || funcName === 'if' || 
-          funcName === 'while' || funcName === 'for' || funcName === 'switch') {
+      if (funcName === 'setup' || funcName === 'loop' || funcName === 'if' ||
+        funcName === 'while' || funcName === 'for' || funcName === 'switch') {
         continue;
       }
-      
+
       // 检查该函数是否在类定义内部
       const funcPosition = match.index;
-      const isInsideClass = classRanges.some(range => 
+      const isInsideClass = classRanges.some(range =>
         funcPosition > range.start && funcPosition < range.end
       );
-      
+
       if (isInsideClass) {
         // 跳过类成员函数
         continue;
       }
-      
+
       // 处理嵌套括号的参数（如函数指针）
       params = this.extractBalancedParams(content, match.index + match[0].indexOf('('));
-      
+
       functions.push({
         name: funcName,
         declaration: `${returnType} ${funcName}(${params})`,
         position: match.index
       });
     }
-    
+
     return functions;
   }
 
@@ -891,21 +899,21 @@ export class ArduinoCompiler {
    * @param content 代码内容
    * @returns 类定义的范围数组
    */
-  private findClassRanges(content: string): Array<{start: number, end: number}> {
-    const ranges: Array<{start: number, end: number}> = [];
-    
+  private findClassRanges(content: string): Array<{ start: number, end: number }> {
+    const ranges: Array<{ start: number, end: number }> = [];
+
     // 匹配 class 或 struct 关键字
     const classRegex = /\b(?:class|struct)\s+\w+[^{]*\{/g;
-    
+
     let match;
     while ((match = classRegex.exec(content)) !== null) {
       const start = match.index;
       const braceStart = match.index + match[0].length - 1;
-      
+
       // 找到匹配的结束大括号
       let braceCount = 1;
       let i = braceStart + 1;
-      
+
       while (i < content.length && braceCount > 0) {
         if (content[i] === '{') {
           braceCount++;
@@ -914,10 +922,10 @@ export class ArduinoCompiler {
         }
         i++;
       }
-      
+
       ranges.push({ start, end: i });
     }
-    
+
     return ranges;
   }
 
@@ -932,18 +940,18 @@ export class ArduinoCompiler {
     let parenCount = 0;
     let start = -1;
     let i = openParenIndex;
-    
+
     // 找到开括号
     while (i < content.length && content[i] !== '(') {
       i++;
     }
-    
+
     if (i >= content.length) return '';
-    
+
     start = i + 1;
     parenCount = 1;
     i++;
-    
+
     // 找到匹配的闭括号
     while (i < content.length && parenCount > 0) {
       if (content[i] === '(') {
@@ -953,7 +961,7 @@ export class ArduinoCompiler {
       }
       i++;
     }
-    
+
     return content.slice(start, i - 1).trim();
   }
 
@@ -962,31 +970,31 @@ export class ArduinoCompiler {
    * @param content 已清理的代码内容
    * @returns 函数调用信息数组
    */
-  private parseFunctionCalls(content: string): Array<{name: string, position: number}> {
-    const calls: Array<{name: string, position: number}> = [];
+  private parseFunctionCalls(content: string): Array<{ name: string, position: number }> {
+    const calls: Array<{ name: string, position: number }> = [];
     const seenCalls = new Map<string, number>(); // 记录每个函数首次调用的位置
-    
+
     // 匹配函数调用: 函数名(
     // 排除函数定义（后面跟着 { 或参数类型）
     const callRegex = /(?<![\p{L}\p{N}_])([\p{L}_][\p{L}\p{N}_]*)\s*\(/gu;
     // const callRegex = /\b([a-zA-Z_][a-zA-Z0-9_]*)\s*\(/g;
-    
+
     // C++ 关键字和常见内置函数，需要排除
     const keywords = new Set([
       'if', 'while', 'for', 'switch', 'catch', 'sizeof', 'typeof', 'alignof',
       'decltype', 'static_cast', 'dynamic_cast', 'const_cast', 'reinterpret_cast',
       'return', 'new', 'delete', 'throw'
     ]);
-    
+
     let match;
     while ((match = callRegex.exec(content)) !== null) {
       const funcName = match[1];
-      
+
       // 跳过关键字
       if (keywords.has(funcName)) {
         continue;
       }
-      
+
       // 只记录首次调用位置
       if (!seenCalls.has(funcName)) {
         seenCalls.set(funcName, match.index);
@@ -996,7 +1004,7 @@ export class ArduinoCompiler {
         });
       }
     }
-    
+
     return calls;
   }
 }
