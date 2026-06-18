@@ -37,18 +37,12 @@ export interface ConditionalInclude {
   isActive: boolean;
 }
 
-interface LibrarySignature {
-  sourceKeys: Set<string>;
-  headerKeys: Set<string>;
-}
-
 export class DependencyAnalyzer {
   private logger: Logger;
   private dependencyList: Map<string, Dependency>
   // private processedFiles: Set<string>;
   private macroDefinitions: Map<string, MacroDefinition>;
   private libraryMap: Map<string, Dependency>
-  private librarySignatureCache: Map<string, LibrarySignature>;
 
   /**
    * 构造函数，初始化预处理引擎
@@ -59,7 +53,6 @@ export class DependencyAnalyzer {
     // this.processedFiles = new Set<string>();
     this.dependencyList = new Map<string, Dependency>()
     this.macroDefinitions = new Map<string, MacroDefinition>();
-    this.librarySignatureCache = new Map<string, LibrarySignature>();
   }
 
   /**
@@ -121,8 +114,7 @@ export class DependencyAnalyzer {
     let resolveA = arduinoConfig.platform['compiler.libraries.ldflags'] ? true : false;
     await this.resolveDependencies(mainIncludeFiles, resolveA);
 
-    const dependencies = Array.from(this.dependencyList.values());
-    return await this.preferSdkLibraryImplementations(dependencies);
+    return Array.from(this.dependencyList.values());
   }
 
   /**
@@ -1190,167 +1182,6 @@ export class DependencyAnalyzer {
 
     // console.log(libraryMap);
     return libraryMap;
-  }
-
-  private async preferSdkLibraryImplementations(dependencies: Dependency[]): Promise<Dependency[]> {
-    const sdkLibrariesPath = process.env['SDK_CORE_LIBRARIES_PATH'];
-    const tempLibraryRoots = this.getTempLibraryRoots();
-
-    if (!sdkLibrariesPath || tempLibraryRoots.length === 0) {
-      return dependencies;
-    }
-
-    const sdkLibraries = dependencies.filter(dep =>
-      dep.type === 'library' && this.isPathWithin(dep.path, sdkLibrariesPath)
-    );
-    const tempLibraries = dependencies.filter(dep =>
-      dep.type === 'library' && tempLibraryRoots.some(root => this.isPathWithin(dep.path, root))
-    );
-
-    if (sdkLibraries.length === 0 || tempLibraries.length === 0) {
-      return dependencies;
-    }
-
-    const skippedLibraries = new Set<string>();
-
-    for (const tempLibrary of tempLibraries) {
-      const tempSignature = await this.getLibrarySignature(tempLibrary);
-      if (tempSignature.sourceKeys.size === 0) {
-        continue;
-      }
-
-      for (const sdkLibrary of sdkLibraries) {
-        const sdkSignature = await this.getLibrarySignature(sdkLibrary);
-        if (!this.areLibrariesEquivalent(tempSignature, sdkSignature)) {
-          continue;
-        }
-
-        skippedLibraries.add(this.getDependencyIdentity(tempLibrary));
-        this.logger.info(`[LIB_DEDUP] Prefer SDK library "${sdkLibrary.name}" over temp library "${tempLibrary.name}"`);
-        this.logger.debug(`[LIB_DEDUP] sdk=${sdkLibrary.path}, temp=${tempLibrary.path}`);
-        break;
-      }
-    }
-
-    if (skippedLibraries.size === 0) {
-      return dependencies;
-    }
-
-    this.logger.info(`[LIB_DEDUP] Removed ${skippedLibraries.size} temp libraries that closely match SDK implementations`);
-    return dependencies.filter(dep => !skippedLibraries.has(this.getDependencyIdentity(dep)));
-  }
-
-  private getTempLibraryRoots(): string[] {
-    const librariesPathEnv = process.env['LIBRARIES_PATH'];
-    if (!librariesPathEnv) {
-      return [];
-    }
-
-    const pathSeparator = process.platform === 'win32' ? ';' : ':';
-    return librariesPathEnv
-      .split(pathSeparator)
-      .map(libPath => libPath.trim())
-      .filter(Boolean)
-      .filter(libPath => this.isGeneratedTempLibraryRoot(libPath));
-  }
-
-  private isGeneratedTempLibraryRoot(libraryPath: string): boolean {
-    const normalizedPath = this.normalizePathForComparison(libraryPath);
-    return normalizedPath.includes('/.temp/libraries') || normalizedPath.includes('/temp/libraries');
-  }
-
-  private async getLibrarySignature(library: Dependency): Promise<LibrarySignature> {
-    const cacheKey = this.normalizePathForComparison(library.path);
-    const cachedSignature = this.librarySignatureCache.get(cacheKey);
-    if (cachedSignature) {
-      return cachedSignature;
-    }
-
-    const sourceKeys = new Set<string>();
-    for (const sourceFile of library.includes || []) {
-      const comparableKey = this.toComparableLibraryFileKey(library.path, sourceFile, true);
-      if (comparableKey) {
-        sourceKeys.add(comparableKey);
-      }
-    }
-
-    const headerKeys = new Set<string>();
-    const headerFiles = await this.scanDirectoryRecursive(library.path, ['.h', '.hpp']);
-    for (const headerFile of headerFiles) {
-      const comparableKey = this.toComparableLibraryFileKey(library.path, headerFile, true);
-      if (comparableKey) {
-        headerKeys.add(comparableKey);
-      }
-    }
-
-    const signature: LibrarySignature = {
-      sourceKeys,
-      headerKeys
-    };
-    this.librarySignatureCache.set(cacheKey, signature);
-    return signature;
-  }
-
-  private toComparableLibraryFileKey(libraryPath: string, filePath: string, stripExtension: boolean = false): string {
-    let relativePath = path.relative(libraryPath, filePath).replace(/\\/g, '/').toLowerCase();
-    if (!relativePath || relativePath.startsWith('..')) {
-      relativePath = path.basename(filePath).toLowerCase();
-    }
-
-    if (stripExtension) {
-      relativePath = relativePath.replace(/\.[^.]+$/, '');
-    }
-
-    return relativePath;
-  }
-
-  private areLibrariesEquivalent(left: LibrarySignature, right: LibrarySignature): boolean {
-    const sharedSourceCount = this.countSharedEntries(left.sourceKeys, right.sourceKeys);
-    if (sharedSourceCount === 0) {
-      return false;
-    }
-
-    const sharedHeaderCount = this.countSharedEntries(left.headerKeys, right.headerKeys);
-    const minSourceCount = Math.min(left.sourceKeys.size, right.sourceKeys.size);
-    const minHeaderCount = Math.min(left.headerKeys.size, right.headerKeys.size);
-
-    const sourceCoverage = minSourceCount === 0 ? 0 : sharedSourceCount / minSourceCount;
-    const headerCoverage = minHeaderCount === 0 ? 0 : sharedHeaderCount / minHeaderCount;
-    const comparableCount = minSourceCount + minHeaderCount;
-    const combinedCoverage = comparableCount === 0 ? 0 : (sharedSourceCount + sharedHeaderCount) / comparableCount;
-
-    if (minSourceCount === 1) {
-      return sourceCoverage === 1 && (minHeaderCount === 0 || headerCoverage === 1);
-    }
-
-    return combinedCoverage >= 0.85 || (sourceCoverage >= 0.8 && (sharedHeaderCount > 0 || minSourceCount >= 3));
-  }
-
-  private countSharedEntries(left: Set<string>, right: Set<string>): number {
-    const [smallSet, largeSet] = left.size <= right.size ? [left, right] : [right, left];
-    let sharedCount = 0;
-
-    for (const entry of smallSet) {
-      if (largeSet.has(entry)) {
-        sharedCount++;
-      }
-    }
-
-    return sharedCount;
-  }
-
-  private getDependencyIdentity(dependency: Dependency): string {
-    return `${dependency.name}:${this.normalizePathForComparison(dependency.path)}`;
-  }
-
-  private isPathWithin(targetPath: string, basePath: string): boolean {
-    const normalizedTarget = this.normalizePathForComparison(targetPath);
-    const normalizedBase = this.normalizePathForComparison(basePath);
-    return normalizedTarget === normalizedBase || normalizedTarget.startsWith(`${normalizedBase}/`);
-  }
-
-  private normalizePathForComparison(targetPath: string): string {
-    return path.resolve(targetPath).replace(/\\/g, '/').toLowerCase();
   }
 
   /**
