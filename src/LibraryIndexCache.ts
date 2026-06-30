@@ -1,9 +1,9 @@
 /**
  * LibraryIndexCache stores the expensive Arduino library scan results.
  *
- * It first checks a cheap directory fingerprint based on relative path, size,
- * and mtime. When that changes, it reuses per-file content hashes where
- * possible and rebuilds only the affected library index data.
+ * Path state keeps only cheap fingerprints and per-file hashes. Source indexes
+ * are keyed by library content hash, so identical libraries in different
+ * project directories reuse the same analysis result without cache migration.
  */
 import fs from 'fs-extra';
 import os from 'os';
@@ -13,8 +13,9 @@ import { glob } from 'glob';
 import { Logger } from './utils/Logger';
 import type { MacroDefinition } from './DependencyAnalyzer';
 
-const SCHEMA_VERSION = 1;
-const ANALYZER_VERSION = 'library-index-cache-v4';
+const SCHEMA_VERSION = 2;
+const ANALYZER_VERSION = 'library-index-cache-v5';
+const STAT_CONCURRENCY = 32;
 
 interface FileSnapshot {
   relPath: string;
@@ -40,7 +41,7 @@ interface CachedMacroDefinition {
   isDefined: boolean;
 }
 
-interface CachedLibraryIndex {
+interface CachedPathState {
   schemaVersion: number;
   analyzerVersion: string;
   libraryName: string;
@@ -48,6 +49,14 @@ interface CachedLibraryIndex {
   fastFingerprint: string;
   sourceHash: string;
   files: Record<string, CachedFileSnapshot>;
+  updatedAt: string;
+}
+
+interface CachedSourceIndex {
+  schemaVersion: number;
+  analyzerVersion: string;
+  libraryName: string;
+  sourceHash: string;
   sourceFiles: string[];
   macroIndexes: Record<string, CachedMacroIndex>;
   updatedAt: string;
@@ -81,74 +90,130 @@ export class LibraryIndexCache {
   ): Promise<LibraryIndexResult> {
     const startedAt = Date.now();
     const normalizedLibraryPath = this.normalizePath(libraryPath);
-    const cachePath = this.getCachePath(normalizedLibraryPath);
+    const pathStatePath = this.getPathStatePath(normalizedLibraryPath);
     const macroKey = this.createMacroKey(macroDefinitions);
     const files = await this.collectFiles(libraryPath);
     const fastFingerprint = this.createFastFingerprint(files);
-    const cached = await this.readCache(cachePath);
+    const cachedPathState = await this.readPathState(pathStatePath);
 
-    if (this.isCacheUsable(cached, normalizedLibraryPath) && cached.fastFingerprint === fastFingerprint) {
-      const macroIndex = cached.macroIndexes?.[macroKey];
-      if (cached.sourceFiles && macroIndex) {
+    if (this.isPathStateUsable(cachedPathState, normalizedLibraryPath) && cachedPathState.fastFingerprint === fastFingerprint) {
+      const sourceIndex = await this.readSourceIndexForHash(cachedPathState.sourceHash);
+      const macroIndex = sourceIndex?.macroIndexes?.[macroKey];
+      if (sourceIndex && macroIndex) {
         this.logger.debug(`[LIB_INDEX] hit ${libraryName}: ${files.length} files, ${Date.now() - startedAt}ms`);
         return {
-          sourceFiles: this.toAbsolutePaths(libraryPath, cached.sourceFiles),
+          sourceFiles: this.toAbsolutePaths(libraryPath, sourceIndex.sourceFiles),
           includeFiles: macroIndex.includeFiles,
           macroDefinitions: this.applyMacroDeltas(macroDefinitions, macroIndex.macroDeltas),
           cacheHit: true,
           fastFingerprint,
-          sourceHash: cached.sourceHash
+          sourceHash: cachedPathState.sourceHash
         };
       }
+
+      return this.rebuildAndStore(
+        libraryName,
+        libraryPath,
+        normalizedLibraryPath,
+        pathStatePath,
+        macroDefinitions,
+        macroKey,
+        builder,
+        files.length,
+        fastFingerprint,
+        cachedPathState.sourceHash,
+        cachedPathState.files,
+        sourceIndex,
+        startedAt
+      );
     }
 
-    const { sourceHash, fileRecords } = await this.createSourceHash(libraryPath, files, cached);
-    const canReuseContent = this.isCacheUsable(cached, normalizedLibraryPath) && cached.sourceHash === sourceHash;
+    const reusablePathState = this.isPathStateUsable(cachedPathState, normalizedLibraryPath)
+      ? cachedPathState
+      : null;
+    const { sourceHash, fileRecords } = await this.createSourceHash(libraryPath, files, reusablePathState);
+    const sourceIndex = await this.readSourceIndexForHash(sourceHash);
+    const macroIndex = sourceIndex?.macroIndexes?.[macroKey];
 
-    if (canReuseContent) {
-      const macroIndex = cached.macroIndexes?.[macroKey];
-      if (cached.sourceFiles && macroIndex) {
-        await this.writeCache(cachePath, {
-          ...cached,
-          fastFingerprint,
-          files: fileRecords,
-          updatedAt: new Date().toISOString()
-        });
-        this.logger.debug(`[LIB_INDEX] content hit ${libraryName}: ${files.length} files, ${Date.now() - startedAt}ms`);
-        return {
-          sourceFiles: this.toAbsolutePaths(libraryPath, cached.sourceFiles),
-          includeFiles: macroIndex.includeFiles,
-          macroDefinitions: this.applyMacroDeltas(macroDefinitions, macroIndex.macroDeltas),
-          cacheHit: true,
-          fastFingerprint,
-          sourceHash
-        };
-      }
+    if (sourceIndex && macroIndex) {
+      await this.writeCache(pathStatePath, this.createPathState(
+        libraryName,
+        normalizedLibraryPath,
+        fastFingerprint,
+        sourceHash,
+        fileRecords
+      ));
+      this.logger.debug(`[LIB_INDEX] source hit ${libraryName}: ${files.length} files, ${Date.now() - startedAt}ms`);
+      return {
+        sourceFiles: this.toAbsolutePaths(libraryPath, sourceIndex.sourceFiles),
+        includeFiles: macroIndex.includeFiles,
+        macroDefinitions: this.applyMacroDeltas(macroDefinitions, macroIndex.macroDeltas),
+        cacheHit: true,
+        fastFingerprint,
+        sourceHash
+      };
     }
 
-    this.logger.debug(`[LIB_INDEX] rebuild ${libraryName}: ${files.length} files`);
-    const built = await builder();
-    const sourceFiles = this.toRelativePaths(libraryPath, built.sourceFiles);
-    const nextCache: CachedLibraryIndex = {
-      schemaVersion: SCHEMA_VERSION,
-      analyzerVersion: ANALYZER_VERSION,
+    return this.rebuildAndStore(
       libraryName,
-      libraryPath: normalizedLibraryPath,
+      libraryPath,
+      normalizedLibraryPath,
+      pathStatePath,
+      macroDefinitions,
+      macroKey,
+      builder,
+      files.length,
       fastFingerprint,
       sourceHash,
-      files: fileRecords,
+      fileRecords,
+      sourceIndex,
+      startedAt
+    );
+  }
+
+  private async rebuildAndStore(
+    libraryName: string,
+    libraryPath: string,
+    normalizedLibraryPath: string,
+    pathStatePath: string,
+    macroDefinitions: Map<string, MacroDefinition>,
+    macroKey: string,
+    builder: () => Promise<LibraryIndexBuildResult>,
+    fileCount: number,
+    fastFingerprint: string,
+    sourceHash: string,
+    fileRecords: Record<string, CachedFileSnapshot>,
+    sourceIndex: CachedSourceIndex | null,
+    startedAt: number
+  ): Promise<LibraryIndexResult> {
+    this.logger.debug(`[LIB_INDEX] rebuild ${libraryName}: ${fileCount} files`);
+    const built = await builder();
+    const sourceFiles = this.toRelativePaths(libraryPath, built.sourceFiles);
+
+    const nextPathState = this.createPathState(
+      libraryName,
+      normalizedLibraryPath,
+      fastFingerprint,
+      sourceHash,
+      fileRecords
+    );
+
+    const nextSourceIndex = this.createSourceIndex(
+      libraryName,
+      sourceHash,
       sourceFiles,
-      macroIndexes: canReuseContent && cached?.macroIndexes ? { ...cached.macroIndexes } : {},
-      updatedAt: new Date().toISOString()
-    };
+      sourceIndex?.macroIndexes || {}
+    );
+    nextSourceIndex.macroIndexes[macroKey] = this.createMacroIndex(
+      built.includeFiles,
+      macroDefinitions,
+      built.macroDefinitions || macroDefinitions
+    );
 
-    nextCache.macroIndexes[macroKey] = {
-      includeFiles: [...new Set(built.includeFiles)],
-      macroDeltas: this.serializeMacroDeltas(macroDefinitions, built.macroDefinitions || macroDefinitions),
-      builtAt: new Date().toISOString()
-    };
-
-    await this.writeCache(cachePath, nextCache);
+    await Promise.all([
+      this.writeCache(pathStatePath, nextPathState),
+      this.writeCache(this.getSourceIndexPath(sourceHash), nextSourceIndex)
+    ]);
 
     this.logger.debug(`[LIB_INDEX] stored ${libraryName}: sources=${built.sourceFiles.length}, includes=${built.includeFiles.length}, ${Date.now() - startedAt}ms`);
     return {
@@ -163,12 +228,12 @@ export class LibraryIndexCache {
 
   private getDefaultCacheDir(): string {
     if (os.platform() === 'win32') {
-      return path.join(os.homedir(), 'AppData', 'Local', 'aily-builder', 'library-index-cache');
+      return path.join(os.homedir(), 'AppData', 'Local', 'aily-builder', 'library-index-cache-v5');
     }
     if (os.platform() === 'darwin') {
-      return path.join(os.homedir(), 'Library', 'Caches', 'aily-builder', 'library-index-cache');
+      return path.join(os.homedir(), 'Library', 'Caches', 'aily-builder', 'library-index-cache-v5');
     }
-    return path.join(os.homedir(), '.cache', 'aily-builder', 'library-index-cache');
+    return path.join(os.homedir(), '.cache', 'aily-builder', 'library-index-cache-v5');
   }
 
   private async collectFiles(libraryPath: string): Promise<FileSnapshot[]> {
@@ -179,17 +244,21 @@ export class LibraryIndexCache {
       ignore: ['**/examples/**', '**/extras/**']
     });
 
-    const uniqueFiles = [...new Set(files)].sort((a, b) => this.toRelativePath(libraryPath, a).localeCompare(this.toRelativePath(libraryPath, b)));
-    const snapshots: FileSnapshot[] = [];
+    const uniqueFiles = Array.from(new Map(
+      files.map(filePath => [this.toRelativePath(libraryPath, filePath), filePath])
+    ).entries())
+      .map(([relPath, filePath]) => ({ relPath, filePath }))
+      .sort((a, b) => a.relPath.localeCompare(b.relPath));
+    const snapshots = new Array<FileSnapshot>(uniqueFiles.length);
 
-    for (const filePath of uniqueFiles) {
+    await this.mapLimit(uniqueFiles, STAT_CONCURRENCY, async ({ relPath, filePath }, index) => {
       const stat = await fs.stat(filePath);
-      snapshots.push({
-        relPath: this.toRelativePath(libraryPath, filePath),
+      snapshots[index] = {
+        relPath,
         size: stat.size,
         mtimeMs: stat.mtimeMs
-      });
-    }
+      };
+    });
 
     return snapshots;
   }
@@ -210,7 +279,7 @@ export class LibraryIndexCache {
   private async createSourceHash(
     libraryPath: string,
     files: FileSnapshot[],
-    cached: CachedLibraryIndex | null
+    cached: CachedPathState | null
   ): Promise<{ sourceHash: string; fileRecords: Record<string, CachedFileSnapshot> }> {
     const fileRecords: Record<string, CachedFileSnapshot> = {};
 
@@ -251,12 +320,12 @@ export class LibraryIndexCache {
     return createHash('sha256').update(content).digest('hex');
   }
 
-  private async mapLimit<T>(items: T[], limit: number, worker: (item: T) => Promise<void>): Promise<void> {
+  private async mapLimit<T>(items: T[], limit: number, worker: (item: T, index: number) => Promise<void>): Promise<void> {
     let index = 0;
     const workers = Array.from({ length: Math.min(limit, items.length) }, async () => {
       while (index < items.length) {
-        const current = items[index++];
-        await worker(current);
+        const currentIndex = index++;
+        await worker(items[currentIndex], currentIndex);
       }
     });
     await Promise.all(workers);
@@ -265,7 +334,7 @@ export class LibraryIndexCache {
   private createMacroKey(macroDefinitions: Map<string, MacroDefinition>): string {
     const hash = createHash('sha256');
     const entries = Array.from(macroDefinitions.entries())
-      .map(([name, macro]) => `${name}=${macro.isDefined ? macro.value ?? '1' : '<undefined>'}`)
+      .map(([name, macro]) => `${name}=${this.getMacroCacheKeyValue(name, macro)}`)
       .sort();
 
     for (const entry of entries) {
@@ -274,6 +343,18 @@ export class LibraryIndexCache {
     }
 
     return hash.digest('hex');
+  }
+
+  private getMacroCacheKeyValue(name: string, macro: MacroDefinition): string {
+    if (!macro.isDefined) {
+      return '<undefined>';
+    }
+
+    if (this.isSensitiveMacroName(name)) {
+      return '<sensitive-defined>';
+    }
+
+    return macro.value ?? '1';
   }
 
   private serializeMacroDeltas(
@@ -297,6 +378,18 @@ export class LibraryIndexCache {
     return result;
   }
 
+  private createMacroIndex(
+    includeFiles: string[],
+    baseMacros: Map<string, MacroDefinition>,
+    finalMacros: Map<string, MacroDefinition>
+  ): CachedMacroIndex {
+    return {
+      includeFiles: [...new Set(includeFiles)],
+      macroDeltas: this.serializeMacroDeltas(baseMacros, finalMacros),
+      builtAt: new Date().toISOString()
+    };
+  }
+
   private isSensitiveMacroName(name: string): boolean {
     return /(PASSWORD|PASS|SECRET|TOKEN|API[_-]?KEY|PRIVATE|CREDENTIAL|SSID|WIFI)/i.test(name);
   }
@@ -316,16 +409,29 @@ export class LibraryIndexCache {
     return result;
   }
 
-  private getCachePath(normalizedLibraryPath: string): string {
+  private getPathStatePath(normalizedLibraryPath: string): string {
     const key = createHash('sha256')
       .update(ANALYZER_VERSION)
-      .update('|')
+      .update('|path|')
       .update(normalizedLibraryPath)
       .digest('hex');
-    return path.join(this.cacheDir, key.substring(0, 2), `${key}.json`);
+    return path.join(this.cacheDir, 'paths', key.substring(0, 2), `${key}.json`);
   }
 
-  private async readCache(cachePath: string): Promise<CachedLibraryIndex | null> {
+  private getSourceIndexPath(sourceHash: string): string {
+    return path.join(this.cacheDir, 'sources', sourceHash.substring(0, 2), `${sourceHash}.json`);
+  }
+
+  private async readPathState(cachePath: string): Promise<CachedPathState | null> {
+    return this.readJSONCache<CachedPathState>(cachePath);
+  }
+
+  private async readSourceIndexForHash(sourceHash: string): Promise<CachedSourceIndex | null> {
+    const sourceIndex = await this.readJSONCache<CachedSourceIndex>(this.getSourceIndexPath(sourceHash));
+    return this.isSourceIndexUsable(sourceIndex, sourceHash) ? sourceIndex : null;
+  }
+
+  private async readJSONCache<T>(cachePath: string): Promise<T | null> {
     try {
       if (!await fs.pathExists(cachePath)) {
         return null;
@@ -337,7 +443,7 @@ export class LibraryIndexCache {
     }
   }
 
-  private async writeCache(cachePath: string, cache: CachedLibraryIndex): Promise<void> {
+  private async writeCache(cachePath: string, cache: CachedPathState | CachedSourceIndex): Promise<void> {
     try {
       await fs.ensureDir(path.dirname(cachePath));
       const tmpPath = `${cachePath}.${process.pid}.${Date.now()}.tmp`;
@@ -348,13 +454,59 @@ export class LibraryIndexCache {
     }
   }
 
-  private isCacheUsable(cache: CachedLibraryIndex | null, normalizedLibraryPath: string): cache is CachedLibraryIndex {
+  private isPathStateUsable(cache: CachedPathState | null, normalizedLibraryPath: string): cache is CachedPathState {
     return !!cache &&
       cache.schemaVersion === SCHEMA_VERSION &&
       cache.analyzerVersion === ANALYZER_VERSION &&
       cache.libraryPath === normalizedLibraryPath &&
-      !!cache.files &&
+      typeof cache.libraryPath === 'string' &&
+      typeof cache.sourceHash === 'string' &&
+      !!cache.files;
+  }
+
+  private isSourceIndexUsable(cache: CachedSourceIndex | null, sourceHash: string): cache is CachedSourceIndex {
+    return !!cache &&
+      cache.schemaVersion === SCHEMA_VERSION &&
+      cache.analyzerVersion === ANALYZER_VERSION &&
+      cache.sourceHash === sourceHash &&
+      Array.isArray(cache.sourceFiles) &&
       !!cache.macroIndexes;
+  }
+
+  private createPathState(
+    libraryName: string,
+    normalizedLibraryPath: string,
+    fastFingerprint: string,
+    sourceHash: string,
+    files: Record<string, CachedFileSnapshot>
+  ): CachedPathState {
+    return {
+      schemaVersion: SCHEMA_VERSION,
+      analyzerVersion: ANALYZER_VERSION,
+      libraryName,
+      libraryPath: normalizedLibraryPath,
+      fastFingerprint,
+      sourceHash,
+      files,
+      updatedAt: new Date().toISOString()
+    };
+  }
+
+  private createSourceIndex(
+    libraryName: string,
+    sourceHash: string,
+    sourceFiles: string[],
+    macroIndexes: Record<string, CachedMacroIndex>
+  ): CachedSourceIndex {
+    return {
+      schemaVersion: SCHEMA_VERSION,
+      analyzerVersion: ANALYZER_VERSION,
+      libraryName,
+      sourceHash,
+      sourceFiles,
+      macroIndexes: { ...macroIndexes },
+      updatedAt: new Date().toISOString()
+    };
   }
 
   private normalizePath(inputPath: string): string {
