@@ -435,7 +435,14 @@ export class DependencyAnalyzer {
         nodir: true,
         ignore: ['**/examples/**', '**/extras/**', '**/test/**', '**/tests/**', '**/docs/**']
       });
-      includeFilePaths = [...new Set(libraryFiles)].sort();
+      includeFilePaths = [...new Set(libraryFiles)].sort((a, b) => {
+        const priorityDiff = this.getIncludeAnalysisPriority(a) - this.getIncludeAnalysisPriority(b);
+        if (priorityDiff !== 0) {
+          return priorityDiff;
+        }
+
+        return path.relative(libraryPath, a).localeCompare(path.relative(libraryPath, b));
+      });
     } catch (error) {
       this.logger.debug(`Failed to read header files in ${libraryPath}: ${error instanceof Error ? error.message : error}`);
     }
@@ -447,6 +454,17 @@ export class DependencyAnalyzer {
     }
 
     return [...new Set(libraryIncludeHeaderFiles)];
+  }
+
+  private getIncludeAnalysisPriority(filePath: string): number {
+    const ext = path.extname(filePath).toLowerCase();
+    if (ext === '.h' || ext === '.hpp') {
+      return 0;
+    }
+    if (ext === '.cpp' || ext === '.c') {
+      return 1;
+    }
+    return 2;
   }
 
   /**
