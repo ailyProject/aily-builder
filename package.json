@@ -8,13 +8,7 @@
   },
   "scripts": {
     "build": "rimraf dist && tsc",
-    "bundle": "npm run build && node bundle.js",
-    "bundle:minify": "npm run build && node bundle.js --minify",
-    "bundle:both": "npm run build && node bundle.js --both",
-    "bundle:native": "npm run build && node bundle-native.js",
     "bundle:native:minify": "npm run build && node bundle-native.js --minify",
-    "bundle:native:both": "npm run build && node bundle-native.js --both",
-    "package": "npm run build && node build.js",
     "start": "ts-node main.ts",
     "clean": "rimraf dist"
   },
@@ -42,7 +36,6 @@
     "@types/node": "^20.11.16",
     "esbuild": "^0.25.9",
     "jest": "^29.7.0",
-    "nexe": "^5.0.0-beta.4",
     "rimraf": "^5.0.5",
     "tsx": "^4.7.0",
     "typescript": "^5.3.3"
