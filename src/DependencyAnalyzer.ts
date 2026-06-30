@@ -1,8 +1,14 @@
+/**
+ * DependencyAnalyzer resolves Arduino sketch, core, variant, and library
+ * dependencies. Library internals are routed through LibraryIndexCache so
+ * repeated preprocess runs avoid re-parsing every source file in large libs.
+ */
 import fs from 'fs-extra';
 import * as path from 'path';
 import { glob } from 'glob';
 import { Logger } from './utils/Logger';
 import { analyzeFile } from './utils/AnalyzeFile';
+import { LibraryIndexCache, LibraryIndexBuildResult, LibraryIndexResult } from './LibraryIndexCache';
 
 export interface PreprocessOptions {
   libraries?: string;
@@ -43,6 +49,7 @@ export class DependencyAnalyzer {
   // private processedFiles: Set<string>;
   private macroDefinitions: Map<string, MacroDefinition>;
   private libraryMap: Map<string, Dependency>
+  private libraryIndexCache: LibraryIndexCache;
 
   /**
    * 构造函数，初始化预处理引擎
@@ -53,6 +60,7 @@ export class DependencyAnalyzer {
     // this.processedFiles = new Set<string>();
     this.dependencyList = new Map<string, Dependency>()
     this.macroDefinitions = new Map<string, MacroDefinition>();
+    this.libraryIndexCache = new LibraryIndexCache(logger);
   }
 
   /**
@@ -369,7 +377,7 @@ export class DependencyAnalyzer {
         if (this.dependencyList.has(libraryObject.name)) {
           continue;
         }
-        await this.updateLibraryDependency(libraryObject)
+        const libraryIndex = await this.applyLibraryIndex(libraryObject, macroDefinitions);
         this.dependencyList.set(libraryObject.name, libraryObject);
 
         // 读取libraryObject.path下的所有.a文件
@@ -385,34 +393,60 @@ export class DependencyAnalyzer {
           }
         }
 
-        // 读取libraryObject.path下的所有源文件
-        let includeFilePaths: string[] = [];
-        try {
-          const libraryFiles = await glob('**/*.{h,hpp,cpp,c}', {
-            cwd: libraryObject.path,
-            absolute: true,
-            nodir: true,
-            ignore: ['**/examples/**', '**/extras/**', '**/test/**', '**/tests/**', '**/docs/**']
-          });
-          includeFilePaths = libraryFiles;
-          // console.log('includeFilePaths:', includeFilePaths);
-        } catch (error) {
-          this.logger.debug(`Failed to read header files in ${libraryObject.path}: ${error instanceof Error ? error.message : error}`);
-        }
-
-        // 分析每个源文件
-        let macroDefinitions_copy = new Map(macroDefinitions);
-        const libraryIncludeHeaderFiles: string[] = [];
-        for (const includeFilePath of includeFilePaths) {
-          const headerIncludes = await await analyzeFile(includeFilePath, macroDefinitions_copy);
-          libraryIncludeHeaderFiles.push(...headerIncludes);
-        }
-
-        await this.resolveDependencies(libraryIncludeHeaderFiles, resolveA, depth + 1, maxDepth, macroDefinitions_copy)
+        await this.resolveDependencies(libraryIndex.includeFiles, resolveA, depth + 1, maxDepth, libraryIndex.macroDefinitions || macroDefinitions)
       } else {
         this.logger.verbose(`Not found ${includeFile}`);
       }
     }
+  }
+
+  private async applyLibraryIndex(libraryObject: Dependency, macroDefinitions: Map<string, MacroDefinition>): Promise<LibraryIndexResult> {
+    const index = await this.libraryIndexCache.getOrCreate(
+      libraryObject.name,
+      libraryObject.path,
+      macroDefinitions,
+      () => this.buildLibraryIndex(libraryObject, macroDefinitions)
+    );
+
+    libraryObject.includes = index.sourceFiles;
+    return index;
+  }
+
+  private async buildLibraryIndex(libraryObject: Dependency, macroDefinitions: Map<string, MacroDefinition>): Promise<LibraryIndexBuildResult> {
+    const macroDefinitionsCopy = new Map(macroDefinitions);
+    const [sourceFiles, includeFiles] = await Promise.all([
+      this.computeLibrarySourceFiles(libraryObject),
+      this.analyzeLibraryIncludes(libraryObject.path, macroDefinitionsCopy)
+    ]);
+
+    return {
+      sourceFiles,
+      includeFiles,
+      macroDefinitions: macroDefinitionsCopy
+    };
+  }
+
+  private async analyzeLibraryIncludes(libraryPath: string, macroDefinitions: Map<string, MacroDefinition>): Promise<string[]> {
+    let includeFilePaths: string[] = [];
+    try {
+      const libraryFiles = await glob('**/*.{h,hpp,cpp,c}', {
+        cwd: libraryPath,
+        absolute: true,
+        nodir: true,
+        ignore: ['**/examples/**', '**/extras/**', '**/test/**', '**/tests/**', '**/docs/**']
+      });
+      includeFilePaths = [...new Set(libraryFiles)].sort();
+    } catch (error) {
+      this.logger.debug(`Failed to read header files in ${libraryPath}: ${error instanceof Error ? error.message : error}`);
+    }
+
+    const libraryIncludeHeaderFiles: string[] = [];
+    for (const includeFilePath of includeFilePaths) {
+      const headerIncludes = await analyzeFile(includeFilePath, macroDefinitions);
+      libraryIncludeHeaderFiles.push(...headerIncludes);
+    }
+
+    return [...new Set(libraryIncludeHeaderFiles)];
   }
 
   /**
@@ -513,81 +547,68 @@ export class DependencyAnalyzer {
     }
   }
 
-  /**
-   * 创建库依赖项
-   * 根据库路径扫描其包含的所有源文件和头文件
-   * @param libraryPath 库路径（可能是库根目录或src目录）
-   * @param originalInclude 原始包含的头文件名
-   * @returns 返回库依赖项，如果创建失败则返回null
-   */
-  private async updateLibraryDependency(libraryObject: Dependency): Promise<boolean> {
-    try {
-      const extensions = ['.cpp', '.c', '.S', '.s'];
-      // 直接扫描传入的路径（可能是库根目录或src目录）
-      const allFiles = await this.scanDirectoryRecursive(libraryObject.path, extensions);
+  private async computeLibrarySourceFiles(libraryObject: Dependency): Promise<string[]> {
+    const extensions = ['.cpp', '.c', '.S', '.s'];
+    // 直接扫描传入的路径（可能是库根目录或src目录）
+    const allFiles = await this.scanDirectoryRecursive(libraryObject.path, extensions);
 
-      // 过滤掉被其他文件 #include 的代码片段文件
-      const includedFiles = new Set<string>();
+    // 过滤掉被其他文件 #include 的代码片段文件
+    const includedFiles = new Set<string>();
 
-      // 第一遍：扫描所有 .cpp 和 .c 文件，找出哪些文件被 #include
-      for (const file of allFiles) {
-        if (file.endsWith('.cpp')) {
-          const includedCpp = await this.findIncludedCppFiles(file, libraryObject.path);
-          includedCpp.forEach(f => includedFiles.add(f));
+    // 第一遍：扫描所有 .cpp 和 .c 文件，找出哪些文件被 #include
+    for (const file of allFiles) {
+      if (file.endsWith('.cpp')) {
+        const includedCpp = await this.findIncludedCppFiles(file, libraryObject.path);
+        includedCpp.forEach(f => includedFiles.add(f));
 
-          const includedC = await this.findIncludedCFiles(file, libraryObject.path);
-          includedC.forEach(f => includedFiles.add(f));
-        } else if (file.endsWith('.c')) {
-          const includedCpp = await this.findIncludedCppFiles(file, libraryObject.path);
-          includedCpp.forEach(f => includedFiles.add(f));
+        const includedC = await this.findIncludedCFiles(file, libraryObject.path);
+        includedC.forEach(f => includedFiles.add(f));
+      } else if (file.endsWith('.c')) {
+        const includedCpp = await this.findIncludedCppFiles(file, libraryObject.path);
+        includedCpp.forEach(f => includedFiles.add(f));
 
-          const includedC = await this.findIncludedCFiles(file, libraryObject.path);
-          includedC.forEach(f => includedFiles.add(f));
-        }
+        const includedC = await this.findIncludedCFiles(file, libraryObject.path);
+        includedC.forEach(f => includedFiles.add(f));
+      }
+    }
+
+    // 第二遍：过滤代码片段
+    const validFiles: string[] = [];
+    for (const file of allFiles) {
+      // 1. 被 #include 的文件
+      if (includedFiles.has(file)) {
+        this.logger.debug(`[CODE_FRAGMENT] Skipping included file: ${path.relative(libraryObject.path, file)}`);
+        continue;
       }
 
-      // 第二遍：过滤代码片段
-      const validFiles: string[] = [];
-      for (const file of allFiles) {
-        // 1. 被 #include 的文件
-        if (includedFiles.has(file)) {
-          this.logger.debug(`[CODE_FRAGMENT] Skipping included file: ${path.relative(libraryObject.path, file)}`);
+      // 2. 检查是否在代码片段子目录中（相对于库根目录的子目录）
+      const relativePath = path.relative(libraryObject.path, file);
+      const isInSubdirectory = relativePath.includes(path.sep) && !relativePath.startsWith('src' + path.sep);
+
+      if (isInSubdirectory) {
+        // 在子目录中（非 src 目录），可能是代码片段或纯数据文件
+
+        // 1. 检查是否是纯数据文件（只包含数据定义，没有函数实现）
+        // 纯数据文件特征：没有或极少 include，只有数据定义
+        // 这类文件不需要单独编译，因为它们通常会被其他文件 include
+        const isPureDataFile = await this.isPureDataFile(file);
+        if (isPureDataFile) {
+          this.logger.debug(`[CODE_FRAGMENT] Skipping pure data file in subdirectory: ${relativePath}`);
           continue;
         }
 
-        // 2. 检查是否在代码片段子目录中（相对于库根目录的子目录）
-        const relativePath = path.relative(libraryObject.path, file);
-        const isInSubdirectory = relativePath.includes(path.sep) && !relativePath.startsWith('src' + path.sep);
-
-        if (isInSubdirectory) {
-          // 在子目录中（非 src 目录），可能是代码片段或纯数据文件
-
-          // 1. 检查是否是纯数据文件（只包含数据定义，没有函数实现）
-          // 纯数据文件特征：没有或极少 include，只有数据定义
-          // 这类文件不需要单独编译，因为它们通常会被其他文件 include
-          const isPureDataFile = await this.isPureDataFile(file);
-          if (isPureDataFile) {
-            this.logger.debug(`[CODE_FRAGMENT] Skipping pure data file in subdirectory: ${relativePath}`);
-            continue;
-          }
-
-          // 2. 检查是否是真正的代码片段（被条件编译包裹且缺少完整实现）
-          const isCodeFragment = await this.isCodeFragment(file);
-          if (isCodeFragment) {
-            this.logger.debug(`[CODE_FRAGMENT] Skipping code fragment file in subdirectory: ${relativePath}`);
-            continue;
-          }
+        // 2. 检查是否是真正的代码片段（被条件编译包裹且缺少完整实现）
+        const isCodeFragment = await this.isCodeFragment(file);
+        if (isCodeFragment) {
+          this.logger.debug(`[CODE_FRAGMENT] Skipping code fragment file in subdirectory: ${relativePath}`);
+          continue;
         }
-
-        validFiles.push(file);
       }
 
-      libraryObject.includes.push(...validFiles);
-      return true
-    } catch (error) {
-      this.logger.debug(`Failed to create library dependency for ${libraryObject.name}: ${error instanceof Error ? error.message : error}`);
-      return null;
+      validFiles.push(file);
     }
+
+    return [...new Set(validFiles)].sort();
   }
 
   /**
@@ -1263,8 +1284,8 @@ export class DependencyAnalyzer {
       if (this.libraryMap && this.libraryMap.has('__LIB_SrcWrapper')) {
         const srcWrapperDep = this.libraryMap.get('__LIB_SrcWrapper');
         if (srcWrapperDep) {
-          // 先调用 updateLibraryDependency 来扫描源文件
-          await this.updateLibraryDependency(srcWrapperDep);
+          // 先解析库索引来扫描源文件
+          await this.applyLibraryIndex(srcWrapperDep, this.macroDefinitions);
           // 将 SrcWrapper 库添加到依赖列表中
           this.dependencyList.set('SrcWrapper', srcWrapperDep);
           this.logger.info('Added SrcWrapper library for STM32 platform');
