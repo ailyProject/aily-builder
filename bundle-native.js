@@ -21,6 +21,7 @@ async function bundleWithNativeMinified() {
     await bundleJavaScript(BUNDLE_DIR);
     await copyNativeModules(BUNDLE_DIR);
     await copyNinja(BUNDLE_DIR);
+    await copyPackageMetadata(BUNDLE_DIR);
     await createLaunchScript(BUNDLE_DIR);
     await createPackageJson(BUNDLE_DIR);
 
@@ -211,23 +212,83 @@ require('./aily-builder.js');
 
 async function createPackageJson(bundleDir) {
   const projectPackageJson = await fs.readJson('./package.json');
+  const bundledDependencies = await collectBundledDependencies(bundleDir);
   const bundlePackageJson = {
     name: projectPackageJson.name,
     version: projectPackageJson.version,
     description: projectPackageJson.description,
     main: 'index.js',
     bin: {
-      aily: 'index.js',
+      'aily-builder': 'index.js',
     },
     engines: {
       node: '>=16',
     },
   };
 
+  if (bundledDependencies.length > 0) {
+    bundlePackageJson.dependencies = Object.fromEntries(
+      bundledDependencies.map((dep) => [dep.name, dep.version]),
+    );
+    bundlePackageJson.bundledDependencies = bundledDependencies.map((dep) => dep.name);
+  }
+
   await fs.writeFile(
     path.join(bundleDir, 'package.json'),
     `${JSON.stringify(bundlePackageJson, null, 2)}\n`,
   );
+}
+
+async function copyPackageMetadata(bundleDir) {
+  for (const file of ['README.md', 'README-ZH.md', 'LICENSE']) {
+    if (await fs.pathExists(file)) {
+      await fs.copy(file, path.join(bundleDir, file));
+    }
+  }
+}
+
+async function collectBundledDependencies(bundleDir) {
+  const nodeModulesDir = path.join(bundleDir, 'node_modules');
+  if (!(await fs.pathExists(nodeModulesDir))) {
+    return [];
+  }
+
+  const dependencies = [];
+  const entries = await fs.readdir(nodeModulesDir);
+
+  for (const entry of entries) {
+    const entryPath = path.join(nodeModulesDir, entry);
+    const stat = await fs.stat(entryPath);
+    if (!stat.isDirectory()) {
+      continue;
+    }
+
+    if (entry.startsWith('@')) {
+      const scopedEntries = await fs.readdir(entryPath);
+      for (const scopedEntry of scopedEntries) {
+        await addBundledDependency(dependencies, path.join(entryPath, scopedEntry));
+      }
+    } else {
+      await addBundledDependency(dependencies, entryPath);
+    }
+  }
+
+  return dependencies.sort((a, b) => a.name.localeCompare(b.name));
+}
+
+async function addBundledDependency(dependencies, packageDir) {
+  const packageJsonPath = path.join(packageDir, 'package.json');
+  if (!(await fs.pathExists(packageJsonPath))) {
+    return;
+  }
+
+  const packageJson = await fs.readJson(packageJsonPath);
+  if (packageJson.name) {
+    dependencies.push({
+      name: packageJson.name,
+      version: packageJson.version || '*',
+    });
+  }
 }
 
 async function copyPackageRootFiles(packageSrc, packageDest, files) {

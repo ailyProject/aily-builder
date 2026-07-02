@@ -11,6 +11,7 @@
 
 # Node
 /node_modules
+/.npm-cache
 npm-debug.log
 yarn-error.log
 /child/node

@@ -31,10 +31,10 @@ jobs:
         run: npm ci --registry=https://registry.npmjs.org
 
       - name: Build package
-        run: npm run build
+        run: npm run bundle:native:minify
 
       - name: Check npm package
-        run: npm pack --dry-run
+        run: npm pack --dry-run ./dist/bundle-min
 
       - name: Publish to Default Registry
         env:
@@ -68,7 +68,7 @@ jobs:
             sleep 5
           fi
 
-          retry_with_backoff 5 5 npm publish --access public
+          retry_with_backoff 5 5 npm publish ./dist/bundle-min --access public
 
       - name: Notify cache bump
         env:
@@ -121,10 +121,10 @@ jobs:
         run: npm ci
 
       - name: Build package
-        run: npm run build
+        run: npm run bundle:native:minify
 
       - name: Check npm package
-        run: npm pack --dry-run
+        run: npm pack --dry-run ./dist/bundle-min
 
       - name: Publish to Registry 2
         env:
@@ -171,7 +171,7 @@ jobs:
             sleep 5
           fi
 
-          retry_with_backoff 5 5 npm publish --access public
+          retry_with_backoff 5 5 npm publish ./dist/bundle-min --access public
 
       - name: Notify cache bump for Registry 2
         env:
