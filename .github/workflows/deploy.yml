@@ -18,7 +18,7 @@ jobs:
           - platform: darwin-arm64
             runs_on: '["self-hosted","ailydeMac-mini","macOS","ARM64"]'
           - platform: win32-x64
-            runs_on: '"windows-latest"'
+            runs_on: '"windows-2022"'
     defaults:
       run:
         shell: bash
@@ -27,6 +27,7 @@ jobs:
       NPM_CONFIG_FETCH_RETRY_MINTIMEOUT: 10000
       NPM_CONFIG_FETCH_RETRY_MAXTIMEOUT: 120000
       NPM_CONFIG_FETCH_TIMEOUT: 300000
+      npm_config_msvs_version: 2022
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
@@ -161,7 +162,7 @@ jobs:
           - platform: darwin-arm64
             runs_on: '["self-hosted","ailydeMac-mini","macOS","ARM64"]'
           - platform: win32-x64
-            runs_on: '"windows-latest"'
+            runs_on: '"windows-2022"'
     defaults:
       run:
         shell: bash
@@ -170,6 +171,7 @@ jobs:
       NPM_CONFIG_FETCH_RETRY_MINTIMEOUT: 10000
       NPM_CONFIG_FETCH_RETRY_MAXTIMEOUT: 120000
       NPM_CONFIG_FETCH_TIMEOUT: 300000
+      npm_config_msvs_version: 2022
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
