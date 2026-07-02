@@ -17,30 +17,36 @@
 
 ## 快速开始
 
+```bash
+npm install -g aily-builder
+aily-builder --help
 ```
-npm i -g ts-node
+
+```bash
 git clone https://github.com/ailyProject/aily-builder
 cd aily-builder
-npm i
+npm install
+npm link
+aily-builder --help
 ```
 
 ### 基本使用
 
 ```bash
 # 编译Arduino项目
-ts-node main.ts compile sketch.ino
+aily-builder compile sketch.ino
 
 # 指定开发板
-ts-node main.ts compile sketch.ino --board arduino:avr:uno
+aily-builder compile sketch.ino --board arduino:avr:uno
 
 # 并行编译（8个任务）
-ts-node main.ts compile sketch.ino --jobs 8
+aily-builder compile sketch.ino --jobs 8
 
 # 使用外部库
-ts-node main.ts compile sketch.ino --libraries-path "C:\Arduino\libraries"
+aily-builder compile sketch.ino --libraries-path "C:\Arduino\libraries"
 
 # 启用详细输出
-ts-node main.ts compile sketch.ino --verbose
+aily-builder compile sketch.ino --verbose
 ```
 
 ### 预处理与编译分离
@@ -57,16 +63,16 @@ ts-node main.ts compile sketch.ino --verbose
 
 ```bash
 # 基本预处理
-ts-node main.ts preprocess sketch.ino --board arduino:avr:uno
+aily-builder preprocess sketch.ino --board arduino:avr:uno
 
 # 使用外部库
-ts-node main.ts preprocess sketch.ino --board esp32:esp32:esp32 --libraries-path "C:\Arduino\libraries"
+aily-builder preprocess sketch.ino --board esp32:esp32:esp32 --libraries-path "C:\Arduino\libraries"
 
 # 以JSON格式输出（用于程序化调用）
-ts-node main.ts preprocess sketch.ino --output-json
+aily-builder preprocess sketch.ino --output-json
 
 # 保存预处理结果供后续编译使用（适用于CI/CD）
-ts-node main.ts preprocess sketch.ino --save-result ./preprocess.json
+aily-builder preprocess sketch.ino --save-result ./preprocess.json
 ```
 
 #### 使用预处理结果编译
@@ -75,11 +81,11 @@ ts-node main.ts preprocess sketch.ino --save-result ./preprocess.json
 
 ```bash
 # 使用保存的预处理结果编译（跳过预处理）
-ts-node main.ts compile sketch.ino --preprocess-result ./preprocess.json
+aily-builder compile sketch.ino --preprocess-result ./preprocess.json
 
 # 完整工作流示例
-ts-node main.ts preprocess sketch.ino --board arduino:avr:uno --save-result ./preprocess.json
-ts-node main.ts compile sketch.ino --board arduino:avr:uno --preprocess-result ./preprocess.json
+aily-builder preprocess sketch.ino --board arduino:avr:uno --save-result ./preprocess.json
+aily-builder compile sketch.ino --board arduino:avr:uno --preprocess-result ./preprocess.json
 ```
 
 **预处理步骤：**
@@ -97,45 +103,45 @@ ts-node main.ts compile sketch.ino --board arduino:avr:uno --preprocess-result .
 
 ```bash
 # 快速模式 - 快速语法检查（约3-5毫秒，默认）
-ts-node main.ts lint sketch.ino --board arduino:avr:uno
+aily-builder lint sketch.ino --board arduino:avr:uno
 
 # 精确模式 - 基于编译器的分析（约3-5秒，高精度）
-ts-node main.ts lint sketch.ino --mode accurate
+aily-builder lint sketch.ino --mode accurate
 
 # 自动模式 - 先快速检查，发现问题再精确验证
-ts-node main.ts lint sketch.ino --mode auto
+aily-builder lint sketch.ino --mode auto
 
 # 不同输出格式（human、vscode、json）
-ts-node main.ts lint sketch.ino --format json
+aily-builder lint sketch.ino --format json
 ```
 
 ### 上传固件
 
 ```bash
 # 上传固件到Arduino开发板
-ts-node main.ts upload -p COM3 -f firmware.hex --board arduino:avr:uno
+aily-builder upload -p COM3 -f firmware.hex --board arduino:avr:uno
 
 # 启用详细输出
-ts-node main.ts upload -p /dev/ttyUSB0 -f firmware.bin --board esp32:esp32:esp32 --verbose
+aily-builder upload -p /dev/ttyUSB0 -f firmware.bin --board esp32:esp32:esp32 --verbose
 ```
 
 ### 缓存管理
 
 ```bash
 # 查看缓存统计
-ts-node main.ts cache-stats
+aily-builder cache-stats
 
 # 清理30天前的缓存
-ts-node main.ts cache-clean --days 30
+aily-builder cache-clean --days 30
 
 # 预览将被删除的文件（dry run）
-ts-node main.ts cache-clean --days 7 --dry-run
+aily-builder cache-clean --days 7 --dry-run
 
 # 清理所有缓存
-ts-node main.ts cache clear --all
+aily-builder cache clear --all
 
 # 禁用缓存编译
-ts-node main.ts compile sketch.ino --no-cache
+aily-builder compile sketch.ino --no-cache
 ```
 
 ## 详细文档
@@ -228,16 +234,16 @@ ts-node main.ts compile sketch.ino --no-cache
 
 ```bash
 # 缓存统计
-ts-node main.ts cache-stats [--verbose]
+aily-builder cache-stats [--verbose]
 
 # 缓存清理
-ts-node main.ts cache-clean [options]
+aily-builder cache-clean [options]
   --days <number>     清理N天前的文件 (默认: 30)
   --pattern <pattern> 文件名模式匹配
   --dry-run           预览模式，不实际删除
 
 # 清空所有缓存
-ts-node main.ts cache clear --all
+aily-builder cache clear --all
 ```
 
 ### 构建路径配置

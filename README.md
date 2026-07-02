@@ -18,30 +18,38 @@ If this tool helps you, please give it a ⭐️ for support!
 
 ## Quick Start
 
+```bash
+npm install -g aily-builder
+aily-builder --help
 ```
-npm i -g ts-node
+
+For local development:
+
+```bash
 git clone https://github.com/ailyProject/aily-builder
 cd aily-builder
-npm i
+npm install
+npm link
+aily-builder --help
 ```
 
 ### Basic Usage
 
 ```bash
 # Compile Arduino project
-ts-node main.ts compile sketch.ino
+aily-builder compile sketch.ino
 
 # Specify board
-ts-node main.ts compile sketch.ino --board arduino:avr:uno
+aily-builder compile sketch.ino --board arduino:avr:uno
 
 # Parallel compilation (8 tasks)
-ts-node main.ts compile sketch.ino --jobs 8
+aily-builder compile sketch.ino --jobs 8
 
 # With external libraries
-ts-node main.ts compile sketch.ino --libraries-path "C:\Arduino\libraries"
+aily-builder compile sketch.ino --libraries-path "C:\Arduino\libraries"
 
 # Enable verbose output
-ts-node main.ts compile sketch.ino --verbose
+aily-builder compile sketch.ino --verbose
 ```
 
 ### Preprocess and Compile Separation
@@ -58,16 +66,16 @@ Perform preprocessing without compilation (dependency analysis, config generatio
 
 ```bash
 # Basic preprocessing
-ts-node main.ts preprocess sketch.ino --board arduino:avr:uno
+aily-builder preprocess sketch.ino --board arduino:avr:uno
 
 # With external libraries
-ts-node main.ts preprocess sketch.ino --board esp32:esp32:esp32 --libraries-path "C:\Arduino\libraries"
+aily-builder preprocess sketch.ino --board esp32:esp32:esp32 --libraries-path "C:\Arduino\libraries"
 
 # Output as JSON for programmatic use
-ts-node main.ts preprocess sketch.ino --output-json
+aily-builder preprocess sketch.ino --output-json
 
 # Save result for later compilation (useful for CI/CD)
-ts-node main.ts preprocess sketch.ino --save-result ./preprocess.json
+aily-builder preprocess sketch.ino --save-result ./preprocess.json
 ```
 
 #### Compile with Preprocess Result
@@ -76,11 +84,11 @@ Use saved preprocessing results to skip the preprocessing phase:
 
 ```bash
 # Compile using saved preprocess result (skips preprocessing)
-ts-node main.ts compile sketch.ino --preprocess-result ./preprocess.json
+aily-builder compile sketch.ino --preprocess-result ./preprocess.json
 
 # Full workflow example
-ts-node main.ts preprocess sketch.ino --board arduino:avr:uno --save-result ./preprocess.json
-ts-node main.ts compile sketch.ino --board arduino:avr:uno --preprocess-result ./preprocess.json
+aily-builder preprocess sketch.ino --board arduino:avr:uno --save-result ./preprocess.json
+aily-builder compile sketch.ino --board arduino:avr:uno --preprocess-result ./preprocess.json
 ```
 
 **Preprocessing Steps:**
@@ -98,45 +106,45 @@ Multi-mode syntax analysis with fast static check or accurate compiler-based val
 
 ```bash
 # Fast mode - Quick syntax check (~3-5ms, default)
-ts-node main.ts lint sketch.ino --board arduino:avr:uno
+aily-builder lint sketch.ino --board arduino:avr:uno
 
 # Accurate mode - Compiler-based analysis (~3-5s, high precision)
-ts-node main.ts lint sketch.ino --mode accurate
+aily-builder lint sketch.ino --mode accurate
 
 # Auto mode - Fast first, then accurate if issues found
-ts-node main.ts lint sketch.ino --mode auto
+aily-builder lint sketch.ino --mode auto
 
 # Different output formats (human, vscode, json)
-ts-node main.ts lint sketch.ino --format json
+aily-builder lint sketch.ino --format json
 ```
 
 ### Upload Firmware
 
 ```bash
 # Upload firmware to Arduino board
-ts-node main.ts upload -p COM3 -f firmware.hex --board arduino:avr:uno
+aily-builder upload -p COM3 -f firmware.hex --board arduino:avr:uno
 
 # With verbose output
-ts-node main.ts upload -p /dev/ttyUSB0 -f firmware.bin --board esp32:esp32:esp32 --verbose
+aily-builder upload -p /dev/ttyUSB0 -f firmware.bin --board esp32:esp32:esp32 --verbose
 ```
 
 ### Cache Management
 
 ```bash
 # View cache statistics
-ts-node main.ts cache-stats
+aily-builder cache-stats
 
 # Clean cache older than 30 days
-ts-node main.ts cache-clean --days 30
+aily-builder cache-clean --days 30
 
 # Preview what would be deleted (dry run)
-ts-node main.ts cache-clean --days 7 --dry-run
+aily-builder cache-clean --days 7 --dry-run
 
 # Clear all cache
-ts-node main.ts cache clear --all
+aily-builder cache clear --all
 
 # Compile without cache
-ts-node main.ts compile sketch.ino --no-cache
+aily-builder compile sketch.ino --no-cache
 ```
 
 ## Detailed Documentation
@@ -229,16 +237,16 @@ Options:
 
 ```bash
 # Cache statistics
-ts-node main.ts cache-stats [--verbose]
+aily-builder cache-stats [--verbose]
 
 # Cache cleanup
-ts-node main.ts cache-clean [options]
+aily-builder cache-clean [options]
   --days <number>     Clean files older than N days (default: 30)
   --pattern <pattern> File name pattern matching
   --dry-run           Preview mode, don't actually delete
 
 # Clear all cache
-ts-node main.ts cache clear --all
+aily-builder cache clear --all
 ```
 
 ### Build Path Configuration

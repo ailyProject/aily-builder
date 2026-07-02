@@ -1,3 +1,4 @@
+#!/usr/bin/env node
 import { Command } from 'commander';
 import { ArduinoCompiler, PreprocessResult } from './src/ArduinoCompiler';
 import { ArduinoUploader } from './src/ArduinoUploader';
@@ -17,7 +18,7 @@ const logger = new Logger();
 program
   .name('aily-builder')
   .description('Fast Arduino compilation CLI tool with optimized preprocessing and parallel compilation')
-  .version('1.0.0');
+  .version('1.2.4');
 
 program
   .command('compile')
@@ -266,20 +267,20 @@ program
   .addHelpText('after', `
 Examples:
   # Basic preprocessing
-  $ aily preprocess sketch.ino --board arduino:avr:uno
+  $ aily-builder preprocess sketch.ino --board arduino:avr:uno
   
   # With external libraries
-  $ aily preprocess sketch.ino --board esp32:esp32:esp32 --libraries-path "C:\\Arduino\\libraries"
+  $ aily-builder preprocess sketch.ino --board esp32:esp32:esp32 --libraries-path "C:\\Arduino\\libraries"
   
   # Output as JSON for programmatic use
-  $ aily preprocess sketch.ino --board arduino:avr:uno --output-json
+  $ aily-builder preprocess sketch.ino --board arduino:avr:uno --output-json
   
   # Save result for later compilation
-  $ aily preprocess sketch.ino --board arduino:avr:uno --save-result ./preprocess.json
-  $ aily compile sketch.ino --board arduino:avr:uno --preprocess-result ./preprocess.json
+  $ aily-builder preprocess sketch.ino --board arduino:avr:uno --save-result ./preprocess.json
+  $ aily-builder compile sketch.ino --board arduino:avr:uno --preprocess-result ./preprocess.json
   
   # With SDK and tools paths
-  $ aily preprocess sketch.ino --sdk-path "C:\\sdk\\esp32" --tools-path "C:\\tools"
+  $ aily-builder preprocess sketch.ino --sdk-path "C:\\sdk\\esp32" --tools-path "C:\\tools"
 
 Preprocessing Steps:
   1. Validate sketch file
@@ -411,7 +412,7 @@ Note: This command only performs preprocessing without actual compilation.
         await fs.ensureDir(path.dirname(saveResultPath));
         await fs.writeJson(saveResultPath, result, { spaces: 2 });
         logger.success(`Preprocess result saved to: ${saveResultPath}`);
-        logger.info(`Use with: aily compile sketch.ino --preprocess-result "${saveResultPath}"`);
+        logger.info(`Use with: aily-builder compile sketch.ino --preprocess-result "${saveResultPath}"`);
       } catch (error) {
         logger.error(`Failed to save preprocess result: ${error instanceof Error ? error.message : error}`);
       }
@@ -504,31 +505,31 @@ program
   .addHelpText('after', `
 Examples:
   # Fast mode - Quick syntax check (3-5ms, default)
-  $ aily lint sketch.ino --board arduino:avr:uno
-  $ aily lint sketch.ino --mode fast
+  $ aily-builder lint sketch.ino --board arduino:avr:uno
+  $ aily-builder lint sketch.ino --mode fast
   
   # Accurate mode - Compiler-based analysis (3-5s, high precision)
-  $ aily lint sketch.ino --mode accurate
+  $ aily-builder lint sketch.ino --mode accurate
   
   # Auto mode - Fast first, then accurate if issues found
-  $ aily lint sketch.ino --mode auto
+  $ aily-builder lint sketch.ino --mode auto
   
   # With external libraries
-  $ aily lint sketch.ino --libraries-path "C:\\Arduino\\libraries" --mode accurate
-  $ aily lint sketch.ino --libraries-path "/path/to/libs1" --libraries-path "/path/to/libs2"
+  $ aily-builder lint sketch.ino --libraries-path "C:\\Arduino\\libraries" --mode accurate
+  $ aily-builder lint sketch.ino --libraries-path "/path/to/libs1" --libraries-path "/path/to/libs2"
   
   # With SDK and tools paths
-  $ aily lint sketch.ino --sdk-path "C:\\Users\\user\\AppData\\Local\\aily-project\\sdk\\esp32_3.2.1" --tools-path "C:\\Users\\user\\AppData\\Local\\aily-project\\tools" --mode accurate
-  $ aily lint sketch.ino --tool-versions "esp-x32@14.2.0,esptool_py@5.1.0" --mode accurate
+  $ aily-builder lint sketch.ino --sdk-path "C:\\Users\\user\\AppData\\Local\\aily-project\\sdk\\esp32_3.2.1" --tools-path "C:\\Users\\user\\AppData\\Local\\aily-project\\tools" --mode accurate
+  $ aily-builder lint sketch.ino --tool-versions "esp-x32@14.2.0,esptool_py@5.1.0" --mode accurate
   
   # With board options and build properties
-  $ aily lint sketch.ino --board esp32:esp32:esp32s3 --board-options flash=16777216_3145728 --mode accurate
-  $ aily lint sketch.ino --build-property "compiler.cpp.extra_flags=-DDEBUG_MODE" --mode accurate
-  $ aily lint sketch.ino --board arduino:renesas_uno:unor4wifi --board-options flash=2097152_0 --board-options uploadmethod=default
+  $ aily-builder lint sketch.ino --board esp32:esp32:esp32s3 --board-options flash=16777216_3145728 --mode accurate
+  $ aily-builder lint sketch.ino --build-property "compiler.cpp.extra_flags=-DDEBUG_MODE" --mode accurate
+  $ aily-builder lint sketch.ino --board arduino:renesas_uno:unor4wifi --board-options flash=2097152_0 --board-options uploadmethod=default
   
   # Different output formats
-  $ aily lint sketch.ino --format vscode --mode accurate
-  $ aily lint sketch.ino --format json --mode auto
+  $ aily-builder lint sketch.ino --format vscode --mode accurate
+  $ aily-builder lint sketch.ino --format json --mode auto
 
 Analysis Modes:
   fast     - Static analysis, ~3-5ms execution, good for real-time feedback

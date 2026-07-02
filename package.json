@@ -4,13 +4,21 @@
   "description": "Fast Arduino compilation CLI tool with optimized preprocessing and parallel compilation",
   "main": "dist/main.js",
   "bin": {
-    "aily": "dist/main.js"
+    "aily-builder": "dist/main.js"
   },
+  "files": [
+    "dist/main.js",
+    "dist/src",
+    "README.md",
+    "README-ZH.md",
+    "LICENSE"
+  ],
   "scripts": {
     "build": "rimraf dist && tsc",
     "bundle:native:minify": "npm run build && node bundle-native.js --minify",
     "start": "ts-node main.ts",
-    "clean": "rimraf dist"
+    "clean": "rimraf dist",
+    "prepack": "npm run build"
   },
   "keywords": [
     "arduino",
