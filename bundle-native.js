@@ -4,6 +4,10 @@ const path = require('path');
 
 const DIST_MAIN_PATH = './dist/main.js';
 const BUNDLE_DIR = './dist/bundle-min';
+const PLATFORM_PACKAGE_SUFFIXES = {
+  'win32-x64': { suffix: 'win32-x64', os: 'win32', cpu: 'x64' },
+  'darwin-arm64': { suffix: 'darwin-arm64', os: 'darwin', cpu: 'arm64' },
+};
 const ESBUILD_EXTERNALS = [
   'tree-sitter',
   'tree-sitter-cpp',
@@ -210,8 +214,9 @@ require('./aily-builder.js');
 async function createPackageJson(bundleDir) {
   const projectPackageJson = await fs.readJson('./package.json');
   const bundledDependencies = await collectBundledDependencies(bundleDir);
+  const platformPackage = getPlatformPackage();
   const bundlePackageJson = {
-    name: projectPackageJson.name,
+    name: `${projectPackageJson.name}-${platformPackage.suffix}`,
     version: projectPackageJson.version,
     description: projectPackageJson.description,
     main: 'index.js',
@@ -221,6 +226,8 @@ async function createPackageJson(bundleDir) {
     engines: {
       node: '>=16',
     },
+    os: [platformPackage.os],
+    cpu: [platformPackage.cpu],
   };
 
   if (bundledDependencies.length > 0) {
@@ -234,6 +241,16 @@ async function createPackageJson(bundleDir) {
     path.join(bundleDir, 'package.json'),
     `${JSON.stringify(bundlePackageJson, null, 2)}\n`,
   );
+}
+
+function getPlatformPackage() {
+  const platformKey = `${process.platform}-${process.arch}`;
+  const platformPackage = PLATFORM_PACKAGE_SUFFIXES[platformKey];
+  if (!platformPackage) {
+    throw new Error(`Unsupported bundle platform: ${platformKey}`);
+  }
+
+  return platformPackage;
 }
 
 async function copyPackageMetadata(bundleDir) {

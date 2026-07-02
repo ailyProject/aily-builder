@@ -6,10 +6,22 @@ on:
       - deploy
 
 jobs:
-  build-and-publish:
+  build-bundles:
     if: ${{ github.event_name == 'push' && github.ref == 'refs/heads/deploy' }}
-    runs-on: [self-hosted, ailydeMac-mini, macOS, ARM64]
+    name: Build native bundle (${{ matrix.platform }})
+    runs-on: ${{ fromJSON(matrix.runs_on) }}
     timeout-minutes: 120
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - platform: darwin-arm64
+            runs_on: '["self-hosted","ailydeMac-mini","macOS","ARM64"]'
+          - platform: win32-x64
+            runs_on: '"windows-latest"'
+    defaults:
+      run:
+        shell: bash
     env:
       NPM_CONFIG_FETCH_RETRIES: 5
       NPM_CONFIG_FETCH_RETRY_MINTIMEOUT: 10000
@@ -17,26 +29,59 @@ jobs:
       NPM_CONFIG_FETCH_TIMEOUT: 300000
     steps:
       - name: Checkout code
-        uses: actions/checkout@v3
+        uses: actions/checkout@v4
         with:
           token: ${{ secrets.GHB_TOKEN }}
 
       - name: Setup Node.js
-        uses: actions/setup-node@v3
+        uses: actions/setup-node@v4
         with:
           node-version: '18'
-          registry-url: ${{ secrets.REGISTRY_URL }}
 
       - name: Install dependencies
         run: npm ci --registry=https://registry.npmjs.org
 
-      - name: Build package
+      - name: Build native bundle
         run: npm run bundle:native:minify
 
       - name: Check npm package
         run: npm pack --dry-run ./dist/bundle-min
 
-      - name: Publish to Default Registry
+      - name: Upload native bundle
+        uses: actions/upload-artifact@v4
+        with:
+          name: aily-builder-${{ matrix.platform }}
+          path: dist/bundle-min
+          if-no-files-found: error
+
+  publish-default:
+    if: ${{ github.event_name == 'push' && github.ref == 'refs/heads/deploy' }}
+    name: Publish default registry
+    needs: build-bundles
+    runs-on: [self-hosted, ailydeMac-mini, macOS, ARM64]
+    timeout-minutes: 120
+    defaults:
+      run:
+        shell: bash
+    env:
+      NPM_CONFIG_FETCH_RETRIES: 5
+      NPM_CONFIG_FETCH_RETRY_MINTIMEOUT: 10000
+      NPM_CONFIG_FETCH_RETRY_MAXTIMEOUT: 120000
+      NPM_CONFIG_FETCH_TIMEOUT: 300000
+    steps:
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '18'
+          registry-url: ${{ secrets.REGISTRY_URL }}
+
+      - name: Download native bundles
+        uses: actions/download-artifact@v4
+        with:
+          pattern: aily-builder-*
+          path: dist/native-bundles
+
+      - name: Publish bundles to default registry
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
         run: |
@@ -58,17 +103,24 @@ jobs:
             done
           }
 
-          CURRENT_VERSION=$(node -p "require('./package.json').version")
-          PACKAGE_NAME=$(node -p "require('./package.json').name")
-          echo "Current version: $CURRENT_VERSION"
+          for package_dir in dist/native-bundles/aily-builder-*; do
+            if [ ! -f "$package_dir/package.json" ]; then
+              echo "::warning::Skipping $package_dir because package.json was not found"
+              continue
+            fi
 
-          if npm view "$PACKAGE_NAME@$CURRENT_VERSION" version &> /dev/null; then
-            echo "Version $CURRENT_VERSION exists, unpublishing..."
-            retry_with_backoff 3 3 npm unpublish "$PACKAGE_NAME@$CURRENT_VERSION" --force
-            sleep 5
-          fi
+            CURRENT_VERSION=$(node -p "require('./$package_dir/package.json').version")
+            PACKAGE_NAME=$(node -p "require('./$package_dir/package.json').name")
+            echo "Package: $PACKAGE_NAME@$CURRENT_VERSION"
 
-          retry_with_backoff 5 5 npm publish ./dist/bundle-min --access public
+            if npm view "$PACKAGE_NAME@$CURRENT_VERSION" version &> /dev/null; then
+              echo "Version $CURRENT_VERSION exists, unpublishing..."
+              retry_with_backoff 3 3 npm unpublish "$PACKAGE_NAME@$CURRENT_VERSION" --force
+              sleep 5
+            fi
+
+            retry_with_backoff 5 5 npm publish "$package_dir" --access public
+          done
 
       - name: Notify cache bump
         env:
@@ -99,8 +151,20 @@ jobs:
 
   publish-registry2:
     if: ${{ github.event_name == 'push' && github.ref == 'refs/heads/deploy' }}
-    runs-on: ubuntu-latest
+    name: Publish registry 2 (${{ matrix.platform }})
+    runs-on: ${{ fromJSON(matrix.runs_on) }}
     timeout-minutes: 120
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - platform: darwin-arm64
+            runs_on: '["self-hosted","ailydeMac-mini","macOS","ARM64"]'
+          - platform: win32-x64
+            runs_on: '"windows-latest"'
+    defaults:
+      run:
+        shell: bash
     env:
       NPM_CONFIG_FETCH_RETRIES: 5
       NPM_CONFIG_FETCH_RETRY_MINTIMEOUT: 10000
@@ -118,15 +182,15 @@ jobs:
           node-version: '18'
 
       - name: Install dependencies
-        run: npm ci
+        run: npm ci --registry=https://registry.npmjs.org
 
-      - name: Build package
+      - name: Build native bundle
         run: npm run bundle:native:minify
 
       - name: Check npm package
         run: npm pack --dry-run ./dist/bundle-min
 
-      - name: Publish to Registry 2
+      - name: Publish bundle to registry 2
         env:
           REGISTRY_2: ${{ secrets.REGISTRY_URL_2 }}
           TOKEN_2: ${{ secrets.NPM_TOKEN_2 }}
@@ -161,9 +225,9 @@ jobs:
           echo "//$REGISTRY_2_NO_PROTO/:_authToken=$TOKEN_2" >> .npmrc
           trap 'rm -f .npmrc' EXIT
 
-          CURRENT_VERSION=$(node -p "require('./package.json').version")
-          PACKAGE_NAME=$(node -p "require('./package.json').name")
-          echo "Current version: $CURRENT_VERSION"
+          CURRENT_VERSION=$(node -p "require('./dist/bundle-min/package.json').version")
+          PACKAGE_NAME=$(node -p "require('./dist/bundle-min/package.json').name")
+          echo "Package: $PACKAGE_NAME@$CURRENT_VERSION"
 
           if npm view "$PACKAGE_NAME@$CURRENT_VERSION" version &> /dev/null; then
             echo "Version $CURRENT_VERSION exists on $REGISTRY_2, unpublishing..."
@@ -173,7 +237,7 @@ jobs:
 
           retry_with_backoff 5 5 npm publish ./dist/bundle-min --access public
 
-      - name: Notify cache bump for Registry 2
+      - name: Notify cache bump for registry 2
         env:
           NOTIFY_URL: ${{ secrets.NOTIFY_URL_2 }}
           NOTIFY_TOKEN: ${{ secrets.NOTIFY_TOKEN_2 }}
