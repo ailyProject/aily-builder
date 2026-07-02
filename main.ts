@@ -15,7 +15,7 @@ const program = new Command();
 const logger = new Logger();
 
 program
-  .name('aily')
+  .name('aily-builder')
   .description('Fast Arduino compilation CLI tool with optimized preprocessing and parallel compilation')
   .version('1.0.0');
 
