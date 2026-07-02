@@ -53,9 +53,6 @@ async function bundleJavaScript(bundleDir) {
     format: 'cjs',
     outfile: path.join(bundleDir, 'aily-builder.js'),
     external: ESBUILD_EXTERNALS,
-    banner: {
-      js: process.platform === 'win32' ? '' : '#!/usr/bin/env node\n',
-    },
     minify: true,
     sourcemap: false,
     logLevel: 'info',
