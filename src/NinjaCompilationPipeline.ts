@@ -26,6 +26,7 @@ export class NinjaCompilationPipeline {
   private compileConfig: any;
   private cacheManager: CacheManager;
   private ninjaGenerator: NinjaGenerator;
+  private readonly arduinoCoreBuildFlag = '-DARDUINO_CORE_BUILD';
 
   constructor(logger: Logger) {
     this.logger = logger;
@@ -351,7 +352,7 @@ export class NinjaCompilationPipeline {
       // 创建缓存键
       const cacheKey: CacheKey = {
         command: compiler,
-        args: this.parseCompileArgs(argsTemplate, sourceFile),
+        args: this.parseCompileArgs(this.getEffectiveArgsTemplate(argsTemplate, dependency.type), sourceFile),
         sourceFile: sourceFile
       };
 
@@ -495,18 +496,21 @@ export class NinjaCompilationPipeline {
 
         const cacheKey: CacheKey = {
           command: compiler,
-          args: this.parseCompileArgs(argsTemplate, sourceFile),
+          args: this.parseCompileArgs(this.getEffectiveArgsTemplate(argsTemplate, dependency.type), sourceFile),
           sourceFile: sourceFile
         };
 
         // 确定对象文件路径
+        const fileName = path.basename(sourceFile);
         const baseName = path.basename(sourceFile, ext);
         let objectPath: string;
 
-        if (dependency.type === 'library' || dependency.type === 'variant') {
+        if (dependency.type === 'variant') {
+          objectPath = path.join(buildPath, 'core', `${fileName}.o`);
+        } else if (dependency.type === 'library') {
           objectPath = path.join(buildPath, dependency.type, dependency.name, `${baseName}.o`);
         } else {
-          objectPath = path.join(buildPath, dependency.type, `${baseName}.o`);
+          objectPath = path.join(buildPath, dependency.type, `${fileName}.o`);
         }
 
         // 检查缓存并恢复
@@ -565,18 +569,21 @@ export class NinjaCompilationPipeline {
 
         const cacheKey: CacheKey = {
           command: compiler,
-          args: this.parseCompileArgs(argsTemplate, sourceFile),
+          args: this.parseCompileArgs(this.getEffectiveArgsTemplate(argsTemplate, dependency.type), sourceFile),
           sourceFile: sourceFile
         };
 
         // 确定对象文件路径
+        const fileName = path.basename(sourceFile);
         const baseName = path.basename(sourceFile, ext);
         let objectPath: string;
 
-        if (dependency.type === 'library' || dependency.type === 'variant') {
+        if (dependency.type === 'variant') {
+          objectPath = path.join(buildPath, 'core', `${fileName}.o`);
+        } else if (dependency.type === 'library') {
           objectPath = path.join(buildPath, dependency.type, dependency.name, `${baseName}.o`);
         } else {
-          objectPath = path.join(buildPath, dependency.type, `${baseName}.o`);
+          objectPath = path.join(buildPath, dependency.type, `${fileName}.o`);
         }
 
         // 存储到缓存
@@ -595,6 +602,42 @@ export class NinjaCompilationPipeline {
   /**
    * 解析编译参数
    */
+  private getEffectiveArgsTemplate(argsTemplate: string, dependencyType?: string): string {
+    if (!this.isCoreBuildDependency(dependencyType) || !this.platformUsesArduinoCoreBuildHook() || !argsTemplate || argsTemplate.includes(this.arduinoCoreBuildFlag)) {
+      return argsTemplate;
+    }
+
+    return this.insertCompileFlagBeforeSource(argsTemplate, this.arduinoCoreBuildFlag);
+  }
+
+  private isCoreBuildDependency(dependencyType?: string): boolean {
+    return dependencyType === 'core' || dependencyType === 'variant';
+  }
+
+  private platformUsesArduinoCoreBuildHook(): boolean {
+    const platform = this.compileConfig?.arduino?.platform || {};
+    return Object.entries(platform).some(([key, value]) => {
+      return key.startsWith('recipe.hooks.core.prebuild.')
+        && key.includes('pattern')
+        && typeof value === 'string'
+        && value.includes('ARDUINO_CORE_BUILD');
+    });
+  }
+
+  private insertCompileFlagBeforeSource(argsTemplate: string, flag: string): string {
+    const quotedSourcePlaceholder = '"%SOURCE_FILE_PATH%"';
+    if (argsTemplate.includes(quotedSourcePlaceholder)) {
+      return argsTemplate.replace(quotedSourcePlaceholder, `${flag} ${quotedSourcePlaceholder}`);
+    }
+
+    const sourcePlaceholder = '%SOURCE_FILE_PATH%';
+    if (argsTemplate.includes(sourcePlaceholder)) {
+      return argsTemplate.replace(sourcePlaceholder, `${flag} ${sourcePlaceholder}`);
+    }
+
+    return `${argsTemplate} ${flag}`;
+  }
+
   private parseCompileArgs(argsTemplate: string, sourceFile: string): string[] {
     // 简化参数解析，将模板转换为实际的编译参数
     let args = argsTemplate;
