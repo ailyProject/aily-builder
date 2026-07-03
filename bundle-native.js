@@ -4,6 +4,11 @@ const path = require('path');
 
 const DIST_MAIN_PATH = './dist/main.js';
 const BUNDLE_DIR = './dist/bundle-min';
+const BUNDLE_NODE_ENGINE = '>=22 <23';
+const PLATFORM_PACKAGE_SUFFIXES = {
+  'win32-x64': { suffix: 'win32-x64', os: 'win32', cpu: 'x64' },
+  'darwin-arm64': { suffix: 'darwin-arm64', os: 'darwin', cpu: 'arm64' },
+};
 const ESBUILD_EXTERNALS = [
   'tree-sitter',
   'tree-sitter-cpp',
@@ -24,7 +29,9 @@ async function bundleWithNativeMinified() {
 
     await bundleJavaScript(BUNDLE_DIR);
     await copyNativeModules(BUNDLE_DIR);
+    await sanitizeBundledPackages(BUNDLE_DIR);
     await copyNinja(BUNDLE_DIR);
+    await copyPackageMetadata(BUNDLE_DIR);
     await createLaunchScript(BUNDLE_DIR, options);
     await createPackageJson(BUNDLE_DIR, options);
 
@@ -236,26 +243,137 @@ require('./aily-builder.js');
 
 async function createPackageJson(bundleDir, options) {
   const projectPackageJson = await fs.readJson('./package.json');
+  const bundledDependencies = await collectBundledDependencies(bundleDir);
+  const platformPackage = getPlatformPackage();
   const bundlePackageJson = {
-    name: projectPackageJson.name,
+    name: `${projectPackageJson.name}-${platformPackage.suffix}`,
     version: projectPackageJson.version,
     description: projectPackageJson.description,
     main: 'index.js',
     bin: {
-      aily: 'index.js',
+      'aily-builder': 'index.js',
     },
     engines: {
-      node: '>=16',
+      node: BUNDLE_NODE_ENGINE,
     },
+    os: [platformPackage.os],
+    cpu: [platformPackage.cpu],
     ailyBuilder: {
       defaultGenerateArchiveCloudCache: options.defaultGenerateArchiveCloudCache,
     },
   };
 
+  if (bundledDependencies.length > 0) {
+    bundlePackageJson.dependencies = Object.fromEntries(
+      bundledDependencies.map((dep) => [dep.name, dep.version]),
+    );
+    bundlePackageJson.bundledDependencies = bundledDependencies.map((dep) => dep.name);
+  }
+
   await fs.writeFile(
     path.join(bundleDir, 'package.json'),
     `${JSON.stringify(bundlePackageJson, null, 2)}\n`,
   );
+}
+
+function getPlatformPackage() {
+  const platformKey = `${process.platform}-${process.arch}`;
+  const platformPackage = PLATFORM_PACKAGE_SUFFIXES[platformKey];
+  if (!platformPackage) {
+    throw new Error(`Unsupported bundle platform: ${platformKey}`);
+  }
+
+  return platformPackage;
+}
+
+async function copyPackageMetadata(bundleDir) {
+  for (const file of ['README.md', 'README-ZH.md', 'LICENSE']) {
+    if (await fs.pathExists(file)) {
+      await fs.copy(file, path.join(bundleDir, file));
+    }
+  }
+}
+
+async function collectBundledDependencies(bundleDir) {
+  const nodeModulesDir = path.join(bundleDir, 'node_modules');
+  if (!(await fs.pathExists(nodeModulesDir))) {
+    return [];
+  }
+
+  const dependencies = [];
+  const entries = await fs.readdir(nodeModulesDir);
+
+  for (const entry of entries) {
+    const entryPath = path.join(nodeModulesDir, entry);
+    const stat = await fs.stat(entryPath);
+    if (!stat.isDirectory()) {
+      continue;
+    }
+
+    if (entry.startsWith('@')) {
+      const scopedEntries = await fs.readdir(entryPath);
+      for (const scopedEntry of scopedEntries) {
+        await addBundledDependency(dependencies, path.join(entryPath, scopedEntry));
+      }
+    } else {
+      await addBundledDependency(dependencies, entryPath);
+    }
+  }
+
+  return dependencies.sort((a, b) => a.name.localeCompare(b.name));
+}
+
+async function sanitizeBundledPackages(bundleDir) {
+  const nodeModulesDir = path.join(bundleDir, 'node_modules');
+  if (!(await fs.pathExists(nodeModulesDir))) {
+    return;
+  }
+
+  async function walk(dir) {
+    const entries = await fs.readdir(dir);
+    for (const entry of entries) {
+      const entryPath = path.join(dir, entry);
+      const stat = await fs.stat(entryPath);
+      if (!stat.isDirectory()) {
+        continue;
+      }
+
+      const packageJsonPath = path.join(entryPath, 'package.json');
+      if (await fs.pathExists(packageJsonPath)) {
+        await sanitizePackageJson(packageJsonPath);
+      }
+
+      await walk(entryPath);
+    }
+  }
+
+  await walk(nodeModulesDir);
+}
+
+async function sanitizePackageJson(packageJsonPath) {
+  const packageJson = await fs.readJson(packageJsonPath);
+
+  delete packageJson.scripts;
+  delete packageJson.dependencies;
+  delete packageJson.devDependencies;
+  delete packageJson.optionalDependencies;
+
+  await fs.writeFile(packageJsonPath, `${JSON.stringify(packageJson, null, 2)}\n`);
+}
+
+async function addBundledDependency(dependencies, packageDir) {
+  const packageJsonPath = path.join(packageDir, 'package.json');
+  if (!(await fs.pathExists(packageJsonPath))) {
+    return;
+  }
+
+  const packageJson = await fs.readJson(packageJsonPath);
+  if (packageJson.name) {
+    dependencies.push({
+      name: packageJson.name,
+      version: packageJson.version || '*',
+    });
+  }
 }
 
 async function copyPackageRootFiles(packageSrc, packageDest, files) {
