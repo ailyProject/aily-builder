@@ -1,0 +1,447 @@
+name: Check and Deploy to NPM
+
+on:
+  push:
+    branches:
+      - deploy-next
+
+env:
+  AILY_BUILDER_REQUIRED: 'true'
+  PACKAGE_METADATA_KEY: aily-builder-next
+  PACKAGE_METADATA_URL: https://dl.yiyu.pro/blockly/package-updates.json
+  PACKAGE_METADATA_URL_2: https://dl.aily.pro/blockly/package-updates.json
+
+jobs:
+  build-bundles:
+    if: ${{ github.event_name == 'push' }}
+    name: Build native bundle (${{ matrix.platform }})
+    runs-on: ${{ fromJSON(matrix.runs_on) }}
+    timeout-minutes: 120
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - platform: darwin-arm64
+            runs_on: '["self-hosted","ailydeMac-mini","macOS","ARM64"]'
+          - platform: win32-x64
+            runs_on: '"windows-2022"'
+    defaults:
+      run:
+        shell: bash
+    env:
+      NPM_CONFIG_FETCH_RETRIES: 5
+      NPM_CONFIG_FETCH_RETRY_MINTIMEOUT: 10000
+      NPM_CONFIG_FETCH_RETRY_MAXTIMEOUT: 120000
+      NPM_CONFIG_FETCH_TIMEOUT: 300000
+      npm_config_msvs_version: 2022
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          token: ${{ secrets.GHB_TOKEN }}
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+
+      - name: Install dependencies
+        run: npm ci --registry=https://registry.npmjs.org
+
+      - name: Build native bundle
+        run: npm run bundle:native:minify
+
+      - name: Check npm package
+        run: npm pack --dry-run ./dist/bundle-min
+
+      - name: Upload native bundle
+        uses: actions/upload-artifact@v4
+        with:
+          name: aily-builder-${{ matrix.platform }}
+          path: dist/bundle-min
+          if-no-files-found: error
+
+  publish-default:
+    if: ${{ github.event_name == 'push' }}
+    name: Publish default registry
+    needs: build-bundles
+    runs-on: [self-hosted, ailydeMac-mini, macOS, ARM64]
+    timeout-minutes: 120
+    defaults:
+      run:
+        shell: bash
+    env:
+      NPM_CONFIG_FETCH_RETRIES: 5
+      NPM_CONFIG_FETCH_RETRY_MINTIMEOUT: 10000
+      NPM_CONFIG_FETCH_RETRY_MAXTIMEOUT: 120000
+      NPM_CONFIG_FETCH_TIMEOUT: 300000
+    steps:
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          registry-url: ${{ secrets.REGISTRY_URL }}
+
+      - name: Download native bundles
+        uses: actions/download-artifact@v4
+        with:
+          pattern: aily-builder-*
+          path: dist/native-bundles
+
+      - name: Publish bundles to default registry
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+        run: |
+          retry_with_backoff() {
+            local max_attempts="$1"
+            local sleep_seconds="$2"
+            shift 2
+            local attempt=1
+
+            until "$@"; do
+              if [ "$attempt" -ge "$max_attempts" ]; then
+                echo "Command failed after ${max_attempts} attempts: $*"
+                return 1
+              fi
+              echo "Attempt ${attempt}/${max_attempts} failed. Retrying in ${sleep_seconds}s: $*"
+              sleep "$sleep_seconds"
+              attempt=$((attempt + 1))
+              sleep_seconds=$((sleep_seconds * 2))
+            done
+          }
+
+          for package_dir in dist/native-bundles/aily-builder-*; do
+            if [ ! -f "$package_dir/package.json" ]; then
+              echo "::warning::Skipping $package_dir because package.json was not found"
+              continue
+            fi
+
+            CURRENT_VERSION=$(node -p "require('./$package_dir/package.json').version")
+            PACKAGE_NAME=$(node -p "require('./$package_dir/package.json').name")
+            echo "Package: $PACKAGE_NAME@$CURRENT_VERSION"
+
+            if npm view "$PACKAGE_NAME@$CURRENT_VERSION" version &> /dev/null; then
+              echo "Version $CURRENT_VERSION exists, unpublishing..."
+              retry_with_backoff 3 3 npm unpublish "$PACKAGE_NAME@$CURRENT_VERSION" --force
+              sleep 5
+            fi
+
+            retry_with_backoff 5 5 npm publish "$package_dir" --access public
+          done
+
+      - name: Notify cache bump
+        env:
+          NOTIFY_URL: ${{ secrets.NOTIFY_URL }}
+          NOTIFY_TOKEN: ${{ secrets.NOTIFY_TOKEN }}
+        run: |
+          if [ -z "$NOTIFY_URL" ] || [ -z "$NOTIFY_TOKEN" ]; then
+            echo "NOTIFY_URL or NOTIFY_TOKEN not set, skipping."
+            exit 0
+          fi
+          echo "Sending POST request to $NOTIFY_URL"
+          set +e
+          HTTP_STATUS=$(curl -s -o /tmp/notify_response.txt -w "%{http_code}" --max-time 30 \
+            -X POST "$NOTIFY_URL" \
+            -H "Authorization: Bearer $NOTIFY_TOKEN" \
+            -H "Content-Type: application/json" \
+            -d '{}')
+          CURL_EXIT=$?
+          set -e
+          if [ "$CURL_EXIT" -ne 0 ]; then
+            echo "::warning::Notification request failed (curl exit code $CURL_EXIT)"
+          elif [ "$HTTP_STATUS" -ge 200 ] && [ "$HTTP_STATUS" -lt 300 ]; then
+            echo "Notification sent successfully (HTTP $HTTP_STATUS)"
+          else
+            echo "::warning::Notification failed with HTTP status $HTTP_STATUS"
+            cat /tmp/notify_response.txt || true
+          fi
+
+  publish-registry2:
+    if: ${{ github.event_name == 'push' }}
+    name: Publish registry 2 (${{ matrix.platform }})
+    runs-on: ${{ fromJSON(matrix.runs_on) }}
+    timeout-minutes: 120
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - platform: darwin-arm64
+            runs_on: '["self-hosted","ailydeMac-mini","macOS","ARM64"]'
+          - platform: win32-x64
+            runs_on: '"windows-2022"'
+    defaults:
+      run:
+        shell: bash
+    env:
+      NPM_CONFIG_FETCH_RETRIES: 5
+      NPM_CONFIG_FETCH_RETRY_MINTIMEOUT: 10000
+      NPM_CONFIG_FETCH_RETRY_MAXTIMEOUT: 120000
+      NPM_CONFIG_FETCH_TIMEOUT: 300000
+      npm_config_msvs_version: 2022
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          token: ${{ secrets.GHB_TOKEN }}
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+
+      - name: Install dependencies
+        run: npm ci --registry=https://registry.npmjs.org
+
+      - name: Build native bundle
+        run: npm run bundle:native:minify
+
+      - name: Check npm package
+        run: npm pack --dry-run ./dist/bundle-min
+
+      - name: Publish bundle to registry 2
+        env:
+          REGISTRY_2: ${{ secrets.REGISTRY_URL_2 }}
+          TOKEN_2: ${{ secrets.NPM_TOKEN_2 }}
+        run: |
+          retry_with_backoff() {
+            local max_attempts="$1"
+            local sleep_seconds="$2"
+            shift 2
+            local attempt=1
+
+            until "$@"; do
+              if [ "$attempt" -ge "$max_attempts" ]; then
+                echo "Command failed after ${max_attempts} attempts: $*"
+                return 1
+              fi
+              echo "Attempt ${attempt}/${max_attempts} failed. Retrying in ${sleep_seconds}s: $*"
+              sleep "$sleep_seconds"
+              attempt=$((attempt + 1))
+              sleep_seconds=$((sleep_seconds * 2))
+            done
+          }
+
+          if [ -z "$REGISTRY_2" ] || [ -z "$TOKEN_2" ]; then
+            echo "Registry 2 secrets not set, skipping."
+            exit 0
+          fi
+
+          REGISTRY_2_NO_PROTO=$(echo "$REGISTRY_2" | sed 's/^https\?:\/\///')
+          REGISTRY_2_NO_PROTO=$(echo "$REGISTRY_2_NO_PROTO" | sed 's/\/$//')
+
+          echo "registry=$REGISTRY_2" > .npmrc
+          echo "//$REGISTRY_2_NO_PROTO/:_authToken=$TOKEN_2" >> .npmrc
+          trap 'rm -f .npmrc' EXIT
+
+          CURRENT_VERSION=$(node -p "require('./dist/bundle-min/package.json').version")
+          PACKAGE_NAME=$(node -p "require('./dist/bundle-min/package.json').name")
+          echo "Package: $PACKAGE_NAME@$CURRENT_VERSION"
+
+          if npm view "$PACKAGE_NAME@$CURRENT_VERSION" version &> /dev/null; then
+            echo "Version $CURRENT_VERSION exists on $REGISTRY_2, unpublishing..."
+            retry_with_backoff 3 3 npm unpublish "$PACKAGE_NAME@$CURRENT_VERSION" --force
+            sleep 5
+          fi
+
+          retry_with_backoff 5 5 npm publish ./dist/bundle-min --access public
+
+      - name: Notify cache bump for registry 2
+        env:
+          NOTIFY_URL: ${{ secrets.NOTIFY_URL_2 }}
+          NOTIFY_TOKEN: ${{ secrets.NOTIFY_TOKEN_2 }}
+        run: |
+          if [ -z "$NOTIFY_URL" ] || [ -z "$NOTIFY_TOKEN" ]; then
+            echo "NOTIFY_URL_2 or NOTIFY_TOKEN_2 not set, skipping."
+            exit 0
+          fi
+          echo "Sending POST request to $NOTIFY_URL"
+          set +e
+          HTTP_STATUS=$(curl -s -o /tmp/notify_response_2.txt -w "%{http_code}" --max-time 30 \
+            -X POST "$NOTIFY_URL" \
+            -H "Authorization: Bearer $NOTIFY_TOKEN" \
+            -H "Content-Type: application/json" \
+            -d '{}')
+          CURL_EXIT=$?
+          set -e
+          if [ "$CURL_EXIT" -ne 0 ]; then
+            echo "::warning::Notification (Registry 2) request failed (curl exit code $CURL_EXIT)"
+          elif [ "$HTTP_STATUS" -ge 200 ] && [ "$HTTP_STATUS" -lt 300 ]; then
+            echo "Notification (Registry 2) sent successfully (HTTP $HTTP_STATUS)"
+          else
+            echo "::warning::Notification (Registry 2) failed with HTTP status $HTTP_STATUS"
+            cat /tmp/notify_response_2.txt || true
+          fi
+
+  update-package-metadata:
+    if: ${{ always() && (github.event_name == 'workflow_dispatch' || github.event_name == 'push') }}
+    name: Update package metadata
+    needs:
+      - publish-default
+      - publish-registry2
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          token: ${{ secrets.GHB_TOKEN }}
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+
+      - name: Download and update server metadata
+        id: server-metadata
+        env:
+          AILY_BUILDER_REQUIRED: ${{ env.AILY_BUILDER_REQUIRED }}
+          PACKAGE_METADATA_KEY: ${{ env.PACKAGE_METADATA_KEY }}
+          PACKAGE_METADATA_URL: ${{ env.PACKAGE_METADATA_URL }}
+          PACKAGE_METADATA_SERVER_HOST: ${{ secrets.PACKAGE_METADATA_SERVER_HOST }}
+          PACKAGE_METADATA_SERVER_USERNAME: ${{ secrets.PACKAGE_METADATA_SERVER_USERNAME }}
+          PACKAGE_METADATA_SERVER_PASSWORD: ${{ secrets.PACKAGE_METADATA_SERVER_PASSWORD }}
+          PACKAGE_METADATA_SERVER_TARGET_DIR: ${{ secrets.PACKAGE_METADATA_SERVER_TARGET_DIR }}
+          PACKAGE_METADATA_SERVER_FILE_NAME: ${{ secrets.PACKAGE_METADATA_SERVER_FILE_NAME }}
+        run: |
+          if [ -z "$PACKAGE_METADATA_SERVER_HOST" ] || [ -z "$PACKAGE_METADATA_SERVER_USERNAME" ] || [ -z "$PACKAGE_METADATA_SERVER_PASSWORD" ] || [ -z "$PACKAGE_METADATA_SERVER_TARGET_DIR" ]; then
+            echo "::warning::Server metadata upload settings are not set, skipping server metadata update."
+            echo "server_metadata_enabled=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          echo "server_metadata_enabled=true" >> "$GITHUB_OUTPUT"
+
+          mkdir -p package-metadata-server
+          SERVER_FILE_NAME="${PACKAGE_METADATA_SERVER_FILE_NAME:-package-updates.json}"
+          SERVER_METADATA_FILE="package-metadata-server/$SERVER_FILE_NAME"
+
+          echo "Downloading package metadata from $PACKAGE_METADATA_URL"
+          if curl -fsSL "$PACKAGE_METADATA_URL" -o "$SERVER_METADATA_FILE"; then
+            echo "Downloaded existing package metadata."
+          else
+            echo "Package metadata does not exist or cannot be read yet. Creating $SERVER_METADATA_FILE."
+            printf '{"packages":[]}\n' > "$SERVER_METADATA_FILE"
+          fi
+
+          PACKAGE_VERSION=$(node -p "require('./package.json').version") \
+          METADATA_FILE="$SERVER_METADATA_FILE" \
+          AILY_BUILDER_REQUIRED="$AILY_BUILDER_REQUIRED" \
+          node <<'NODE'
+          const fs = require('fs');
+
+          const metadataFile = process.env.METADATA_FILE;
+          const packageKey = process.env.PACKAGE_METADATA_KEY;
+          const packageVersion = process.env.PACKAGE_VERSION;
+          const required = /^true$/i.test(process.env.AILY_BUILDER_REQUIRED || 'false');
+          const metadata = JSON.parse(fs.readFileSync(metadataFile, 'utf8'));
+
+          if (!packageKey) {
+            throw new Error('PACKAGE_METADATA_KEY must be set');
+          }
+
+          if (!Array.isArray(metadata.packages)) {
+            throw new Error('metadata.packages must be an array');
+          }
+
+          let targetPackage = metadata.packages.find((pkg) => pkg && pkg.key === packageKey);
+          if (!targetPackage) {
+            targetPackage = {
+              key: packageKey,
+              mac: '@aily-project/aily-builder-darwin-arm64',
+              win: '@aily-project/aily-builder-win32-x64',
+            };
+            metadata.packages.push(targetPackage);
+          }
+
+          targetPackage.version = packageVersion;
+          targetPackage.required = required;
+          fs.writeFileSync(metadataFile, `${JSON.stringify(metadata, null, 2)}\n`);
+          NODE
+
+      - name: Upload server metadata
+        if: ${{ steps.server-metadata.outputs.server_metadata_enabled == 'true' }}
+        uses: appleboy/scp-action@v0.1.7
+        with:
+          host: ${{ secrets.PACKAGE_METADATA_SERVER_HOST }}
+          username: ${{ secrets.PACKAGE_METADATA_SERVER_USERNAME }}
+          password: ${{ secrets.PACKAGE_METADATA_SERVER_PASSWORD }}
+          port: ${{ secrets.PACKAGE_METADATA_SERVER_PORT || 22 }}
+          source: package-metadata-server/*
+          target: ${{ secrets.PACKAGE_METADATA_SERVER_TARGET_DIR }}
+          strip_components: 1
+          overwrite: true
+
+      - name: Download and update R2 metadata
+        env:
+          AILY_BUILDER_REQUIRED: ${{ env.AILY_BUILDER_REQUIRED }}
+          PACKAGE_METADATA_KEY: ${{ env.PACKAGE_METADATA_KEY }}
+          PACKAGE_METADATA_URL_2: ${{ env.PACKAGE_METADATA_URL_2 }}
+          PACKAGE_METADATA_R2_ACCOUNT_ID: ${{ secrets.PACKAGE_METADATA_R2_ACCOUNT_ID }}
+          PACKAGE_METADATA_R2_BUCKET: ${{ secrets.PACKAGE_METADATA_R2_BUCKET }}
+          PACKAGE_METADATA_R2_OBJECT_KEY: ${{ secrets.PACKAGE_METADATA_R2_OBJECT_KEY }}
+          AWS_ACCESS_KEY_ID: ${{ secrets.PACKAGE_METADATA_R2_ACCESS_KEY_ID }}
+          AWS_SECRET_ACCESS_KEY: ${{ secrets.PACKAGE_METADATA_R2_SECRET_ACCESS_KEY }}
+          AWS_DEFAULT_REGION: auto
+        run: |
+          if [ -z "$PACKAGE_METADATA_R2_ACCOUNT_ID" ] || [ -z "$PACKAGE_METADATA_R2_BUCKET" ] || [ -z "$PACKAGE_METADATA_R2_OBJECT_KEY" ]; then
+            echo "::warning::R2 account id, bucket, or object key is not set, skipping R2 metadata upload."
+            exit 0
+          fi
+
+          if [ -z "$AWS_ACCESS_KEY_ID" ] || [ -z "$AWS_SECRET_ACCESS_KEY" ]; then
+            echo "::warning::R2 access key id or secret access key is not set, skipping R2 metadata upload."
+            exit 0
+          fi
+
+          R2_METADATA_FILE="package-metadata-r2.json"
+          R2_ENDPOINT="https://$PACKAGE_METADATA_R2_ACCOUNT_ID.r2.cloudflarestorage.com"
+
+          echo "Downloading package metadata from $PACKAGE_METADATA_URL_2"
+          if curl -fsSL "$PACKAGE_METADATA_URL_2" -o "$R2_METADATA_FILE"; then
+            echo "Downloaded existing package metadata."
+          else
+            echo "Package metadata does not exist or cannot be read yet. Creating $R2_METADATA_FILE."
+            printf '{"packages":[]}\n' > "$R2_METADATA_FILE"
+          fi
+
+          PACKAGE_VERSION=$(node -p "require('./package.json').version") \
+          METADATA_FILE="$R2_METADATA_FILE" \
+          AILY_BUILDER_REQUIRED="$AILY_BUILDER_REQUIRED" \
+          node <<'NODE'
+          const fs = require('fs');
+
+          const metadataFile = process.env.METADATA_FILE;
+          const packageKey = process.env.PACKAGE_METADATA_KEY;
+          const packageVersion = process.env.PACKAGE_VERSION;
+          const required = /^true$/i.test(process.env.AILY_BUILDER_REQUIRED || 'false');
+          const metadata = JSON.parse(fs.readFileSync(metadataFile, 'utf8'));
+
+          if (!packageKey) {
+            throw new Error('PACKAGE_METADATA_KEY must be set');
+          }
+
+          if (!Array.isArray(metadata.packages)) {
+            throw new Error('metadata.packages must be an array');
+          }
+
+          let targetPackage = metadata.packages.find((pkg) => pkg && pkg.key === packageKey);
+          if (!targetPackage) {
+            targetPackage = {
+              key: packageKey,
+              mac: '@aily-project/aily-builder-darwin-arm64',
+              win: '@aily-project/aily-builder-win32-x64',
+            };
+            metadata.packages.push(targetPackage);
+          }
+
+          targetPackage.version = packageVersion;
+          targetPackage.required = required;
+          fs.writeFileSync(metadataFile, `${JSON.stringify(metadata, null, 2)}\n`);
+          NODE
+
+          echo "Uploading updated package metadata to R2 bucket $PACKAGE_METADATA_R2_BUCKET"
+          aws s3 cp "$R2_METADATA_FILE" "s3://$PACKAGE_METADATA_R2_BUCKET/$PACKAGE_METADATA_R2_OBJECT_KEY" \
+            --endpoint-url "$R2_ENDPOINT" \
+            --content-type application/json
