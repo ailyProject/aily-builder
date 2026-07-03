@@ -813,7 +813,7 @@ export class ArchiveCloudCacheManager {
         }
       };
 
-      await fs.writeJson(manifestPath, manifest, { spaces: 2 });
+      await fs.writeFile(manifestPath, this.canonicalJson(manifest), 'utf8');
       await fs.ensureDir(path.dirname(entryDir));
 
       if (await fs.pathExists(entryDir)) {
