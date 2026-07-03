@@ -167,6 +167,12 @@ Options:
   --board-options <key=value>      Board menu options (e.g., flash=2097152_0)
   --tool-versions <versions>       Specify tool versions (format: tool1@version1,tool2@version2)
   --preprocess-result <path>       Use preprocess result JSON file (skip preprocessing)
+  --archive-cloud-cache <path>     Local archive cloud cache directory
+  --no-archive-cloud-cache         Disable archive cloud cache restore and generation
+  --archive-cloud-cache-url <url>  Remote archive cloud cache base URL
+  --no-fetch-archive-cloud-cache   Do not fetch cached .a archives from remote cloud cache
+  --archive-cloud-cache-local-only Only use local archive cloud cache; do not request remote cache
+  --generate-archive-cloud-cache   Generate uploadable archive cloud cache entries after successful builds
   -j, --jobs <number>              Number of parallel compilation jobs (default: "4")
   --verbose                        Enable verbose output
   --no-cache                       Disable compilation cache

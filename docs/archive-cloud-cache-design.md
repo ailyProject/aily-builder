@@ -592,6 +592,7 @@ exclude: **/*.lock
 --archive-cloud-cache <path>
 --no-archive-cloud-cache
 --archive-cloud-cache-url <url>
+--no-fetch-archive-cloud-cache
 --archive-cloud-cache-local-only
 --generate-archive-cloud-cache
 ```
@@ -600,7 +601,7 @@ exclude: **/*.lock
 
 - 本地 archive cache 默认开启。
 - 云端读取 URL 由 `--archive-cloud-cache-url <url>` 或 `AILY_BUILDER_ARCHIVE_CLOUD_CACHE_URL` 配置，默认值为 `https://cache.aily.pro/v1`。
-- 如果用户配置 `--archive-cloud-cache-local-only`，则不请求云端。
+- 默认从云端获取缓存的 `.a`；如果用户配置 `--no-fetch-archive-cloud-cache` 或兼容参数 `--archive-cloud-cache-local-only`，则不请求云端。
 - 生成新云缓存默认关闭。
 - 只有传入 `--generate-archive-cloud-cache` 时，编译成功后才写入新的 `manifest.json`、`inputs.json` 和 `.a`。
 - 未开启生成时，缓存系统是只读优化路径：可以 restore local/remote hits，但不会产生新的上传源条目。
@@ -611,6 +612,7 @@ exclude: **/*.lock
 AILY_BUILDER_ARCHIVE_CLOUD_CACHE=1
 AILY_BUILDER_ARCHIVE_CLOUD_CACHE_DIR=...
 AILY_BUILDER_ARCHIVE_CLOUD_CACHE_URL=https://cache.aily.pro/v1
+AILY_BUILDER_FETCH_ARCHIVE_CLOUD_CACHE=1
 AILY_BUILDER_ARCHIVE_CLOUD_CACHE_LOCAL_ONLY=0
 AILY_BUILDER_GENERATE_ARCHIVE_CLOUD_CACHE=0
 ```

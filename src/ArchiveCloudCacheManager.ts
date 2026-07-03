@@ -223,7 +223,12 @@ export class ArchiveCloudCacheManager {
       return localHit;
     }
 
-    if (this.isLocalOnly() || this.remoteDisabledForRun) {
+    if (!this.shouldFetchRemote()) {
+      this.logger.debug(`[ARCHIVE_CLOUD_CACHE] remote fetch disabled, local miss ${target.archiveName} ${key}`);
+      return null;
+    }
+
+    if (this.remoteDisabledForRun) {
       this.logger.debug(`[ARCHIVE_CLOUD_CACHE] miss ${target.archiveName} ${key}`);
       return null;
     }
@@ -1026,6 +1031,10 @@ export class ArchiveCloudCacheManager {
 
   private isLocalOnly(): boolean {
     return this.readBooleanEnv('AILY_BUILDER_ARCHIVE_CLOUD_CACHE_LOCAL_ONLY', false);
+  }
+
+  private shouldFetchRemote(): boolean {
+    return !this.isLocalOnly() && this.readBooleanEnv('AILY_BUILDER_FETCH_ARCHIVE_CLOUD_CACHE', true);
   }
 
   private readBooleanEnv(name: string, defaultValue: boolean): boolean {

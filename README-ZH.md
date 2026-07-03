@@ -164,6 +164,12 @@ aily-builder compile sketch.ino --no-cache
   --board-options <key=value>      开发板菜单选项 (如 flash=2097152_0)
   --tool-versions <versions>       指定工具版本 (格式: tool1@version1,tool2@version2)
   --preprocess-result <path>       使用预处理结果 JSON 文件（跳过预处理）
+  --archive-cloud-cache <path>     本地 archive cloud cache 目录
+  --no-archive-cloud-cache         禁用 archive cloud cache 恢复和生成
+  --archive-cloud-cache-url <url>  远端 archive cloud cache 基础 URL
+  --no-fetch-archive-cloud-cache   不从云端获取缓存的 .a，仅使用本地缓存和本次编译
+  --archive-cloud-cache-local-only 只使用本地 archive cloud cache，不请求远端缓存
+  --generate-archive-cloud-cache   编译成功后生成可上传的 archive cloud cache 条目
   -j, --jobs <number>              并行编译任务数 (默认: "4")
   --verbose                        启用详细输出
   --no-cache                       禁用编译缓存

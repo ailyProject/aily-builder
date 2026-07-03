@@ -60,6 +60,7 @@ program
   .option('--archive-cloud-cache <path>', 'Local archive cloud cache directory')
   .option('--no-archive-cloud-cache', 'Disable archive cloud cache restore and generation')
   .option('--archive-cloud-cache-url <url>', 'Remote archive cloud cache base URL')
+  .option('--no-fetch-archive-cloud-cache', 'Do not fetch compiled .a archives from remote cloud cache')
   .option('--archive-cloud-cache-local-only', 'Only use local archive cloud cache; do not request remote cache', false)
   .option('--generate-archive-cloud-cache', 'Generate uploadable archive cloud cache entries after successful builds', isTruthyEnv('AILY_BUILDER_GENERATE_ARCHIVE_CLOUD_CACHE'))
   .action(async (sketch, options) => {
@@ -100,7 +101,8 @@ program
     if (options.archiveCloudCacheUrl) {
       process.env['AILY_BUILDER_ARCHIVE_CLOUD_CACHE_URL'] = options.archiveCloudCacheUrl;
     }
-    if (options.archiveCloudCacheLocalOnly) {
+    if (options.fetchArchiveCloudCache === false || options.archiveCloudCacheLocalOnly) {
+      process.env['AILY_BUILDER_FETCH_ARCHIVE_CLOUD_CACHE'] = '0';
       process.env['AILY_BUILDER_ARCHIVE_CLOUD_CACHE_LOCAL_ONLY'] = '1';
     }
     if (options.generateArchiveCloudCache) {
