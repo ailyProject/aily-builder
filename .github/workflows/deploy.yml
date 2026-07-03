@@ -8,6 +8,7 @@ on:
 
 env:
   AILY_BUILDER_REQUIRED: 'false'
+  PACKAGE_METADATA_KEY: aily-builder
   PACKAGE_METADATA_URL: https://dl.yiyu.pro/blockly/package-updates.json
   PACKAGE_METADATA_URL_2: https://dl.aily.pro/blockly/package-updates.json
 
@@ -298,6 +299,7 @@ jobs:
         id: server-metadata
         env:
           AILY_BUILDER_REQUIRED: ${{ env.AILY_BUILDER_REQUIRED }}
+          PACKAGE_METADATA_KEY: ${{ env.PACKAGE_METADATA_KEY }}
           PACKAGE_METADATA_URL: ${{ env.PACKAGE_METADATA_URL }}
           PACKAGE_METADATA_SERVER_HOST: ${{ secrets.PACKAGE_METADATA_SERVER_HOST }}
           PACKAGE_METADATA_SERVER_USERNAME: ${{ secrets.PACKAGE_METADATA_SERVER_USERNAME }}
@@ -331,18 +333,23 @@ jobs:
           const fs = require('fs');
 
           const metadataFile = process.env.METADATA_FILE;
+          const packageKey = process.env.PACKAGE_METADATA_KEY;
           const packageVersion = process.env.PACKAGE_VERSION;
           const required = /^true$/i.test(process.env.AILY_BUILDER_REQUIRED || 'false');
           const metadata = JSON.parse(fs.readFileSync(metadataFile, 'utf8'));
+
+          if (!packageKey) {
+            throw new Error('PACKAGE_METADATA_KEY must be set');
+          }
 
           if (!Array.isArray(metadata.packages)) {
             throw new Error('metadata.packages must be an array');
           }
 
-          let targetPackage = metadata.packages.find((pkg) => pkg && pkg.key === 'aily-builder');
+          let targetPackage = metadata.packages.find((pkg) => pkg && pkg.key === packageKey);
           if (!targetPackage) {
             targetPackage = {
-              key: 'aily-builder',
+              key: packageKey,
               mac: '@aily-project/aily-builder-darwin-arm64',
               win: '@aily-project/aily-builder-win32-x64',
             };
@@ -370,6 +377,7 @@ jobs:
       - name: Download and update R2 metadata
         env:
           AILY_BUILDER_REQUIRED: ${{ env.AILY_BUILDER_REQUIRED }}
+          PACKAGE_METADATA_KEY: ${{ env.PACKAGE_METADATA_KEY }}
           PACKAGE_METADATA_URL_2: ${{ env.PACKAGE_METADATA_URL_2 }}
           PACKAGE_METADATA_R2_ACCOUNT_ID: ${{ secrets.PACKAGE_METADATA_R2_ACCOUNT_ID }}
           PACKAGE_METADATA_R2_BUCKET: ${{ secrets.PACKAGE_METADATA_R2_BUCKET }}
@@ -406,18 +414,23 @@ jobs:
           const fs = require('fs');
 
           const metadataFile = process.env.METADATA_FILE;
+          const packageKey = process.env.PACKAGE_METADATA_KEY;
           const packageVersion = process.env.PACKAGE_VERSION;
           const required = /^true$/i.test(process.env.AILY_BUILDER_REQUIRED || 'false');
           const metadata = JSON.parse(fs.readFileSync(metadataFile, 'utf8'));
+
+          if (!packageKey) {
+            throw new Error('PACKAGE_METADATA_KEY must be set');
+          }
 
           if (!Array.isArray(metadata.packages)) {
             throw new Error('metadata.packages must be an array');
           }
 
-          let targetPackage = metadata.packages.find((pkg) => pkg && pkg.key === 'aily-builder');
+          let targetPackage = metadata.packages.find((pkg) => pkg && pkg.key === packageKey);
           if (!targetPackage) {
             targetPackage = {
-              key: 'aily-builder',
+              key: packageKey,
               mac: '@aily-project/aily-builder-darwin-arm64',
               win: '@aily-project/aily-builder-win32-x64',
             };
