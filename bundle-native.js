@@ -4,6 +4,7 @@ const path = require('path');
 
 const DIST_MAIN_PATH = './dist/main.js';
 const BUNDLE_DIR = './dist/bundle-min';
+const BUNDLE_NODE_ENGINE = '>=22 <23';
 const PLATFORM_PACKAGE_SUFFIXES = {
   'win32-x64': { suffix: 'win32-x64', os: 'win32', cpu: 'x64' },
   'darwin-arm64': { suffix: 'darwin-arm64', os: 'darwin', cpu: 'arm64' },
@@ -225,7 +226,7 @@ async function createPackageJson(bundleDir) {
       'aily-builder': 'index.js',
     },
     engines: {
-      node: '>=16',
+      node: BUNDLE_NODE_ENGINE,
     },
     os: [platformPackage.os],
     cpu: [platformPackage.cpu],
