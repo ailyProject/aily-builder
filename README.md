@@ -19,7 +19,7 @@ If this tool helps you, please give it a ⭐️ for support!
 ## Quick Start
 
 ```bash
-npm install -g aily-builder
+npm install -g @aily-project/aily-builder
 aily-builder --help
 ```
 

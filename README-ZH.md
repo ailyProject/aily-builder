@@ -18,7 +18,7 @@
 ## 快速开始
 
 ```bash
-npm install -g aily-builder
+npm install -g @aily-project/aily-builder
 aily-builder --help
 ```
 
