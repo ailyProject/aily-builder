@@ -13,16 +13,20 @@ const ESBUILD_EXTERNALS = [
 
 async function bundleWithNativeMinified() {
   try {
+    const options = parseBundleOptions();
     ensureBuilt();
 
     console.log('Building minified bundle with native modules...');
+    if (options.defaultGenerateArchiveCloudCache) {
+      console.log('Archive cloud cache generation defaults to enabled in this bundle.');
+    }
     await fs.emptyDir(BUNDLE_DIR);
 
     await bundleJavaScript(BUNDLE_DIR);
     await copyNativeModules(BUNDLE_DIR);
     await copyNinja(BUNDLE_DIR);
-    await createLaunchScript(BUNDLE_DIR);
-    await createPackageJson(BUNDLE_DIR);
+    await createLaunchScript(BUNDLE_DIR, options);
+    await createPackageJson(BUNDLE_DIR, options);
 
     const bundleStats = await getBundleStats(BUNDLE_DIR);
     console.log('Minified bundle created successfully.');
@@ -33,6 +37,19 @@ async function bundleWithNativeMinified() {
     console.error('Minified bundle creation failed:', error);
     process.exit(1);
   }
+}
+
+function parseBundleOptions() {
+  const args = new Set(process.argv.slice(2));
+  const envValue = process.env.AILY_BUILDER_BUNDLE_GENERATE_ARCHIVE_CLOUD_CACHE?.toLowerCase();
+
+  return {
+    defaultGenerateArchiveCloudCache:
+      args.has('--generate-archive-cloud-cache-default') ||
+      args.has('--default-generate-archive-cloud-cache') ||
+      envValue === '1' ||
+      envValue === 'true',
+  };
 }
 
 function ensureBuilt() {
@@ -195,8 +212,16 @@ async function copyNinja(bundleDir) {
   }
 }
 
-async function createLaunchScript(bundleDir) {
+async function createLaunchScript(bundleDir, options) {
+  const defaultEnv = options.defaultGenerateArchiveCloudCache
+    ? `if (process.env.AILY_BUILDER_GENERATE_ARCHIVE_CLOUD_CACHE === undefined) {
+  process.env.AILY_BUILDER_GENERATE_ARCHIVE_CLOUD_CACHE = '1';
+}
+`
+    : '';
+
   const launchScript = `#!/usr/bin/env node
+${defaultEnv}
 require('./aily-builder.js');
 `;
 
@@ -209,7 +234,7 @@ require('./aily-builder.js');
   }
 }
 
-async function createPackageJson(bundleDir) {
+async function createPackageJson(bundleDir, options) {
   const projectPackageJson = await fs.readJson('./package.json');
   const bundlePackageJson = {
     name: projectPackageJson.name,
@@ -221,6 +246,9 @@ async function createPackageJson(bundleDir) {
     },
     engines: {
       node: '>=16',
+    },
+    ailyBuilder: {
+      defaultGenerateArchiveCloudCache: options.defaultGenerateArchiveCloudCache,
     },
   };
 

@@ -5,6 +5,7 @@ import { Logger } from './utils/Logger';
 import { Dependency } from './DependencyAnalyzer';
 import { CacheManager, CacheKey } from './CacheManager';
 import { NinjaGenerator, NinjaOptions } from './NinjaGenerator';
+import { ArchiveCacheHit, ArchiveCloudCacheManager, getArchiveDependencyKey } from './ArchiveCloudCacheManager';
 import { escapeQuotedDefines } from './utils/escapeQuotes';
 import { sanitizeNonAsciiPaths } from './utils/ShortPath';
 
@@ -25,12 +26,14 @@ export class NinjaCompilationPipeline {
   private dependencies: Dependency[];
   private compileConfig: any;
   private cacheManager: CacheManager;
+  private archiveCloudCacheManager: ArchiveCloudCacheManager;
   private ninjaGenerator: NinjaGenerator;
   private readonly arduinoCoreBuildFlag = '-DARDUINO_CORE_BUILD';
 
   constructor(logger: Logger) {
     this.logger = logger;
     this.cacheManager = new CacheManager(logger);
+    this.archiveCloudCacheManager = new ArchiveCloudCacheManager(logger);
     this.ninjaGenerator = new NinjaGenerator(logger);
   }
 
@@ -41,9 +44,12 @@ export class NinjaCompilationPipeline {
     try {
       const startTime = Date.now();
 
-      // 1. 预处理：从缓存中恢复对象文件
+      // 1. 预处理：先恢复整包 .a 缓存，再恢复剩余对象文件缓存
+      this.logger.verbose('Checking archive cloud cache for compiled archives...');
+      const archiveCacheHits = await this.archiveCloudCacheManager.restoreArchives(dependencies, compileConfig);
+
       this.logger.verbose('Checking cache for compiled objects...');
-      const cacheHits = await this.restoreFromCache(dependencies);
+      const cacheHits = await this.restoreFromCache(dependencies, archiveCacheHits);
       // if (cacheHits > 0) {
       //   this.logger.info(`Cache hit: ${cacheHits} objects restored from cache`);
       // }
@@ -55,7 +61,8 @@ export class NinjaCompilationPipeline {
         compileConfig,
         buildPath: process.env['BUILD_PATH'] || '',
         jobs: parseInt(process.env['BUILD_JOBS'] || '4'),
-        skipExistingObjects: true // 启用增量构建
+        skipExistingObjects: true, // 启用增量构建
+        archiveCacheHits
       };
 
       const ninjaFilePath = await this.ninjaGenerator.generateNinjaFile(ninjaOptions);
@@ -73,6 +80,8 @@ export class NinjaCompilationPipeline {
       const buildTime = Date.now() - startTime;
 
       if (result.success) {
+
+        await this.archiveCloudCacheManager.storeArchives(dependencies, compileConfig, archiveCacheHits);
 
         // 显示缓存统计信息
         // await this.showCacheStats();
@@ -458,7 +467,10 @@ export class NinjaCompilationPipeline {
   /**
    * 从缓存中恢复对象文件
    */
-  private async restoreFromCache(dependencies: Dependency[]): Promise<number> {
+  private async restoreFromCache(
+    dependencies: Dependency[],
+    archiveCacheHits: Map<string, ArchiveCacheHit> = new Map()
+  ): Promise<number> {
     let cacheHits = 0;
     const buildPath = process.env['BUILD_PATH'] || '';
 
@@ -466,6 +478,11 @@ export class NinjaCompilationPipeline {
     for (const dependency of dependencies) {
       // 跳过sketch类型的依赖
       if (dependency.type === 'sketch') {
+        continue;
+      }
+
+      if (archiveCacheHits.has(getArchiveDependencyKey(dependency.type, dependency.name))) {
+        this.logger.debug(`Skipping object cache restore for archive hit: ${dependency.type}/${dependency.name}`);
         continue;
       }
 

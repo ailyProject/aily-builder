@@ -15,6 +15,11 @@ import fs from 'fs-extra';
 const program = new Command();
 const logger = new Logger();
 
+function isTruthyEnv(name: string): boolean {
+  const value = process.env[name];
+  return value === '1' || value?.toLowerCase() === 'true';
+}
+
 program
   .name('aily-builder')
   .description('Fast Arduino compilation CLI tool with optimized preprocessing and parallel compilation')
@@ -52,6 +57,11 @@ program
   .option('--log-file', 'Write logs to file in build directory', false)
   .option('--tool-versions <versions>', 'Specify tool versions (format: tool1@version1,tool2@version2)', undefined)
   .option('--preprocess-result <path>', 'Path to preprocess result JSON file (skip preprocessing if provided)')
+  .option('--archive-cloud-cache <path>', 'Local archive cloud cache directory')
+  .option('--no-archive-cloud-cache', 'Disable archive cloud cache restore and generation')
+  .option('--archive-cloud-cache-url <url>', 'Remote archive cloud cache base URL')
+  .option('--archive-cloud-cache-local-only', 'Only use local archive cloud cache; do not request remote cache', false)
+  .option('--generate-archive-cloud-cache', 'Generate uploadable archive cloud cache entries after successful builds', isTruthyEnv('AILY_BUILDER_GENERATE_ARCHIVE_CLOUD_CACHE'))
   .action(async (sketch, options) => {
     // console.log('options:', options);
     logger.setVerbose(options.verbose);
@@ -79,6 +89,22 @@ program
         logger.error('Expected format: tool1@version1,tool2@version2');
         process.exit(1);
       }
+    }
+
+    if (options.archiveCloudCache === false) {
+      process.env['AILY_BUILDER_ARCHIVE_CLOUD_CACHE'] = '0';
+    } else if (typeof options.archiveCloudCache === 'string') {
+      process.env['AILY_BUILDER_ARCHIVE_CLOUD_CACHE'] = '1';
+      process.env['AILY_BUILDER_ARCHIVE_CLOUD_CACHE_DIR'] = path.resolve(options.archiveCloudCache);
+    }
+    if (options.archiveCloudCacheUrl) {
+      process.env['AILY_BUILDER_ARCHIVE_CLOUD_CACHE_URL'] = options.archiveCloudCacheUrl;
+    }
+    if (options.archiveCloudCacheLocalOnly) {
+      process.env['AILY_BUILDER_ARCHIVE_CLOUD_CACHE_LOCAL_ONLY'] = '1';
+    }
+    if (options.generateArchiveCloudCache) {
+      process.env['AILY_BUILDER_GENERATE_ARCHIVE_CLOUD_CACHE'] = '1';
     }
 
     const compiler = new ArduinoCompiler(logger);
