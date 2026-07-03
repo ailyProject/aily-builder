@@ -24,6 +24,7 @@ async function bundleWithNativeMinified() {
 
     await bundleJavaScript(BUNDLE_DIR);
     await copyNativeModules(BUNDLE_DIR);
+    await sanitizeBundledPackages(BUNDLE_DIR);
     await copyNinja(BUNDLE_DIR);
     await copyPackageMetadata(BUNDLE_DIR);
     await createLaunchScript(BUNDLE_DIR);
@@ -288,6 +289,44 @@ async function collectBundledDependencies(bundleDir) {
   }
 
   return dependencies.sort((a, b) => a.name.localeCompare(b.name));
+}
+
+async function sanitizeBundledPackages(bundleDir) {
+  const nodeModulesDir = path.join(bundleDir, 'node_modules');
+  if (!(await fs.pathExists(nodeModulesDir))) {
+    return;
+  }
+
+  async function walk(dir) {
+    const entries = await fs.readdir(dir);
+    for (const entry of entries) {
+      const entryPath = path.join(dir, entry);
+      const stat = await fs.stat(entryPath);
+      if (!stat.isDirectory()) {
+        continue;
+      }
+
+      const packageJsonPath = path.join(entryPath, 'package.json');
+      if (await fs.pathExists(packageJsonPath)) {
+        await sanitizePackageJson(packageJsonPath);
+      }
+
+      await walk(entryPath);
+    }
+  }
+
+  await walk(nodeModulesDir);
+}
+
+async function sanitizePackageJson(packageJsonPath) {
+  const packageJson = await fs.readJson(packageJsonPath);
+
+  delete packageJson.scripts;
+  delete packageJson.dependencies;
+  delete packageJson.devDependencies;
+  delete packageJson.optionalDependencies;
+
+  await fs.writeFile(packageJsonPath, `${JSON.stringify(packageJson, null, 2)}\n`);
 }
 
 async function addBundledDependency(dependencies, packageDir) {
