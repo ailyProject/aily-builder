@@ -8,6 +8,8 @@ on:
 env:
   AILY_BUILDER_REQUIRED: 'true'
   PACKAGE_METADATA_KEY: aily-builder-next
+  PACKAGE_METADATA_MAC_PACKAGE: '@aily-project/aily-builder-next-darwin-arm64'
+  PACKAGE_METADATA_WIN_PACKAGE: '@aily-project/aily-builder-next-win32-x64'
   PACKAGE_METADATA_URL: https://dl.yiyu.pro/blockly/package-updates.json
   PACKAGE_METADATA_URL_2: https://dl.aily.pro/blockly/package-updates.json
 
@@ -299,6 +301,8 @@ jobs:
         env:
           AILY_BUILDER_REQUIRED: ${{ env.AILY_BUILDER_REQUIRED }}
           PACKAGE_METADATA_KEY: ${{ env.PACKAGE_METADATA_KEY }}
+          PACKAGE_METADATA_MAC_PACKAGE: ${{ env.PACKAGE_METADATA_MAC_PACKAGE }}
+          PACKAGE_METADATA_WIN_PACKAGE: ${{ env.PACKAGE_METADATA_WIN_PACKAGE }}
           PACKAGE_METADATA_URL: ${{ env.PACKAGE_METADATA_URL }}
           PACKAGE_METADATA_SERVER_HOST: ${{ secrets.PACKAGE_METADATA_SERVER_HOST }}
           PACKAGE_METADATA_SERVER_USERNAME: ${{ secrets.PACKAGE_METADATA_SERVER_USERNAME }}
@@ -333,12 +337,14 @@ jobs:
 
           const metadataFile = process.env.METADATA_FILE;
           const packageKey = process.env.PACKAGE_METADATA_KEY;
+          const macPackage = process.env.PACKAGE_METADATA_MAC_PACKAGE;
+          const winPackage = process.env.PACKAGE_METADATA_WIN_PACKAGE;
           const packageVersion = process.env.PACKAGE_VERSION;
           const required = /^true$/i.test(process.env.AILY_BUILDER_REQUIRED || 'false');
           const metadata = JSON.parse(fs.readFileSync(metadataFile, 'utf8'));
 
-          if (!packageKey) {
-            throw new Error('PACKAGE_METADATA_KEY must be set');
+          if (!packageKey || !macPackage || !winPackage) {
+            throw new Error('PACKAGE_METADATA_KEY, PACKAGE_METADATA_MAC_PACKAGE, and PACKAGE_METADATA_WIN_PACKAGE must be set');
           }
 
           if (!Array.isArray(metadata.packages)) {
@@ -349,12 +355,14 @@ jobs:
           if (!targetPackage) {
             targetPackage = {
               key: packageKey,
-              mac: '@aily-project/aily-builder-darwin-arm64',
-              win: '@aily-project/aily-builder-win32-x64',
+              mac: macPackage,
+              win: winPackage,
             };
             metadata.packages.push(targetPackage);
           }
 
+          targetPackage.mac = macPackage;
+          targetPackage.win = winPackage;
           targetPackage.version = packageVersion;
           targetPackage.required = required;
           fs.writeFileSync(metadataFile, `${JSON.stringify(metadata, null, 2)}\n`);
@@ -377,6 +385,8 @@ jobs:
         env:
           AILY_BUILDER_REQUIRED: ${{ env.AILY_BUILDER_REQUIRED }}
           PACKAGE_METADATA_KEY: ${{ env.PACKAGE_METADATA_KEY }}
+          PACKAGE_METADATA_MAC_PACKAGE: ${{ env.PACKAGE_METADATA_MAC_PACKAGE }}
+          PACKAGE_METADATA_WIN_PACKAGE: ${{ env.PACKAGE_METADATA_WIN_PACKAGE }}
           PACKAGE_METADATA_URL_2: ${{ env.PACKAGE_METADATA_URL_2 }}
           PACKAGE_METADATA_R2_ACCOUNT_ID: ${{ secrets.PACKAGE_METADATA_R2_ACCOUNT_ID }}
           PACKAGE_METADATA_R2_BUCKET: ${{ secrets.PACKAGE_METADATA_R2_BUCKET }}
@@ -414,12 +424,14 @@ jobs:
 
           const metadataFile = process.env.METADATA_FILE;
           const packageKey = process.env.PACKAGE_METADATA_KEY;
+          const macPackage = process.env.PACKAGE_METADATA_MAC_PACKAGE;
+          const winPackage = process.env.PACKAGE_METADATA_WIN_PACKAGE;
           const packageVersion = process.env.PACKAGE_VERSION;
           const required = /^true$/i.test(process.env.AILY_BUILDER_REQUIRED || 'false');
           const metadata = JSON.parse(fs.readFileSync(metadataFile, 'utf8'));
 
-          if (!packageKey) {
-            throw new Error('PACKAGE_METADATA_KEY must be set');
+          if (!packageKey || !macPackage || !winPackage) {
+            throw new Error('PACKAGE_METADATA_KEY, PACKAGE_METADATA_MAC_PACKAGE, and PACKAGE_METADATA_WIN_PACKAGE must be set');
           }
 
           if (!Array.isArray(metadata.packages)) {
@@ -430,12 +442,14 @@ jobs:
           if (!targetPackage) {
             targetPackage = {
               key: packageKey,
-              mac: '@aily-project/aily-builder-darwin-arm64',
-              win: '@aily-project/aily-builder-win32-x64',
+              mac: macPackage,
+              win: winPackage,
             };
             metadata.packages.push(targetPackage);
           }
 
+          targetPackage.mac = macPackage;
+          targetPackage.win = winPackage;
           targetPackage.version = packageVersion;
           targetPackage.required = required;
           fs.writeFileSync(metadataFile, `${JSON.stringify(metadata, null, 2)}\n`);
