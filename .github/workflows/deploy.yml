@@ -3,11 +3,11 @@ name: Check and Deploy to NPM
 on:
   push:
     branches:
-      - deploy-optional
+      - deploy
   workflow_dispatch:
 
 env:
-  AILY_BUILDER_REQUIRED: 'false'
+  AILY_BUILDER_REQUIRED: 'true'
   PACKAGE_METADATA_KEY: aily-builder
   PACKAGE_METADATA_URL: https://dl.yiyu.pro/blockly/package-updates.json
   PACKAGE_METADATA_URL_2: https://dl.aily.pro/blockly/package-updates.json
