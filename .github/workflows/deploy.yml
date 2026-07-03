@@ -4,7 +4,6 @@ on:
   push:
     branches:
       - deploy
-  workflow_dispatch:
 
 env:
   AILY_BUILDER_REQUIRED: 'true'
