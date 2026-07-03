@@ -5,6 +5,9 @@ on:
     branches:
       - deploy
 
+env:
+  AILY_BUILDER_REQUIRED: 'true'
+
 jobs:
   build-bundles:
     if: ${{ github.event_name == 'push' && github.ref == 'refs/heads/deploy' }}
@@ -265,3 +268,170 @@ jobs:
             echo "::warning::Notification (Registry 2) failed with HTTP status $HTTP_STATUS"
             cat /tmp/notify_response_2.txt || true
           fi
+
+  update-package-metadata:
+    if: ${{ github.event_name == 'push' && github.ref == 'refs/heads/deploy' }}
+    name: Update package metadata
+    needs:
+      - publish-default
+      - publish-registry2
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          token: ${{ secrets.GHB_TOKEN }}
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+
+      - name: Download and update server metadata
+        id: server-metadata
+        env:
+          AILY_BUILDER_REQUIRED: ${{ env.AILY_BUILDER_REQUIRED }}
+          PACKAGE_METADATA_URL: ${{ secrets.PACKAGE_METADATA_URL }}
+          PACKAGE_METADATA_SERVER_FILE_NAME: ${{ secrets.PACKAGE_METADATA_SERVER_FILE_NAME }}
+        run: |
+          if [ -z "$PACKAGE_METADATA_URL" ]; then
+            echo "::warning::PACKAGE_METADATA_URL is not set, skipping server metadata update."
+            echo "server_metadata_enabled=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          echo "server_metadata_enabled=true" >> "$GITHUB_OUTPUT"
+
+          mkdir -p package-metadata-server
+          SERVER_FILE_NAME="${PACKAGE_METADATA_SERVER_FILE_NAME:-package-metadata.json}"
+          SERVER_METADATA_FILE="package-metadata-server/$SERVER_FILE_NAME"
+
+          echo "Downloading package metadata from $PACKAGE_METADATA_URL"
+          HTTP_STATUS=$(curl -sSL -o "$SERVER_METADATA_FILE" -w "%{http_code}" "$PACKAGE_METADATA_URL")
+          if [ "$HTTP_STATUS" = "404" ]; then
+            echo "Package metadata does not exist yet. Creating $SERVER_METADATA_FILE."
+            printf '{"packages":[]}\n' > "$SERVER_METADATA_FILE"
+          elif [ "${HTTP_STATUS:0:1}" != "2" ]; then
+            echo "::error::Failed to download package metadata from $PACKAGE_METADATA_URL (HTTP $HTTP_STATUS)"
+            exit 1
+          fi
+
+          PACKAGE_VERSION=$(node -p "require('./package.json').version") \
+          METADATA_FILE="$SERVER_METADATA_FILE" \
+          AILY_BUILDER_REQUIRED="$AILY_BUILDER_REQUIRED" \
+          node <<'NODE'
+          const fs = require('fs');
+
+          const metadataFile = process.env.METADATA_FILE;
+          const packageVersion = process.env.PACKAGE_VERSION;
+          const required = /^true$/i.test(process.env.AILY_BUILDER_REQUIRED || 'false');
+          const metadata = JSON.parse(fs.readFileSync(metadataFile, 'utf8'));
+
+          if (!Array.isArray(metadata.packages)) {
+            throw new Error('metadata.packages must be an array');
+          }
+
+          let targetPackage = metadata.packages.find((pkg) => pkg && pkg.key === 'aily-builder');
+          if (!targetPackage) {
+            targetPackage = {
+              key: 'aily-builder',
+              mac: '@aily-project/aily-builder-darwin-arm64',
+              win: '@aily-project/aily-builder-win32-x64',
+            };
+            metadata.packages.push(targetPackage);
+          }
+
+          targetPackage.version = packageVersion;
+          targetPackage.required = required;
+          fs.writeFileSync(metadataFile, `${JSON.stringify(metadata, null, 2)}\n`);
+          NODE
+
+      - name: Upload server metadata
+        if: ${{ steps.server-metadata.outputs.server_metadata_enabled == 'true' }}
+        uses: appleboy/scp-action@v0.1.7
+        with:
+          host: ${{ secrets.PACKAGE_METADATA_SERVER_HOST }}
+          username: ${{ secrets.PACKAGE_METADATA_SERVER_USERNAME }}
+          password: ${{ secrets.PACKAGE_METADATA_SERVER_PASSWORD }}
+          port: ${{ secrets.PACKAGE_METADATA_SERVER_PORT || 22 }}
+          source: package-metadata-server/*
+          target: ${{ secrets.PACKAGE_METADATA_SERVER_TARGET_DIR }}
+          strip_components: 1
+          overwrite: true
+
+      - name: Download and update R2 metadata
+        env:
+          AILY_BUILDER_REQUIRED: ${{ env.AILY_BUILDER_REQUIRED }}
+          PACKAGE_METADATA_URL_2: ${{ secrets.PACKAGE_METADATA_URL_2 }}
+          PACKAGE_METADATA_R2_ACCOUNT_ID: ${{ secrets.PACKAGE_METADATA_R2_ACCOUNT_ID }}
+          PACKAGE_METADATA_R2_BUCKET: ${{ secrets.PACKAGE_METADATA_R2_BUCKET }}
+          PACKAGE_METADATA_R2_OBJECT_KEY: ${{ secrets.PACKAGE_METADATA_R2_OBJECT_KEY }}
+          AWS_ACCESS_KEY_ID: ${{ secrets.PACKAGE_METADATA_R2_ACCESS_KEY_ID }}
+          AWS_SECRET_ACCESS_KEY: ${{ secrets.PACKAGE_METADATA_R2_SECRET_ACCESS_KEY }}
+          AWS_DEFAULT_REGION: auto
+        run: |
+          if [ -z "$PACKAGE_METADATA_URL_2" ]; then
+            echo "::warning::PACKAGE_METADATA_URL_2 is not set, skipping R2 metadata update."
+            exit 0
+          fi
+
+          if [ -z "$PACKAGE_METADATA_R2_ACCOUNT_ID" ] || [ -z "$PACKAGE_METADATA_R2_BUCKET" ] || [ -z "$PACKAGE_METADATA_R2_OBJECT_KEY" ]; then
+            echo "::warning::R2 account id, bucket, or object key is not set, skipping R2 metadata upload."
+            exit 0
+          fi
+
+          if [ -z "$AWS_ACCESS_KEY_ID" ] || [ -z "$AWS_SECRET_ACCESS_KEY" ]; then
+            echo "::warning::R2 access key id or secret access key is not set, skipping R2 metadata upload."
+            exit 0
+          fi
+
+          R2_METADATA_FILE="package-metadata-r2.json"
+          R2_ENDPOINT="https://$PACKAGE_METADATA_R2_ACCOUNT_ID.r2.cloudflarestorage.com"
+
+          echo "Downloading package metadata from $PACKAGE_METADATA_URL_2"
+          HTTP_STATUS=$(curl -sSL -o "$R2_METADATA_FILE" -w "%{http_code}" "$PACKAGE_METADATA_URL_2")
+          if [ "$HTTP_STATUS" = "404" ]; then
+            echo "Package metadata does not exist yet. Creating $R2_METADATA_FILE."
+            printf '{"packages":[]}\n' > "$R2_METADATA_FILE"
+          elif [ "${HTTP_STATUS:0:1}" != "2" ]; then
+            echo "::error::Failed to download package metadata from $PACKAGE_METADATA_URL_2 (HTTP $HTTP_STATUS)"
+            exit 1
+          fi
+
+          PACKAGE_VERSION=$(node -p "require('./package.json').version") \
+          METADATA_FILE="$R2_METADATA_FILE" \
+          AILY_BUILDER_REQUIRED="$AILY_BUILDER_REQUIRED" \
+          node <<'NODE'
+          const fs = require('fs');
+
+          const metadataFile = process.env.METADATA_FILE;
+          const packageVersion = process.env.PACKAGE_VERSION;
+          const required = /^true$/i.test(process.env.AILY_BUILDER_REQUIRED || 'false');
+          const metadata = JSON.parse(fs.readFileSync(metadataFile, 'utf8'));
+
+          if (!Array.isArray(metadata.packages)) {
+            throw new Error('metadata.packages must be an array');
+          }
+
+          let targetPackage = metadata.packages.find((pkg) => pkg && pkg.key === 'aily-builder');
+          if (!targetPackage) {
+            targetPackage = {
+              key: 'aily-builder',
+              mac: '@aily-project/aily-builder-darwin-arm64',
+              win: '@aily-project/aily-builder-win32-x64',
+            };
+            metadata.packages.push(targetPackage);
+          }
+
+          targetPackage.version = packageVersion;
+          targetPackage.required = required;
+          fs.writeFileSync(metadataFile, `${JSON.stringify(metadata, null, 2)}\n`);
+          NODE
+
+          echo "Uploading updated package metadata to R2 bucket $PACKAGE_METADATA_R2_BUCKET"
+          aws s3 cp "$R2_METADATA_FILE" "s3://$PACKAGE_METADATA_R2_BUCKET/$PACKAGE_METADATA_R2_OBJECT_KEY" \
+            --endpoint-url "$R2_ENDPOINT" \
+            --content-type application/json
