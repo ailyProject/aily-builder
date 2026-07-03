@@ -247,6 +247,8 @@ export class ArduinoCompiler {
       }
     }
 
+    const buildStartTime = Date.now();
+
     // 在 Windows 上，对 compileConfig 和 dependencies 中嵌入的所有路径做 sanitize
     compileConfig = sanitizeObjectPaths(compileConfig);
     dependencies = sanitizeObjectPaths(dependencies);
@@ -342,8 +344,9 @@ export class ArduinoCompiler {
     NRF52 ZIP 文件生成 end
     */
 
-    const totalTime = Date.now() - startTime;
-    const buildTime = totalTime - preprocessTime;
+    const finishedAt = Date.now();
+    const totalTime = finishedAt - startTime;
+    const buildTime = finishedAt - buildStartTime;
     // 6. 计算固件大小信息
     const firmwareSize = await this.calculateFirmwareSize(arduinoConfig);
 

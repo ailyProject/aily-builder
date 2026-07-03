@@ -20,6 +20,8 @@ const INPUT_SCHEMA = 'aily.archive-build-inputs.v1';
 const KEY_VERSION = 'archive-cloud-cache-v1';
 const DEFAULT_REMOTE_BASE_URL = 'https://cache.aily.pro/v1';
 const DEFAULT_REMOTE_TIMEOUT_MS = 1500;
+const LIBRARY_ARCHIVE_CACHE_MIN_COMPILE_FILES = 20;
+const LIBRARY_ARCHIVE_CACHE_MIN_COMPILE_BYTES = 300 * 1024;
 
 export type ArchiveDependencyType = 'core' | 'library';
 export type ArchiveCacheSource = 'local' | 'remote';
@@ -120,7 +122,7 @@ export class ArchiveCloudCacheManager {
     let remoteHits = 0;
     let misses = 0;
 
-    for (const target of this.collectTargets(dependencies)) {
+    for (const target of await this.collectTargets(dependencies)) {
       try {
         const inputs = await this.computeInputs(target, dependencies, compileConfig);
         const key = this.computeKey(inputs);
@@ -171,7 +173,7 @@ export class ArchiveCloudCacheManager {
     let totalSize = 0;
     const buildPath = process.env['BUILD_PATH'] || '';
 
-    for (const target of this.collectTargets(dependencies)) {
+    for (const target of await this.collectTargets(dependencies)) {
       const hitKey = getArchiveDependencyKey(target.dependencyType, target.dependencyName);
       if (archiveHits.has(hitKey)) {
         skipped++;
@@ -392,7 +394,7 @@ export class ArchiveCloudCacheManager {
     };
   }
 
-  private collectTargets(dependencies: Dependency[]): ArchiveTarget[] {
+  private async collectTargets(dependencies: Dependency[]): Promise<ArchiveTarget[]> {
     const targets: ArchiveTarget[] = [];
     for (const dependency of dependencies) {
       if (!dependency.includes || dependency.includes.length === 0) {
@@ -407,6 +409,17 @@ export class ArchiveCloudCacheManager {
           archiveName: 'core.a'
         });
       } else if (dependency.type === 'library') {
+        const eligibility = await this.getLibraryArchiveEligibility(dependency);
+        if (!eligibility.eligible) {
+          this.logger.debug(
+            `[ARCHIVE_CLOUD_CACHE] skip ${dependency.name}.a: ` +
+            `compiled files=${eligibility.sourceFileCount}, ` +
+            `compiled size=${this.formatFileSize(eligibility.sourceFileSize)} ` +
+            `(requires >${LIBRARY_ARCHIVE_CACHE_MIN_COMPILE_FILES} files or >=${this.formatFileSize(LIBRARY_ARCHIVE_CACHE_MIN_COMPILE_BYTES)})`
+          );
+          continue;
+        }
+
         targets.push({
           dependency,
           dependencyName: dependency.name,
@@ -416,6 +429,47 @@ export class ArchiveCloudCacheManager {
       }
     }
     return targets;
+  }
+
+  private async getLibraryArchiveEligibility(dependency: Dependency): Promise<{
+    eligible: boolean;
+    sourceFileCount: number;
+    sourceFileSize: number;
+  }> {
+    const sourceFiles = this.collectCompiledSourceFiles(dependency.includes || []);
+    let sourceFileSize = 0;
+
+    for (const sourceFile of sourceFiles) {
+      try {
+        const stat = await fs.stat(sourceFile);
+        if (stat.isFile()) {
+          sourceFileSize += stat.size;
+        }
+      } catch {
+        // Missing source files will fail the normal build path; keep cache filtering non-fatal.
+      }
+    }
+
+    return {
+      eligible:
+        sourceFiles.length > LIBRARY_ARCHIVE_CACHE_MIN_COMPILE_FILES ||
+        sourceFileSize >= LIBRARY_ARCHIVE_CACHE_MIN_COMPILE_BYTES,
+      sourceFileCount: sourceFiles.length,
+      sourceFileSize
+    };
+  }
+
+  private collectCompiledSourceFiles(files: string[]): string[] {
+    return Array.from(new Set(
+      files
+        .filter(file => this.isCompiledSourceFile(file))
+        .map(file => path.resolve(file))
+    )).sort((a, b) => this.normalizePath(a).localeCompare(this.normalizePath(b)));
+  }
+
+  private isCompiledSourceFile(filePath: string): boolean {
+    const ext = path.extname(filePath).toLowerCase();
+    return ext === '.c' || ext === '.cpp' || ext === '.s';
   }
 
   private async collectSourceFiles(dependency: Dependency): Promise<string[]> {

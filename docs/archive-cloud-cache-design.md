@@ -167,6 +167,13 @@ https://cache.aily.pro/v1/ab/cd/<archiveBuildKey>/inputs.json
 - `core.a`
 - 每个从源码编译出来的 library archive，例如 `WiFi.a`、`Network.a`、`Preferences.a`、`lvgl.a`
 
+library archive 需要先满足体积门槛，才进入云缓存生成和云缓存获取：
+
+- 该库实际需要编译的源文件数量 `> 20`；或
+- 该库实际需要编译的源文件总大小 `>= 300KB`。
+
+判断依据使用 `Dependency.includes` 中实际会进入 Ninja 编译的 `.c`、`.cpp`、`.S`、`.s` 文件，而不是库目录下所有头文件或示例文件。未达到门槛的小库继续走原有本地编译和对象缓存路径，不计算 `archiveBuildKey`，不查询本地/云端 archive cache，也不生成可上传条目。
+
 暂不缓存：
 
 - sketch 对象或 sketch archive。用户代码变化频繁，复用价值低，误命中风险高。
@@ -374,17 +381,18 @@ store newly built archives on success, only when generate switch is enabled
 详细步骤：
 
 1. `preprocess` 得到 `Dependency[]` 和 `compileConfig`。
-2. 对每个 `core` 和 library dependency 计算 `archiveBuildInputs`。
-3. 计算 `archiveBuildKey`。
-4. 查询本地 `archive-cloud-cache/v1/ab/cd/<key>/manifest.json`。
-5. 本地命中后校验 manifest 和 `.a`。
-6. 本地 miss 时按配置的 `remoteCacheBaseUrl` 查询 `<remoteCacheBaseUrl>/ab/cd/<key>/manifest.json`。
-7. 云端 manifest 命中后下载 `.a` 到 `.tmp/`。
-8. 校验 `.a` sha256 和 size。
-9. 将完整条目原子移动到本地 cache。
-10. 将 `.a` 硬链接或复制到当前 build path。
-11. 记录 `ArchiveCacheHit`。
-12. 生成 Ninja 文件时跳过命中 archive 的编译边。
+2. 对 library dependency 先做体积门槛判断，小库直接跳过 archive cloud cache。
+3. 对 `core` 和符合门槛的 library dependency 计算 `archiveBuildInputs`。
+4. 计算 `archiveBuildKey`。
+5. 查询本地 `archive-cloud-cache/v1/ab/cd/<key>/manifest.json`。
+6. 本地命中后校验 manifest 和 `.a`。
+7. 本地 miss 时按配置的 `remoteCacheBaseUrl` 查询 `<remoteCacheBaseUrl>/ab/cd/<key>/manifest.json`。
+8. 云端 manifest 命中后下载 `.a` 到 `.tmp/`。
+9. 校验 `.a` sha256 和 size。
+10. 将完整条目原子移动到本地 cache。
+11. 将 `.a` 硬链接或复制到当前 build path。
+12. 记录 `ArchiveCacheHit`。
+13. 生成 Ninja 文件时跳过命中 archive 的编译边。
 
 云端失败策略：
 
@@ -687,7 +695,7 @@ npm run bundle:native:minify:generate-cache
 - 新增 `ArchiveCloudCacheManager`。
 - 实现 `archiveBuildInputs` 和 `archiveBuildKey`。
 - 增加生成开关解析，默认值为 false。
-- 仅在生成开关开启且完整编译成功后，存储 `core.a` 和 library `.a`。
+- 仅在生成开关开启且完整编译成功后，存储 `core.a` 和达到体积门槛的 library `.a`。
 - 写入 manifest 和 inputs。
 
 验收：
