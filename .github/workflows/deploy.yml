@@ -4,9 +4,12 @@ on:
   push:
     branches:
       - deploy
+  workflow_dispatch:
 
 env:
   AILY_BUILDER_REQUIRED: 'true'
+  PACKAGE_METADATA_URL: https://dl.yiyu.pro/blockly/package-updates.json
+  PACKAGE_METADATA_URL_2: https://dl.aily.pro/blockly/package-updates.json
 
 jobs:
   build-bundles:
@@ -270,7 +273,7 @@ jobs:
           fi
 
   update-package-metadata:
-    if: ${{ github.event_name == 'push' && github.ref == 'refs/heads/deploy' }}
+    if: ${{ always() && (github.event_name == 'workflow_dispatch' || (github.event_name == 'push' && github.ref == 'refs/heads/deploy')) }}
     name: Update package metadata
     needs:
       - publish-default
@@ -295,28 +298,30 @@ jobs:
         id: server-metadata
         env:
           AILY_BUILDER_REQUIRED: ${{ env.AILY_BUILDER_REQUIRED }}
-          PACKAGE_METADATA_URL: ${{ secrets.PACKAGE_METADATA_URL }}
+          PACKAGE_METADATA_URL: ${{ env.PACKAGE_METADATA_URL }}
+          PACKAGE_METADATA_SERVER_HOST: ${{ secrets.PACKAGE_METADATA_SERVER_HOST }}
+          PACKAGE_METADATA_SERVER_USERNAME: ${{ secrets.PACKAGE_METADATA_SERVER_USERNAME }}
+          PACKAGE_METADATA_SERVER_PASSWORD: ${{ secrets.PACKAGE_METADATA_SERVER_PASSWORD }}
+          PACKAGE_METADATA_SERVER_TARGET_DIR: ${{ secrets.PACKAGE_METADATA_SERVER_TARGET_DIR }}
           PACKAGE_METADATA_SERVER_FILE_NAME: ${{ secrets.PACKAGE_METADATA_SERVER_FILE_NAME }}
         run: |
-          if [ -z "$PACKAGE_METADATA_URL" ]; then
-            echo "::warning::PACKAGE_METADATA_URL is not set, skipping server metadata update."
+          if [ -z "$PACKAGE_METADATA_SERVER_HOST" ] || [ -z "$PACKAGE_METADATA_SERVER_USERNAME" ] || [ -z "$PACKAGE_METADATA_SERVER_PASSWORD" ] || [ -z "$PACKAGE_METADATA_SERVER_TARGET_DIR" ]; then
+            echo "::warning::Server metadata upload settings are not set, skipping server metadata update."
             echo "server_metadata_enabled=false" >> "$GITHUB_OUTPUT"
             exit 0
           fi
           echo "server_metadata_enabled=true" >> "$GITHUB_OUTPUT"
 
           mkdir -p package-metadata-server
-          SERVER_FILE_NAME="${PACKAGE_METADATA_SERVER_FILE_NAME:-package-metadata.json}"
+          SERVER_FILE_NAME="${PACKAGE_METADATA_SERVER_FILE_NAME:-package-updates.json}"
           SERVER_METADATA_FILE="package-metadata-server/$SERVER_FILE_NAME"
 
           echo "Downloading package metadata from $PACKAGE_METADATA_URL"
-          HTTP_STATUS=$(curl -sSL -o "$SERVER_METADATA_FILE" -w "%{http_code}" "$PACKAGE_METADATA_URL")
-          if [ "$HTTP_STATUS" = "404" ]; then
-            echo "Package metadata does not exist yet. Creating $SERVER_METADATA_FILE."
+          if curl -fsSL "$PACKAGE_METADATA_URL" -o "$SERVER_METADATA_FILE"; then
+            echo "Downloaded existing package metadata."
+          else
+            echo "Package metadata does not exist or cannot be read yet. Creating $SERVER_METADATA_FILE."
             printf '{"packages":[]}\n' > "$SERVER_METADATA_FILE"
-          elif [ "${HTTP_STATUS:0:1}" != "2" ]; then
-            echo "::error::Failed to download package metadata from $PACKAGE_METADATA_URL (HTTP $HTTP_STATUS)"
-            exit 1
           fi
 
           PACKAGE_VERSION=$(node -p "require('./package.json').version") \
@@ -365,7 +370,7 @@ jobs:
       - name: Download and update R2 metadata
         env:
           AILY_BUILDER_REQUIRED: ${{ env.AILY_BUILDER_REQUIRED }}
-          PACKAGE_METADATA_URL_2: ${{ secrets.PACKAGE_METADATA_URL_2 }}
+          PACKAGE_METADATA_URL_2: ${{ env.PACKAGE_METADATA_URL_2 }}
           PACKAGE_METADATA_R2_ACCOUNT_ID: ${{ secrets.PACKAGE_METADATA_R2_ACCOUNT_ID }}
           PACKAGE_METADATA_R2_BUCKET: ${{ secrets.PACKAGE_METADATA_R2_BUCKET }}
           PACKAGE_METADATA_R2_OBJECT_KEY: ${{ secrets.PACKAGE_METADATA_R2_OBJECT_KEY }}
@@ -373,11 +378,6 @@ jobs:
           AWS_SECRET_ACCESS_KEY: ${{ secrets.PACKAGE_METADATA_R2_SECRET_ACCESS_KEY }}
           AWS_DEFAULT_REGION: auto
         run: |
-          if [ -z "$PACKAGE_METADATA_URL_2" ]; then
-            echo "::warning::PACKAGE_METADATA_URL_2 is not set, skipping R2 metadata update."
-            exit 0
-          fi
-
           if [ -z "$PACKAGE_METADATA_R2_ACCOUNT_ID" ] || [ -z "$PACKAGE_METADATA_R2_BUCKET" ] || [ -z "$PACKAGE_METADATA_R2_OBJECT_KEY" ]; then
             echo "::warning::R2 account id, bucket, or object key is not set, skipping R2 metadata upload."
             exit 0
@@ -392,13 +392,11 @@ jobs:
           R2_ENDPOINT="https://$PACKAGE_METADATA_R2_ACCOUNT_ID.r2.cloudflarestorage.com"
 
           echo "Downloading package metadata from $PACKAGE_METADATA_URL_2"
-          HTTP_STATUS=$(curl -sSL -o "$R2_METADATA_FILE" -w "%{http_code}" "$PACKAGE_METADATA_URL_2")
-          if [ "$HTTP_STATUS" = "404" ]; then
-            echo "Package metadata does not exist yet. Creating $R2_METADATA_FILE."
+          if curl -fsSL "$PACKAGE_METADATA_URL_2" -o "$R2_METADATA_FILE"; then
+            echo "Downloaded existing package metadata."
+          else
+            echo "Package metadata does not exist or cannot be read yet. Creating $R2_METADATA_FILE."
             printf '{"packages":[]}\n' > "$R2_METADATA_FILE"
-          elif [ "${HTTP_STATUS:0:1}" != "2" ]; then
-            echo "::error::Failed to download package metadata from $PACKAGE_METADATA_URL_2 (HTTP $HTTP_STATUS)"
-            exit 1
           fi
 
           PACKAGE_VERSION=$(node -p "require('./package.json').version") \
