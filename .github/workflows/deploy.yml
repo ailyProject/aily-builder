@@ -4,7 +4,6 @@ on:
   push:
     branches:
       - deploy
-  workflow_dispatch:
 
 env:
   AILY_BUILDER_REQUIRED: 'true'
@@ -273,7 +272,7 @@ jobs:
           fi
 
   update-package-metadata:
-    if: ${{ always() && (github.event_name == 'workflow_dispatch' || (github.event_name == 'push' && github.ref == 'refs/heads/deploy')) }}
+    if: ${{ github.event_name == 'push' && github.ref == 'refs/heads/deploy' }}
     name: Update package metadata
     needs:
       - publish-default
