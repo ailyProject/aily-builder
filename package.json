@@ -1,6 +1,6 @@
 {
   "name": "@aily-project/aily-builder",
-  "version": "1.2.4",
+  "version": "1.2.5",
   "description": "Fast Arduino compilation CLI tool with optimized preprocessing and parallel compilation",
   "main": "dist/main.js",
   "bin": {
