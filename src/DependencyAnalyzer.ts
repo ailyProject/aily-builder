@@ -43,6 +43,95 @@ export interface ConditionalInclude {
   isActive: boolean;
 }
 
+function stripMacroValueComment(value: string): string {
+  let quote: string | null = null;
+  let escaped = false;
+
+  for (let i = 0; i < value.length; i++) {
+    const char = value[i];
+    const next = value[i + 1];
+
+    if (escaped) {
+      escaped = false;
+      continue;
+    }
+
+    if (quote) {
+      if (char === '\\') {
+        escaped = true;
+      } else if (char === quote) {
+        quote = null;
+      }
+      continue;
+    }
+
+    if (char === '"' || char === "'") {
+      quote = char;
+      continue;
+    }
+
+    if (char === '/' && (next === '/' || next === '*')) {
+      return value.slice(0, i);
+    }
+  }
+
+  return value;
+}
+
+export function extractBuildMacrosFromSketchContent(content: string): string[] {
+  const macros: string[] = [];
+  const lines = content.split(/\r?\n/);
+  let conditionalDepth = 0;
+
+  for (const line of lines) {
+    const trimmedLine = line.trim();
+    if (!trimmedLine || trimmedLine.startsWith('//')) {
+      continue;
+    }
+
+    if (/^\s*#\s*(?:if|ifdef|ifndef)\b/.test(line)) {
+      conditionalDepth++;
+      continue;
+    }
+
+    if (/^\s*#\s*endif\b/.test(line)) {
+      if (conditionalDepth > 0) {
+        conditionalDepth--;
+      }
+      continue;
+    }
+
+    if (/^\s*#\s*(?:else|elif)\b/.test(line)) {
+      continue;
+    }
+
+    if (conditionalDepth > 0) {
+      continue;
+    }
+
+    const match = line.match(/^\s*#\s*define\s+([A-Za-z_][A-Za-z0-9_]*)(.*)$/);
+    if (!match) {
+      continue;
+    }
+
+    const name = match[1];
+    const rawValue = match[2] || '';
+
+    if (rawValue.startsWith('(')) {
+      continue;
+    }
+
+    const value = stripMacroValueComment(rawValue).trim();
+    if (value.endsWith('\\')) {
+      continue;
+    }
+
+    macros.push(value ? `${name}=${value}` : name);
+  }
+
+  return macros;
+}
+
 export class DependencyAnalyzer {
   private logger: Logger;
   private dependencyList: Map<string, Dependency>
@@ -188,48 +277,10 @@ export class DependencyAnalyzer {
       }
 
       const content = await fs.readFile(sketchPath, 'utf-8');
-      const lines = content.split('\n');
+      macros.push(...extractBuildMacrosFromSketchContent(content));
 
-      // 正则表达式匹配 #define 指令
-      // 匹配格式：#define MACRO_NAME 或 #define MACRO_NAME value
-      const defineRegex = /^\s*#\s*define\s+([A-Za-z_][A-Za-z0-9_]*)\s*(.*)?$/;
-
-      for (const line of lines) {
-        // 跳过注释行
-        const trimmedLine = line.trim();
-        if (trimmedLine.startsWith('//')) {
-          continue;
-        }
-
-        const match = line.match(defineRegex);
-        if (match) {
-          const name = match[1];
-          let value = match[2] ? match[2].trim() : undefined;
-
-          // 移除行尾注释
-          if (value) {
-            const commentIndex = value.indexOf('//');
-            if (commentIndex !== -1) {
-              value = value.substring(0, commentIndex).trim();
-            }
-            // 处理 /* */ 注释
-            const blockCommentIndex = value.indexOf('/*');
-            if (blockCommentIndex !== -1) {
-              value = value.substring(0, blockCommentIndex).trim();
-            }
-          }
-
-          // 如果值为空字符串，设置为 undefined
-          if (value === '') {
-            value = undefined;
-          }
-
-          // 格式化为 'NAME=value' 或 'NAME' 形式
-          const macroString = value ? `${name}=${value}` : name;
-          macros.push(macroString);
-
-          this.logger.debug(`Found macro in sketch: ${macroString}`);
-        }
+      for (const macro of macros) {
+        this.logger.debug(`Found macro in sketch: ${macro}`);
       }
 
       this.logger.info(`Extracted ${macros.length} macros from sketch: ${macros.join(', ') || 'none'}`);
