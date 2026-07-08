@@ -47,9 +47,11 @@ export class NinjaGenerator {
   private buildPath: string;
   private ninjaFile: NinjaFile;
   private objectFiles: string[] = [];
+  private prelinkInputs: string[] = [];
   private skipExistingObjects: boolean = false;
   private archiveCacheHits: Map<string, ArchiveCacheHit> = new Map();
   private readonly arduinoCoreBuildFlag = '-DARDUINO_CORE_BUILD';
+  static readonly PRELINK_TARGET = '__aily_prelink_ready';
   private compileConfigManager: CompileConfigManager; // 新增：编译配置管理器
 
   constructor(logger: Logger) {
@@ -71,6 +73,7 @@ export class NinjaGenerator {
       this.skipExistingObjects = options.skipExistingObjects || false;
       this.archiveCacheHits = options.archiveCacheHits || new Map();
       this.objectFiles = [];
+      this.prelinkInputs = [];
       this.ninjaFile = {
         rules: [],
         builds: [],
@@ -345,12 +348,14 @@ export class NinjaGenerator {
       this.ninjaFile.builds.unshift(sketchBuild);
       sketchObjectFile = sketchBuild.outputs[0];
       this.objectFiles.push(sketchObjectFile);
+      this.prelinkInputs.push(sketchObjectFile);
     } else {
       // 即使跳过编译，也要将对象文件添加到列表中（用于链接）
       const sketchFileName = path.basename(process.env['SKETCH_PATH']!);
       const objectFile = path.join('sketch', `${sketchFileName}.o`);
       sketchObjectFile = objectFile;
       this.objectFiles.push(objectFile);
+      this.prelinkInputs.push(objectFile);
     }
 
     // 2. 创建 phony 目标，让其他所有编译任务依赖于 sketch 编译完成
@@ -411,6 +416,7 @@ export class NinjaGenerator {
           // console.log(`[DEBUG] Processing variant dependency: ${dependency.name}, objects:`, groupObjects);
           // 将变体对象文件直接添加到最终链接的对象文件列表中
           this.objectFiles.push(...groupObjects);
+          this.prelinkInputs.push(...groupObjects);
         } else {
           // console.log(`[DEBUG] Processing ${dependency.type} dependency: ${dependency.name}, objects count: ${groupObjects.length}`);
           // 其他类型（core、library）创建归档文件
@@ -432,6 +438,7 @@ export class NinjaGenerator {
         archivePath = `${dependencyName}.a`;
         this.objectFiles.push(archivePath);
       }
+      this.prelinkInputs.push(archivePath);
 
       // 检查归档文件是否需要重新生成
       let needsRebuild = archiveGroup.needsRebuild;
@@ -475,6 +482,16 @@ export class NinjaGenerator {
         this.ninjaFile.builds.push(archiveBuild);
       }
     }
+
+    this.addPrelinkReadyTarget();
+  }
+
+  private addPrelinkReadyTarget(): void {
+    this.ninjaFile.builds.push({
+      outputs: [NinjaGenerator.PRELINK_TARGET],
+      rule: 'phony',
+      inputs: Array.from(new Set(this.prelinkInputs))
+    });
   }
 
   private calculateObjectFilePath(
