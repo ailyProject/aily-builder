@@ -17,6 +17,7 @@ import { collectPackageIdentitiesFromPaths, extractPackageIdentityFromPath } fro
 
 const CACHE_SCHEMA = 'aily.archive-cache.v1';
 const INPUT_SCHEMA = 'aily.archive-build-inputs.v1';
+const FETCH_REQUEST_SCHEMA = 'aily.archive-fetch-request.v1';
 const KEY_VERSION = 'archive-cloud-cache-v1';
 const DEFAULT_REMOTE_BASE_URL = 'https://cache.aily.pro/v1';
 const DEFAULT_REMOTE_TIMEOUT_MS = 1500;
@@ -33,6 +34,31 @@ export interface ArchiveCacheHit {
   buildArchivePath: string;
   cacheKey: string;
   source: ArchiveCacheSource;
+  fetch?: ArchiveCacheFetchRequest;
+}
+
+export interface ArchiveCacheFetchRequest {
+  schema: string;
+  key: string;
+  archiveName: string;
+  dependencyName: string;
+  dependencyType: ArchiveDependencyType;
+  artifactUrl: string;
+  artifactSha256: string;
+  artifactSize: number;
+  timeoutMs: number;
+  cacheDir: string;
+  cacheSchema: string;
+  keyVersion: string;
+  inputsJson: string;
+  builderVersion: string;
+}
+
+export interface ArchiveCacheFetchResult {
+  key: string;
+  hit: ArchiveCacheHit;
+  success: boolean;
+  error?: string;
 }
 
 interface ArchiveTarget {
@@ -109,6 +135,24 @@ export class ArchiveCloudCacheManager {
 
   shouldGenerate(): boolean {
     return this.readBooleanEnv('AILY_BUILDER_GENERATE_ARCHIVE_CLOUD_CACHE', false);
+  }
+
+  startRemoteFetches(archiveHits: Map<string, ArchiveCacheHit>): Map<string, Promise<ArchiveCacheFetchResult>> {
+    const fetches = new Map<string, Promise<ArchiveCacheFetchResult>>();
+
+    for (const [key, hit] of archiveHits) {
+      if (hit.source !== 'remote' || !hit.fetch) {
+        continue;
+      }
+
+      fetches.set(key, this.fetchRemoteArchive(hit));
+    }
+
+    if (fetches.size > 0) {
+      this.logger.info(`[ARCHIVE_CLOUD_CACHE] scheduled remote downloads=${fetches.size}`);
+    }
+
+    return fetches;
   }
 
   async restoreArchives(dependencies: Dependency[], compileConfig: any): Promise<Map<string, ArchiveCacheHit>> {
@@ -308,30 +352,8 @@ export class ArchiveCloudCacheManager {
     }
 
     const artifactUrl = this.joinRemoteUrl(baseUrl, key, manifest.artifact.file);
-    let artifactResponse: FetchResponse;
-    try {
-      artifactResponse = await this.fetchRemote(artifactUrl, this.getArtifactTimeoutMs(manifest.artifact.size));
-    } catch (error) {
-      this.remoteDisabledForRun = true;
-      this.logger.debug(`[ARCHIVE_CLOUD_CACHE] remote artifact failed, disabled for this run: ${error instanceof Error ? error.message : error}`);
-      return null;
-    }
-
-    if (artifactResponse.statusCode !== 200) {
-      this.logger.warn(`[ARCHIVE_CLOUD_CACHE] remote artifact status ${artifactResponse.statusCode} ${target.archiveName} ${key}`);
-      return null;
-    }
-
-    const artifactHash = this.sha256Buffer(artifactResponse.body);
-    if (artifactHash !== manifest.artifact.sha256 || artifactResponse.body.length !== manifest.artifact.size) {
-      this.logger.warn(`[ARCHIVE_CLOUD_CACHE] remote artifact verify failed ${target.archiveName} ${key}`);
-      return null;
-    }
-
-    await this.writeEntryFromBuffer(target, inputs, key, artifactResponse.body, 'cloud-download');
-    const localArchivePath = path.join(this.getEntryDir(key), target.archiveName);
-    await this.linkOrCopy(localArchivePath, buildArchivePath);
-    this.logger.debug(`[ARCHIVE_CLOUD_CACHE] remote hit ${target.archiveName} ${key}`);
+    await fs.remove(buildArchivePath).catch(() => undefined);
+    this.logger.debug(`[ARCHIVE_CLOUD_CACHE] remote hit scheduled ${target.archiveName} ${key}`);
 
     return {
       dependencyName: target.dependencyName,
@@ -339,7 +361,97 @@ export class ArchiveCloudCacheManager {
       archiveName: target.archiveName,
       buildArchivePath,
       cacheKey: key,
-      source: 'remote'
+      source: 'remote',
+      fetch: {
+        schema: FETCH_REQUEST_SCHEMA,
+        key,
+        archiveName: target.archiveName,
+        dependencyName: target.dependencyName,
+        dependencyType: target.dependencyType,
+        artifactUrl,
+        artifactSha256: manifest.artifact.sha256,
+        artifactSize: manifest.artifact.size,
+        timeoutMs: this.getArtifactTimeoutMs(manifest.artifact.size),
+        cacheDir: this.cacheDir,
+        cacheSchema: CACHE_SCHEMA,
+        keyVersion: KEY_VERSION,
+        inputsJson: this.canonicalJson(inputs),
+        builderVersion: await this.getAilyBuilderVersion()
+      }
+    };
+  }
+
+  private async fetchRemoteArchive(hit: ArchiveCacheHit): Promise<ArchiveCacheFetchResult> {
+    const fetch = hit.fetch;
+    if (!fetch || fetch.schema !== FETCH_REQUEST_SCHEMA) {
+      return {
+        key: hit.cacheKey,
+        hit,
+        success: false,
+        error: 'missing or invalid fetch request'
+      };
+    }
+
+    try {
+      const artifactResponse = await this.fetchRemote(fetch.artifactUrl, fetch.timeoutMs);
+      if (artifactResponse.statusCode !== 200) {
+        return {
+          key: hit.cacheKey,
+          hit,
+          success: false,
+          error: `remote artifact status ${artifactResponse.statusCode}`
+        };
+      }
+
+      const artifactHash = this.sha256Buffer(artifactResponse.body);
+      if (artifactHash !== fetch.artifactSha256 || artifactResponse.body.length !== fetch.artifactSize) {
+        return {
+          key: hit.cacheKey,
+          hit,
+          success: false,
+          error: 'remote artifact verify failed'
+        };
+      }
+
+      const inputs = JSON.parse(fetch.inputsJson) as ArchiveBuildInputs;
+      const target = this.createTargetFromFetch(fetch);
+      await this.writeEntryFromBuffer(target, inputs, fetch.key, artifactResponse.body, 'cloud-download');
+
+      if (!await this.verifyLocalEntry(this.getEntryDir(fetch.key), fetch.key, target)) {
+        return {
+          key: hit.cacheKey,
+          hit,
+          success: false,
+          error: 'downloaded entry failed local verification'
+        };
+      }
+
+      const localArchivePath = path.join(this.getEntryDir(fetch.key), fetch.archiveName);
+      await this.linkOrCopy(localArchivePath, hit.buildArchivePath);
+      this.logger.debug(`[ARCHIVE_CLOUD_CACHE] remote download ready ${fetch.archiveName} ${fetch.key}`);
+
+      return {
+        key: hit.cacheKey,
+        hit,
+        success: true
+      };
+    } catch (error) {
+      this.remoteDisabledForRun = true;
+      return {
+        key: hit.cacheKey,
+        hit,
+        success: false,
+        error: error instanceof Error ? error.message : String(error)
+      };
+    }
+  }
+
+  private createTargetFromFetch(fetch: ArchiveCacheFetchRequest): ArchiveTarget {
+    return {
+      dependency: undefined as any,
+      dependencyName: fetch.dependencyName,
+      dependencyType: fetch.dependencyType,
+      archiveName: fetch.archiveName
     };
   }
 
