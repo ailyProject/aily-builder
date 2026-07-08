@@ -5,7 +5,7 @@ import { Logger } from './utils/Logger';
 import { Dependency } from './DependencyAnalyzer';
 import { CacheManager, CacheKey } from './CacheManager';
 import { NinjaGenerator, NinjaOptions } from './NinjaGenerator';
-import { ArchiveCacheHit, ArchiveCloudCacheManager, getArchiveDependencyKey } from './ArchiveCloudCacheManager';
+import { ArchiveCacheFetchResult, ArchiveCacheHit, ArchiveCloudCacheManager, getArchiveDependencyKey } from './ArchiveCloudCacheManager';
 import { escapeQuotedDefines } from './utils/escapeQuotes';
 import { sanitizeNonAsciiPaths } from './utils/ShortPath';
 
@@ -47,9 +47,10 @@ export class NinjaCompilationPipeline {
       // 1. 预处理：先恢复整包 .a 缓存，再恢复剩余对象文件缓存
       this.logger.verbose('Checking archive cloud cache for compiled archives...');
       const archiveCacheHits = await this.archiveCloudCacheManager.restoreArchives(dependencies, compileConfig);
+      const remoteFetches = this.archiveCloudCacheManager.startRemoteFetches(archiveCacheHits);
 
       this.logger.verbose('Checking cache for compiled objects...');
-      const cacheHits = await this.restoreFromCache(dependencies, archiveCacheHits);
+      await this.restoreFromCache(dependencies, archiveCacheHits);
       // if (cacheHits > 0) {
       //   this.logger.info(`Cache hit: ${cacheHits} objects restored from cache`);
       // }
@@ -67,6 +68,70 @@ export class NinjaCompilationPipeline {
 
       const ninjaFilePath = await this.ninjaGenerator.generateNinjaFile(ninjaOptions);
       this.logger.verbose(`Ninja file generated: ${ninjaFilePath}`);
+
+      if (remoteFetches.size > 0) {
+        this.logger.info('Building source archives while remote archive downloads run...');
+        let result = await this.executeNinjaBuild(ninjaFilePath, [NinjaGenerator.PRELINK_TARGET]);
+        if (!result.success) {
+          await this.collectFailedRemoteFetches(remoteFetches);
+          return {
+            success: false,
+            warnings: result.warnings
+          };
+        }
+
+        const failedRemoteKeys = await this.collectFailedRemoteFetches(remoteFetches);
+        let finalNinjaFilePath = ninjaFilePath;
+
+        if (failedRemoteKeys.length > 0) {
+          for (const key of failedRemoteKeys) {
+            archiveCacheHits.delete(key);
+          }
+
+          this.logger.info(`[ARCHIVE_CLOUD_CACHE] falling back to source archives=${failedRemoteKeys.length}`);
+          this.logger.verbose('Checking cache for fallback archive objects...');
+          await this.restoreFromCache(dependencies, archiveCacheHits);
+
+          this.logger.verbose('Regenerating ninja build file for fallback archives...');
+          finalNinjaFilePath = await this.ninjaGenerator.generateNinjaFile({
+            ...ninjaOptions,
+            archiveCacheHits
+          });
+          this.logger.verbose(`Ninja file regenerated: ${finalNinjaFilePath}`);
+
+          result = await this.executeNinjaBuild(finalNinjaFilePath, [NinjaGenerator.PRELINK_TARGET]);
+          if (!result.success) {
+            return {
+              success: false,
+              warnings: result.warnings
+            };
+          }
+        }
+
+        if (compileConfig.arduino) {
+          await this.runPreLinkHooks(compileConfig.arduino);
+        }
+
+        this.logger.info('Starting ninja link...');
+        result = await this.executeNinjaBuild(finalNinjaFilePath);
+        const buildTime = Date.now() - startTime;
+
+        if (result.success) {
+          await this.archiveCloudCacheManager.storeArchives(dependencies, compileConfig, archiveCacheHits);
+
+          return {
+            success: true,
+            outFilePath: this.getOutputFilePath(),
+            buildTime,
+            warnings: result.warnings
+          };
+        }
+
+        return {
+          success: false,
+          warnings: result.warnings
+        };
+      }
 
       // 2.5. 运行链接前钩子（RP2040需要生成链接脚本）
       if (compileConfig.arduino) {
@@ -123,7 +188,41 @@ export class NinjaCompilationPipeline {
     }
   }
 
-  private async executeNinjaBuild(ninjaFilePath: string): Promise<{ success: boolean; warnings?: string[] }> {
+  private async collectFailedRemoteFetches(
+    remoteFetches: Map<string, Promise<ArchiveCacheFetchResult>>
+  ): Promise<string[]> {
+    const failedKeys: string[] = [];
+
+    for (const [key, fetchPromise] of remoteFetches) {
+      const result = await fetchPromise;
+      if (!result.success) {
+        failedKeys.push(key);
+        this.logger.warn(
+          `[ARCHIVE_CLOUD_CACHE] remote download failed ${result.hit.archiveName} ${result.hit.cacheKey}: ${result.error || 'unknown error'}`
+        );
+      }
+    }
+
+    return failedKeys;
+  }
+
+  private getOutputFilePath(): string {
+    const sketchName = process.env['SKETCH_NAME'] || 'sketch';
+    const buildPath = process.env['BUILD_PATH'] || '';
+
+    if (this.compileConfig.args.zip) {
+      return path.join(buildPath, `${sketchName}.zip`);
+    }
+    if (this.compileConfig.args.hex) {
+      return path.join(buildPath, `${sketchName}.hex`);
+    }
+    if (this.compileConfig.compiler.bin) {
+      return path.join(buildPath, `${sketchName}.bin`);
+    }
+    return path.join(buildPath, `${sketchName}.elf`);
+  }
+
+  private async executeNinjaBuild(ninjaFilePath: string, targets: string[] = []): Promise<{ success: boolean; warnings?: string[] }> {
     return new Promise((resolve, reject) => {
       const ninjaPath = this.getNinjaExecutablePath();
       const buildDir = sanitizeNonAsciiPaths(path.dirname(ninjaFilePath));
@@ -134,6 +233,8 @@ export class NinjaCompilationPipeline {
         '-j', jobs.toString(),
         '-v' // verbose模式显示执行的命令
       ];
+
+      args.push(...targets);
 
       this.logger.verbose(`Executing: ${ninjaPath} ${args.join(' ')}`);
       this.logger.verbose(`Working directory: ${buildDir}`);
