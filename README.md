@@ -132,19 +132,16 @@ aily-builder upload -p /dev/ttyUSB0 -f firmware.bin --board esp32:esp32:esp32 --
 
 ```bash
 # View cache statistics
-aily-builder cache-stats
+aily-builder cache stats
 
-# Clean cache older than 30 days
-aily-builder cache-clean --days 30
+# Clear entries not used in the last 30 days
+aily-builder cache clear --unused-30
 
 # Preview what would be deleted (dry run)
-aily-builder cache-clean --days 7 --dry-run
+aily-builder cache clear --unused-7 --dry-run
 
 # Clear all cache
 aily-builder cache clear --all
-
-# Compile without cache
-aily-builder compile sketch.ino --no-cache
 ```
 
 ## Detailed Documentation
@@ -175,8 +172,6 @@ Options:
   --generate-archive-cloud-cache   Generate uploadable archive cloud cache entries after successful builds
   -j, --jobs <number>              Number of parallel compilation jobs (default: "4")
   --verbose                        Enable verbose output
-  --no-cache                       Disable compilation cache
-  --clean-cache                    Clean cache before compilation
   --log-file                       Write logs to file in build directory
   -h, --help                       Display help for command
 ```
@@ -243,13 +238,15 @@ Options:
 
 ```bash
 # Cache statistics
-aily-builder cache-stats [--verbose]
+aily-builder cache stats [--verbose] [--json]
 
 # Cache cleanup
-aily-builder cache-clean [options]
-  --days <number>     Clean files older than N days (default: 30)
-  --pattern <pattern> File name pattern matching
+aily-builder cache clear [options]
+  --all               Clear all persistent cache data
+  --unused-30         Clear entries not used in the last 30 days
+  --unused-7          Clear entries not used in the last 7 days
   --dry-run           Preview mode, don't actually delete
+  --json              Output machine-readable JSON
 
 # Clear all cache
 aily-builder cache clear --all
