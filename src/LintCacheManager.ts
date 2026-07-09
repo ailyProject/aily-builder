@@ -36,6 +36,15 @@ export class LintCacheManager {
     this.logger.debug(`Lint cache directory: ${this.cacheDir}`);
   }
 
+  private async touchCacheAccess(cacheFilePath: string): Promise<void> {
+    try {
+      const now = new Date();
+      await fs.utimes(cacheFilePath, now, now);
+    } catch (error) {
+      this.logger.debug(`Failed to update lint cache access time for ${cacheFilePath}: ${error}`);
+    }
+  }
+
   /**
    * 生成缓存键的MD5值
    */
@@ -139,6 +148,7 @@ export class LintCacheManager {
 
       const cacheFilePath = this.getCacheFilePath(cacheKey);
       const cacheData = await fs.readJSON(cacheFilePath);
+      await this.touchCacheAccess(cacheFilePath);
       
       this.logger.debug(`Retrieved ${cacheKey.operation} cache for ${path.basename(cacheKey.sourceFile)}`);
       
@@ -258,5 +268,9 @@ export class LintCacheManager {
     }
 
     return `${size.toFixed(1)} ${units[unitIndex]}`;
+  }
+
+  getCacheDir(): string {
+    return this.cacheDir;
   }
 }

@@ -11,6 +11,7 @@ import https from 'https';
 import { spawnSync } from 'child_process';
 import { createHash } from 'crypto';
 import { glob } from 'glob';
+import type { Dirent } from 'fs';
 import { Logger } from './utils/Logger';
 import { Dependency } from './DependencyAnalyzer';
 import { collectPackageIdentitiesFromPaths, extractPackageIdentityFromPath } from './utils/PackageIdentity';
@@ -256,6 +257,10 @@ export class ArchiveCloudCacheManager {
     return path.join(this.cacheDir, 'v1', key.substring(0, 2), key.substring(2, 4), key);
   }
 
+  getCacheDir(): string {
+    return this.cacheDir;
+  }
+
   private async restoreOne(
     target: ArchiveTarget,
     inputs: ArchiveBuildInputs,
@@ -294,6 +299,7 @@ export class ArchiveCloudCacheManager {
       return null;
     }
 
+    await this.touchEntryAccess(entryDir);
     await this.linkOrCopy(archivePath, buildArchivePath);
     this.logger.debug(`[ARCHIVE_CLOUD_CACHE] local hit ${target.archiveName} ${key}`);
     return {
@@ -952,6 +958,37 @@ export class ArchiveCloudCacheManager {
       await fs.link(sourcePath, targetPath);
     } catch {
       await fs.copy(sourcePath, targetPath);
+    }
+  }
+
+  private async touchEntryAccess(entryDir: string): Promise<void> {
+    const now = new Date();
+    const pending = [entryDir];
+
+    while (pending.length > 0) {
+      const currentDir = pending.pop()!;
+      let items: Dirent[];
+
+      try {
+        items = await fs.readdir(currentDir, { withFileTypes: true });
+      } catch (error) {
+        this.logger.debug(`[ARCHIVE_CLOUD_CACHE] failed to read cache entry ${currentDir}: ${error}`);
+        continue;
+      }
+
+      for (const item of items) {
+        const itemPath = path.join(currentDir, item.name);
+        if (item.isDirectory()) {
+          pending.push(itemPath);
+          continue;
+        }
+
+        try {
+          await fs.utimes(itemPath, now, now);
+        } catch (error) {
+          this.logger.debug(`[ARCHIVE_CLOUD_CACHE] failed to update access time ${itemPath}: ${error}`);
+        }
+      }
     }
   }
 

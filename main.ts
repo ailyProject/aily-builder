@@ -6,6 +6,7 @@ import { ArduinoLinter } from './src/ArduinoLinter';
 import { ArduinoConfigParser } from './src/ArduinoConfigParser';
 import { Logger } from './src/utils/Logger';
 import { CacheManager } from './src/CacheManager';
+import { CacheClearMode, CacheRegistry, CacheStatsReport, CacheClearReport } from './src/CacheRegistry';
 import { calculateMD5 } from './src/utils/md5';
 import { initShortPath, sanitizeNonAsciiPaths } from './src/utils/ShortPath';
 import path from 'path';
@@ -18,6 +19,59 @@ const logger = new Logger();
 function isTruthyEnv(name: string): boolean {
   const value = process.env[name];
   return value === '1' || value?.toLowerCase() === 'true';
+}
+
+function resolveCacheClearMode(options: any): CacheClearMode {
+  const selected: CacheClearMode[] = [];
+
+  if (options.all) selected.push('all');
+  if (options.unused30) selected.push('unused-30');
+  if (options.unused7) selected.push('unused-7');
+
+  if (selected.length !== 1) {
+    throw new Error('Choose exactly one clear option: --all, --unused-30, or --unused-7');
+  }
+
+  return selected[0];
+}
+
+function printCacheStats(report: CacheStatsReport, verbose = false): void {
+  logger.info('Cache statistics:');
+  for (const bucket of report.buckets) {
+    logger.info(`- ${bucket.name} (${bucket.id})`);
+    logger.info(`  Entries: ${bucket.entries}`);
+    logger.info(`  Files: ${bucket.files}`);
+    logger.info(`  Size: ${bucket.totalSizeFormatted}`);
+    logger.info(`  Path: ${bucket.directory}`);
+    if (bucket.newestLastUsedAt) {
+      logger.info(`  Last used: ${bucket.newestLastUsedAt}`);
+    }
+    if (verbose) {
+      logger.info(`  Description: ${bucket.description}`);
+      if (bucket.oldestLastUsedAt) {
+        logger.info(`  Oldest file use: ${bucket.oldestLastUsedAt}`);
+      }
+    }
+  }
+
+  logger.info(`Total entries: ${report.total.entries}`);
+  logger.info(`Total files: ${report.total.files}`);
+  logger.info(`Total size: ${report.total.totalSizeFormatted}`);
+}
+
+function printCacheClearReport(report: CacheClearReport): void {
+  const action = report.dryRun ? 'Would delete' : 'Deleted';
+  logger.info(`Cache clear mode: ${report.mode}${report.dryRun ? ' (dry run)' : ''}`);
+  if (report.cutoffAt) {
+    logger.info(`Cutoff: unused since before ${report.cutoffAt}`);
+  }
+
+  for (const bucket of report.buckets) {
+    logger.info(`- ${bucket.name}: ${action} ${bucket.deletedFiles} files, ${bucket.deletedDirectories} directories, ${bucket.bytesFreedFormatted}`);
+    logger.info(`  Path: ${bucket.directory}`);
+  }
+
+  logger.success(`${report.dryRun ? 'Cache clear dry run completed' : 'Cache clear completed'}: ${action.toLowerCase()} ${report.total.deletedFiles} files, ${report.total.deletedDirectories} directories, ${report.total.bytesFreedFormatted}`);
 }
 
 program
@@ -732,22 +786,22 @@ program
 
 program
   .command('cache')
-  .description('Manage compilation cache')
+  .description('Manage persistent caches')
   .addCommand(
     new Command('stats')
-      .description('Show cache statistics')
-      .action(async () => {
+      .description('Show statistics for all persistent caches')
+      .option('--json', 'Output machine-readable JSON', false)
+      .option('--verbose', 'Show cache descriptions and oldest access times', false)
+      .action(async (options) => {
         try {
-          const cacheManager = new CacheManager(logger);
-          const stats = await cacheManager.getCacheStats();
+          logger.setVerbose(options.verbose);
+          const registry = new CacheRegistry(logger);
+          const report = await registry.getStats();
 
-          logger.info('📊 Cache Statistics:');
-          logger.info(`Cache directory: ${stats.cacheDir}`);
-          logger.info(`Total files: ${stats.totalFiles}`);
-          logger.info(`Total size: ${stats.totalSizeFormatted}`);
-
-          if (stats.totalFiles === 0) {
-            logger.info('No cached files found.');
+          if (options.json) {
+            console.log(JSON.stringify(report, null, 2));
+          } else {
+            printCacheStats(report, options.verbose);
           }
         } catch (error) {
           logger.error(`Error getting cache stats: ${error instanceof Error ? error.message : error}`);
@@ -757,30 +811,28 @@ program
   )
   .addCommand(
     new Command('clear')
-      .description('Clear compilation cache')
-      .option('--older-than <days>', 'Clear files older than specified days', undefined)
-      .option('--pattern <pattern>', 'Clear files matching pattern', undefined)
-      .option('--all', 'Clear all cached files', false)
+      .description('Clear persistent caches')
+      .option('--all', 'Clear every persistent cache entry', false)
+      .option('--unused-30', 'Clear entries not used in the last 30 days', false)
+      .option('--unused-7', 'Clear entries not used in the last 7 days', false)
+      .option('--dry-run', 'Show what would be deleted without deleting files', false)
+      .option('--json', 'Output machine-readable JSON', false)
+      .addHelpText('after', `
+Examples:
+  $ aily-builder cache clear --all
+  $ aily-builder cache clear --unused-30
+  $ aily-builder cache clear --unused-7 --dry-run
+`)
       .action(async (options) => {
         try {
-          const cacheManager = new CacheManager(logger);
+          const clearMode = resolveCacheClearMode(options);
+          const registry = new CacheRegistry(logger);
+          const report = await registry.clear(clearMode, options.dryRun);
 
-          if (options.all) {
-            logger.info('🗑️  Clearing all cache files...');
-            await cacheManager.clearAllCache();
-            logger.success('All cache files cleared!');
+          if (options.json) {
+            console.log(JSON.stringify(report, null, 2));
           } else {
-            const clearOptions: any = {};
-            if (options.olderThan) {
-              clearOptions.olderThanDays = parseInt(options.olderThan);
-            }
-            if (options.pattern) {
-              clearOptions.pattern = options.pattern;
-            }
-
-            logger.info('🗑️  Clearing cache files...');
-            await cacheManager.clearCache(clearOptions);
-            logger.success('Cache files cleared!');
+            printCacheClearReport(report);
           }
         } catch (error) {
           logger.error(`Error clearing cache: ${error instanceof Error ? error.message : error}`);
@@ -788,79 +840,6 @@ program
         }
       })
   );
-
-// 缓存统计命令
-program
-  .command('cache-stats')
-  .description('Display cache statistics')
-  .option('--verbose', 'Enable verbose output', false)
-  .action(async (options) => {
-    try {
-      logger.setVerbose(options.verbose);
-      const cacheManager = new CacheManager(logger);
-
-      const stats = await cacheManager.getCacheStats();
-
-      console.log('\n📊 Cache Statistics:');
-      console.log(`   Files: ${stats.totalFiles.toString()}`);
-      console.log(`   Size: ${stats.totalSizeFormatted}`);
-      console.log(`   Location: ${stats.cacheDir}`);
-
-      if (stats.totalFiles > 0) {
-        const avgSize = stats.totalSize / stats.totalFiles;
-        console.log(`   Average file size: ${(avgSize / 1024).toFixed(1)} KB`);
-      }
-
-      console.log('\nCache statistics displayed successfully');
-    } catch (error) {
-      logger.error(`Error getting cache statistics: ${error instanceof Error ? error.message : error}`);
-      process.exit(1);
-    }
-  });
-
-// 缓存维护命令
-program
-  .command('cache-clean')
-  .description('Clean old cache files')
-  .option('--days <number>', 'Remove cache files older than specified days', '30')
-  .option('--pattern <pattern>', 'Only remove files matching pattern')
-  .option('--dry-run', 'Show what would be deleted without actually deleting', false)
-  .option('--verbose', 'Enable verbose output', false)
-  .action(async (options) => {
-    try {
-      logger.setVerbose(options.verbose);
-      const cacheManager = new CacheManager(logger);
-
-      const days = parseInt(options.days);
-      if (isNaN(days) || days < 0) {
-        throw new Error('Days must be a non-negative number');
-      }
-
-      console.log(`\n🧹 Cleaning cache files older than ${days} days...`);
-      if (options.pattern) {
-        console.log(`   Pattern: ${options.pattern}`);
-      }
-      if (options.dryRun) {
-        console.log('   (Dry run - no files will be deleted)');
-      }
-
-      if (!options.dryRun) {
-        await cacheManager.clearCache({
-          olderThanDays: days,
-          pattern: options.pattern
-        });
-      } else {
-        // 对于dry run，我们只显示统计信息
-        const stats = await cacheManager.getCacheStats();
-        console.log(`   Would analyze ${stats.totalFiles} files in cache`);
-      }
-
-      console.log('\nCache cleaning completed');
-    } catch (error) {
-      logger.error(`Error cleaning cache: ${error instanceof Error ? error.message : error}`);
-      process.exit(1);
-    }
-  });
 
 // 错误处理
 process.on('uncaughtException', (error) => {

@@ -129,19 +129,16 @@ aily-builder upload -p /dev/ttyUSB0 -f firmware.bin --board esp32:esp32:esp32 --
 
 ```bash
 # 查看缓存统计
-aily-builder cache-stats
+aily-builder cache stats
 
-# 清理30天前的缓存
-aily-builder cache-clean --days 30
+# 清理近 30 天没有使用过的缓存
+aily-builder cache clear --unused-30
 
 # 预览将被删除的文件（dry run）
-aily-builder cache-clean --days 7 --dry-run
+aily-builder cache clear --unused-7 --dry-run
 
 # 清理所有缓存
 aily-builder cache clear --all
-
-# 禁用缓存编译
-aily-builder compile sketch.ino --no-cache
 ```
 
 ## 详细文档
@@ -172,8 +169,6 @@ aily-builder compile sketch.ino --no-cache
   --generate-archive-cloud-cache   编译成功后生成可上传的 archive cloud cache 条目
   -j, --jobs <number>              并行编译任务数 (默认: "4")
   --verbose                        启用详细输出
-  --no-cache                       禁用编译缓存
-  --clean-cache                    编译前清理缓存
   --log-file                       将日志写入构建目录
   -h, --help                       显示帮助信息
 ```
@@ -240,13 +235,15 @@ aily-builder compile sketch.ino --no-cache
 
 ```bash
 # 缓存统计
-aily-builder cache-stats [--verbose]
+aily-builder cache stats [--verbose] [--json]
 
 # 缓存清理
-aily-builder cache-clean [options]
-  --days <number>     清理N天前的文件 (默认: 30)
-  --pattern <pattern> 文件名模式匹配
+aily-builder cache clear [options]
+  --all               清理所有持久化缓存
+  --unused-30         清理近 30 天没有使用过的缓存
+  --unused-7          清理近 7 天没有使用过的缓存
   --dry-run           预览模式，不实际删除
+  --json              输出机器可读 JSON
 
 # 清空所有缓存
 aily-builder cache clear --all
