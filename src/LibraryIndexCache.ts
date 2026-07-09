@@ -100,6 +100,10 @@ export class LibraryIndexCache {
       const sourceIndex = await this.readSourceIndexForHash(cachedPathState.sourceHash);
       const macroIndex = sourceIndex?.macroIndexes?.[macroKey];
       if (sourceIndex && macroIndex) {
+        await this.touchCacheAccess([
+          pathStatePath,
+          this.getSourceIndexPath(cachedPathState.sourceHash)
+        ]);
         this.logger.debug(`[LIB_INDEX] hit ${libraryName}: ${files.length} files, ${Date.now() - startedAt}ms`);
         return {
           sourceFiles: this.toAbsolutePaths(libraryPath, sourceIndex.sourceFiles),
@@ -143,6 +147,7 @@ export class LibraryIndexCache {
         sourceHash,
         fileRecords
       ));
+      await this.touchCacheAccess([this.getSourceIndexPath(sourceHash)]);
       this.logger.debug(`[LIB_INDEX] source hit ${libraryName}: ${files.length} files, ${Date.now() - startedAt}ms`);
       return {
         sourceFiles: this.toAbsolutePaths(libraryPath, sourceIndex.sourceFiles),
@@ -224,6 +229,23 @@ export class LibraryIndexCache {
       fastFingerprint,
       sourceHash
     };
+  }
+
+  private async touchCacheAccess(cachePaths: string[]): Promise<void> {
+    const now = new Date();
+    await Promise.all(cachePaths.map(async (cachePath) => {
+      try {
+        if (await fs.pathExists(cachePath)) {
+          await fs.utimes(cachePath, now, now);
+        }
+      } catch (error) {
+        this.logger.debug(`[LIB_INDEX] failed to update cache access time ${cachePath}: ${error instanceof Error ? error.message : error}`);
+      }
+    }));
+  }
+
+  getCacheDir(): string {
+    return this.cacheDir;
   }
 
   private getDefaultCacheDir(): string {
