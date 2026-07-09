@@ -120,6 +120,11 @@ jobs:
             PACKAGE_NAME=$(node -p "require('./$package_dir/package.json').name")
             echo "Package: $PACKAGE_NAME@$CURRENT_VERSION"
 
+            PACKAGE_OS=$(node -p "(require('./$package_dir/package.json').os || []).join(',')")
+            if [[ ",$PACKAGE_OS," == *",darwin,"* ]]; then
+              chmod 755 "$package_dir/ninja/ninja"
+            fi
+
             if npm view "$PACKAGE_NAME@$CURRENT_VERSION" version &> /dev/null; then
               echo "Version $CURRENT_VERSION exists, unpublishing..."
               retry_with_backoff 3 3 npm unpublish "$PACKAGE_NAME@$CURRENT_VERSION" --force
@@ -236,6 +241,11 @@ jobs:
           CURRENT_VERSION=$(node -p "require('./dist/bundle-min/package.json').version")
           PACKAGE_NAME=$(node -p "require('./dist/bundle-min/package.json').name")
           echo "Package: $PACKAGE_NAME@$CURRENT_VERSION"
+
+          PACKAGE_OS=$(node -p "(require('./dist/bundle-min/package.json').os || []).join(',')")
+          if [[ ",$PACKAGE_OS," == *",darwin,"* ]]; then
+            chmod 755 ./dist/bundle-min/ninja/ninja
+          fi
 
           if npm view "$PACKAGE_NAME@$CURRENT_VERSION" version &> /dev/null; then
             echo "Version $CURRENT_VERSION exists on $REGISTRY_2, unpublishing..."
