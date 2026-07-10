@@ -1,6 +1,14 @@
 import Parser, { SyntaxNode, Tree } from 'tree-sitter';
 import Cpp from 'tree-sitter-cpp';
 import { promises as fs } from 'fs';
+import {
+    ExpressionEvaluator,
+    MacroExpander,
+    MacroDefinition,
+    stripDirectiveComments
+} from './PreprocessorExpression';
+
+export type { MacroDefinition } from './PreprocessorExpression';
 
 // 全局 Parser 实例，避免重复创建
 let globalParser: Parser | null = null;
@@ -19,8 +27,10 @@ function getParser(): Parser {
 /**
  * 分析选项接口
  */
-interface AnalysisOptions {
+export interface AnalysisOptions {
     throwOnError?: boolean;
+    // Runs at the include location so nested files can update macros before parsing continues.
+    onInclude?: (includePath: string) => void;
 }
 
 /**
@@ -32,15 +42,6 @@ export interface AnalysisResult {
 }
 
 /**
- * 宏定义接口
- */
-export interface MacroDefinition {
-    name: string;
-    value?: string;
-    isDefined: boolean;
-}
-
-/**
  * 条件编译帧接口
  */
 interface ConditionalFrame {
@@ -48,159 +49,6 @@ interface ConditionalFrame {
     active: boolean;
     parentActive: boolean;
     hadTrueBranch: boolean;
-}
-
-/**
- * 将MacroDefinition Map转换为评估器需要的Map类型
- * @param defines - 宏定义Map
- * @returns Map<string, string | number>
- */
-function convertMacroDefinitions(defines: Map<string, MacroDefinition>): Map<string, string | number> {
-    const result = new Map<string, string | number>();
-
-    for (const [name, macroDef] of defines) {
-        if (macroDef.isDefined) {
-            const value = macroDef.value !== undefined ? macroDef.value : '1';
-            // 尝试将值转换为数字，如果失败则保持字符串
-            const numValue = Number(value);
-            result.set(name, isNaN(numValue) ? value : numValue);
-        }
-    }
-
-    return result;
-}
-
-/**
- * 安全的表达式评估器
- */
-class ExpressionEvaluator {
-    private definedMacros: Map<string, string | number>;
-    // 预编译正则表达式以提高性能
-    private definedRegex: RegExp;
-    private macroRegex: RegExp;
-    private numberRegex: RegExp;
-
-    constructor(definedMacros: Map<string, string | number>) {
-        this.definedMacros = definedMacros;
-        this.definedRegex = /defined\s*\(\s*([A-Za-z_][A-Za-z0-9_]*)\s*\)|defined\s+([A-Za-z_][A-Za-z0-9_]*)/g;
-        this.macroRegex = /\b([A-Za-z_][A-Za-z0-9_]*)\b/g;
-        this.numberRegex = /^\d+$/;
-    }
-
-    /**
-     * 评估预处理条件表达式
-     * @param conditionText - 条件表达式文本
-     * @returns 评估结果
-     */
-    evaluate(conditionText: string): boolean {
-        if (!conditionText || typeof conditionText !== 'string') {
-            return false;
-        }
-
-        try {
-            // 处理 defined(MACRO) 或 defined MACRO
-            let processed = conditionText.replace(this.definedRegex, (match, macro1, macro2) => {
-                const macro = macro1 || macro2;
-                return this.definedMacros.has(macro) ? '1' : '0';
-            });
-
-            // 处理宏替换（支持嵌套宏）
-            processed = this.resolveMacros(processed);
-
-            // Debug: 打印处理后的表达式
-            if (process.env.DEBUG_EXPR) {
-                console.log(`[DEBUG] 原始条件: ${conditionText}`);
-                console.log(`[DEBUG] 宏替换后: ${processed}`);
-            }
-
-            // 处理逻辑运算符
-            processed = processed
-                .replace(/&&/g, '&')
-                .replace(/\|\|/g, '|')
-                .replace(/!/g, '~');
-
-            // 使用更安全的表达式评估
-            const result = this.safeEvaluate(processed);
-            
-            if (process.env.DEBUG_EXPR) {
-                console.log(`[DEBUG] 评估结果: ${result}`);
-            }
-            
-            return result;
-        } catch (e) {
-            console.warn(`无法评估条件: ${conditionText}`, (e as Error).message);
-            return false;
-        }
-    }
-
-    /**
-     * 检查宏是否已定义
-     * @param macroName - 宏名称
-     * @returns 是否已定义
-     */
-    hasMacro(macroName: string): boolean {
-        return this.definedMacros.has(macroName);
-    }
-
-    /**
-     * 解析宏嵌套和宏值替换
-     * @param text - 要处理的文本
-     * @returns 解析后的文本
-     */
-    private resolveMacros(text: string): string {
-        let processed = text;
-        let maxIterations = 10; // 防止无限递归
-        let changed = true;
-
-        while (changed && maxIterations > 0) {
-            changed = false;
-            maxIterations--;
-
-            processed = processed.replace(this.macroRegex, (match) => {
-                if (this.definedMacros.has(match)) {
-                    const value = this.definedMacros.get(match);
-                    const stringValue = String(value);
-                    if (stringValue !== match) {
-                        changed = true;
-                        return stringValue;
-                    }
-                }
-                // 保留数字，其他未定义的标识符替换为0
-                return this.numberRegex.test(match) ? match : '0';
-            });
-        }
-
-        return processed;
-    }
-
-    /**
-     * 安全地评估数值表达式
-     * @param expression - 处理后的表达式
-     * @returns 评估结果
-     */
-    private safeEvaluate(expression: string): boolean {
-        // 支持数字、基本运算符、比较运算符和括号
-        if (!/^[0-9&|~()><!=\s]+$/.test(expression)) {
-            return false;
-        }
-
-        try {
-            // 处理比较运算符 - 注意顺序！先处理复合运算符，再处理单个运算符
-            let processedExpr = expression
-                .replace(/&/g, ' && ')
-                .replace(/\|/g, ' || ')
-                .replace(/~/g, ' !');
-
-            // 不需要再处理比较运算符，因为原始表达式中已经是正确的格式
-            // 之前的replace会破坏 >= 和 <= 等复合运算符
-
-            // 使用 Function 构造器，但限制在安全的数值运算范围内
-            const result = new Function('return (' + processedExpr + ')')();
-            return result !== 0 && result !== false;
-        } catch (e) {
-            return false;
-        }
-    }
 }
 
 /**
@@ -309,7 +157,7 @@ class ConditionalCompilationManager {
 function preprocessSourceCode(sourceCode: string): string {
     // 将反斜杠续行符（\ + 换行）替换为空格
     // 同时移除续行后的前导空白，保持代码的可读性
-    return sourceCode.replace(/\\\s*[\r\n]+\s*/g, ' ');
+    return sourceCode.replace(/\\(?:\r\n|\n|\r)/g, '');
 }
 
 /**
@@ -321,14 +169,23 @@ class ASTNodeProcessor {
     private conditionManager: ConditionalCompilationManager;
     private actualIncludes: Set<string>;
     private defines: Map<string, MacroDefinition>;
+    private onInclude?: (includePath: string) => void;
 
-    constructor(sourceCode: string, defines: Map<string, MacroDefinition>) {
+    constructor(
+        sourceCode: string,
+        defines: Map<string, MacroDefinition>,
+        onInclude?: (includePath: string) => void
+    ) {
         this.sourceCode = sourceCode;
         this.defines = defines;
-        const definedMacros = convertMacroDefinitions(defines);
-        this.expressionEvaluator = new ExpressionEvaluator(definedMacros);
+        this.expressionEvaluator = new ExpressionEvaluator(defines);
         this.conditionManager = new ConditionalCompilationManager();
         this.actualIncludes = new Set();
+        this.onInclude = onInclude;
+    }
+
+    private refreshExpressionEvaluator(): void {
+        this.expressionEvaluator = new ExpressionEvaluator(this.defines);
     }
 
     /**
@@ -342,18 +199,17 @@ class ASTNodeProcessor {
      * 提取 include 路径（优化版）
      */
     private extractIncludePath(node: SyntaxNode): string | null {
-        // 首先尝试通过子节点直接获取
-        for (let i = 0; i < node.childCount; i++) {
-            const child = node.child(i);
-            if (child && (child.type === 'string_literal' || child.type === 'system_lib_string')) {
-                return this.getNodeText(child).replace(/[<">]/g, '').trim();
-            }
-        }
+        const directive = stripDirectiveComments(this.getNodeText(node));
+        const match = directive.match(/^\s*#\s*include\s+(.+?)\s*$/);
+        if (!match) return null;
 
-        // 备选方案：正则表达式提取
-        const text = this.getNodeText(node);
-        const match = text.match(/#include\s*([<"].*?[>"])/);
-        return match ? match[1].replace(/[<">]/g, '').trim() : null;
+        const expanded = new MacroExpander(this.defines).expand(match[1]).trim();
+        const systemHeader = expanded.match(/^<([^>\r\n]+)>$/);
+        if (systemHeader) return systemHeader[1].trim();
+
+        const quotedHeader = expanded.match(/^"((?:\\.|[^"\\])*)"$/);
+        if (!quotedHeader) return null;
+        return quotedHeader[1].replace(/\\([\\"])/g, '$1');
     }
 
     /**
@@ -378,15 +234,9 @@ class ASTNodeProcessor {
      * 提取条件表达式
      */
     private extractCondition(node: SyntaxNode): string {
-        const text = this.getNodeText(node);
-        // 条件表达式应该在第一行（到第一个真正的换行符之前）
-        // 处理 Windows 和 Unix 风格的换行符
-        const firstLine = text.split(/\r?\n/)[0];
-        
-        // 提取条件表达式（#if 或 #elif 后面的内容，到注释或行尾）
-        // 修复：支持 #if(...) 这种没有空格的格式
-        const match = firstLine.match(/#(?:el)?if\s*(.+?)(?:\/\/|\/\*|$)/);
-        return match ? match[1].trim() : '';
+        const firstLine = this.getNodeText(node).split(/\r?\n/)[0];
+        const match = firstLine.match(/^\s*#\s*(?:if|elif)\b(.*)$/);
+        return match ? stripDirectiveComments(match[1]).trim() : '';
     }
 
     /**
@@ -398,7 +248,11 @@ class ASTNodeProcessor {
                 return this.processInclude(node, parentConditionActive);
 
             case 'preproc_def':
+            case 'preproc_function_def':
                 return this.processDefine(node, parentConditionActive);
+
+            case 'preproc_call':
+                return this.processUndef(node, parentConditionActive);
 
             case 'preproc_ifdef':
                 return this.processIfdef(node, parentConditionActive);
@@ -425,6 +279,10 @@ class ASTNodeProcessor {
             const includePath = this.extractIncludePath(node);
             if (includePath) {
                 this.actualIncludes.add(includePath);
+                if (this.onInclude) {
+                    this.onInclude(includePath);
+                    this.refreshExpressionEvaluator();
+                }
             }
         }
         return isActive;
@@ -439,7 +297,7 @@ class ASTNodeProcessor {
         // 检查第一个子节点的文本来区分 #ifdef 和 #ifndef
         // tree-sitter-cpp 对两者使用相同的节点类型 preproc_ifdef
         const firstChild = node.child(0);
-        const isIfndef = firstChild && this.getNodeText(firstChild).trim() === '#ifndef';
+        const isIfndef = !!firstChild && this.getNodeText(firstChild).replace(/\s+/g, '') === '#ifndef';
 
         let conditionMet;
         if (isIfndef) {
@@ -493,56 +351,85 @@ class ASTNodeProcessor {
 
     private processDefine(node: SyntaxNode, isActive: boolean): boolean {
         if (isActive) {
-            const text = this.getNodeText(node);
-            const lines = text.split('\n');
-            for (const line of lines) {
-                const macroInfo = this.extractMacroDefinition(line);
-                if (macroInfo) {
-                    // 更新宏定义集合
-                    this.defines.set(macroInfo.name, macroInfo);
-                    // 重新创建 ExpressionEvaluator 以包含新的宏定义
-                    const definedMacros = convertMacroDefinitions(this.defines);
-                    this.expressionEvaluator = new ExpressionEvaluator(definedMacros);
-                }
+            const macroInfo = this.extractMacroDefinition(this.getNodeText(node));
+            if (macroInfo) {
+                this.defines.set(macroInfo.name, macroInfo);
+                this.refreshExpressionEvaluator();
             }
         }
         return isActive;
+    }
+
+    private processUndef(node: SyntaxNode, isActive: boolean): boolean {
+        if (!isActive) return false;
+
+        const match = stripDirectiveComments(this.getNodeText(node))
+            .match(/^\s*#\s*undef\s+([A-Za-z_][A-Za-z0-9_]*)/);
+        if (match) {
+            this.defines.set(match[1], {
+                name: match[1],
+                isDefined: false
+            });
+            this.refreshExpressionEvaluator();
+        }
+        return true;
     }
 
     /**
      * 从 #define 节点中提取宏定义信息
      */
     private extractMacroDefinition(text: string): MacroDefinition | null {
-        // 支持多种宏定义格式：
-        // #define MACRO_NAME
-        // #define MACRO_NAME value
-        // #define MACRO_NAME(args) value
-        const match = text.match(/#define\s+([A-Za-z_][A-Za-z0-9_]*)(?:\([^)]*\))?(?:\s+(.*))?/);
+        const directive = stripDirectiveComments(text);
+        const prefix = directive.match(/^\s*#\s*define\s+([A-Za-z_][A-Za-z0-9_]*)/);
+        if (!prefix) return null;
 
-        if (match) {
-            const name = match[1];
-            let value = match[2] ? match[2].trim() : '1';
-
-            // 如果值是另一个宏名，尝试解析它的值
-            // 这里做简单的宏值查找和替换
-            if (value && /^[A-Za-z_][A-Za-z0-9_]*$/.test(value)) {
-                // 值看起来是一个标识符（可能是另一个宏）
-                if (this.defines.has(value)) {
-                    const referencedMacro = this.defines.get(value)!;
-                    if (referencedMacro.value !== undefined) {
-                        value = referencedMacro.value;
-                    }
-                }
-            }
-
+        const name = prefix[1];
+        let remainder = directive.slice(prefix.index! + prefix[0].length);
+        if (!remainder.startsWith('(')) {
             return {
                 name,
-                value,
-                isDefined: true
+                value: remainder.trim(),
+                isDefined: true,
+                functionLike: false
             };
         }
 
-        return null;
+        const closingParen = remainder.indexOf(')');
+        if (closingParen < 0) return null;
+
+        const parameterText = remainder.slice(1, closingParen).trim();
+        const parameters: string[] = [];
+        let variadic = false;
+        if (parameterText) {
+            const rawParameters = parameterText.split(',');
+            for (let parameterIndex = 0; parameterIndex < rawParameters.length; parameterIndex++) {
+                const rawParameter = rawParameters[parameterIndex];
+                const parameter = rawParameter.trim();
+                if (parameter === '...') {
+                    if (parameterIndex !== rawParameters.length - 1) return null;
+                    parameters.push('__VA_ARGS__');
+                    variadic = true;
+                } else if (/^[A-Za-z_][A-Za-z0-9_]*\.\.\.$/.test(parameter)) {
+                    if (parameterIndex !== rawParameters.length - 1) return null;
+                    parameters.push(parameter.slice(0, -3));
+                    variadic = true;
+                } else if (/^[A-Za-z_][A-Za-z0-9_]*$/.test(parameter)) {
+                    parameters.push(parameter);
+                } else {
+                    return null;
+                }
+            }
+        }
+
+        remainder = remainder.slice(closingParen + 1);
+        return {
+            name,
+            value: remainder.trim(),
+            isDefined: true,
+            functionLike: true,
+            parameters,
+            variadic
+        };
     }
 
     /**
@@ -590,7 +477,7 @@ class ASTNodeProcessor {
             const macroName = this.extractMacroName(node);
             if (macroName) {
                 const firstChild = node.child(0);
-                const isIfndef = firstChild && this.getNodeText(firstChild).trim() === '#ifndef';
+                const isIfndef = !!firstChild && this.getNodeText(firstChild).replace(/\s+/g, '') === '#ifndef';
                 
                 if (isIfndef) {
                     conditionMet = !this.expressionEvaluator.hasMacro(macroName);
@@ -698,6 +585,30 @@ export async function analyzeFile(
     return result.includes;
 }
 
+export function analyzeSourceWithDefines(
+    sourceCode: string,
+    defines: Map<string, MacroDefinition>,
+    options: AnalysisOptions = {}
+): AnalysisResult {
+    sourceCode = preprocessSourceCode(sourceCode);
+
+    const parser = getParser();
+    let tree: Tree;
+    try {
+        tree = parser.parse(sourceCode);
+    } catch (e) {
+        throw new Error(`Failed to parse source: ${(e as Error).message}`);
+    }
+
+    const processor = new ASTNodeProcessor(sourceCode, defines, options.onInclude);
+    processor.walkNode(tree.rootNode);
+
+    return {
+        includes: processor.getResults(),
+        defines
+    };
+}
+
 /**
  * 分析 C++ 文件，返回包含文件和更新后的宏定义
  * @param filePath - C++ 文件路径
@@ -724,28 +635,7 @@ export async function analyzeFileWithDefines(
             throw new Error(`无法读取文件 ${filePath}: ${(e as Error).message}`);
         }
 
-        // 修复续行符造成的问题
-        sourceCode = preprocessSourceCode(sourceCode);
-
-        // 获取 Parser 实例
-        const parser = getParser();
-
-        // 解析代码生成 AST
-        let tree: Tree;
-        try {
-            tree = parser.parse(sourceCode);
-        } catch (e) {
-            throw new Error(`解析文件失败: ${(e as Error).message}`);
-        }
-
-        // 创建节点处理器并处理 AST
-        const processor = new ASTNodeProcessor(sourceCode, defines);
-        processor.walkNode(tree.rootNode);
-
-        return {
-            includes: processor.getResults(),
-            defines: defines // 返回更新后的 defines
-        };
+        return analyzeSourceWithDefines(sourceCode, defines, options);
 
     } catch (error) {
         if (options.throwOnError !== false) {

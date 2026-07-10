@@ -7,8 +7,11 @@ import fs from 'fs-extra';
 import * as path from 'path';
 import { glob } from 'glob';
 import { Logger } from './utils/Logger';
-import { analyzeFile } from './utils/AnalyzeFile';
+import { analyzeFile, analyzeSourceWithDefines } from './utils/AnalyzeFile';
+import type { MacroDefinition } from './utils/PreprocessorExpression';
 import { LibraryIndexCache, LibraryIndexBuildResult, LibraryIndexResult } from './LibraryIndexCache';
+
+export type { MacroDefinition } from './utils/PreprocessorExpression';
 
 export interface PreprocessOptions {
   libraries?: string;
@@ -28,12 +31,6 @@ export interface PreprocessResult {
   files: string[];
   includes: string[];
   defines: string[];
-}
-
-export interface MacroDefinition {
-  name: string;
-  value?: string;
-  isDefined: boolean;
 }
 
 export interface ConditionalInclude {
@@ -229,6 +226,14 @@ export class DependencyAnalyzer {
       let [key, value] = macro.split('=')
       this.setMacro(key.trim(), value ? value.trim() : '1');
     })
+
+    const platformPackage = arduinoConfig.fqbnParsed?.package;
+    const buildMcu = arduinoConfig.platform['build.mcu'];
+    // ESP32 compilation gets this from sdkconfig.h; dependency analysis needs it earlier.
+    if (platformPackage === 'esp32' && typeof buildMcu === 'string' && buildMcu.startsWith('esp32')) {
+      const targetMacro = `CONFIG_IDF_TARGET_${buildMcu.replace(/[^A-Za-z0-9]/g, '_').toUpperCase()}`;
+      this.setMacro(targetMacro, '1');
+    }
 
     // 从 build.macros 中提取用户自定义宏定义
     if (arduinoConfig.platform['build.macros']) {
@@ -465,10 +470,12 @@ export class DependencyAnalyzer {
 
   private async buildLibraryIndex(libraryObject: Dependency, macroDefinitions: Map<string, MacroDefinition>): Promise<LibraryIndexBuildResult> {
     const macroDefinitionsCopy = new Map(macroDefinitions);
-    const [sourceFiles, includeFiles] = await Promise.all([
-      this.computeLibrarySourceFiles(libraryObject),
-      this.analyzeLibraryIncludes(libraryObject.path, macroDefinitionsCopy)
-    ]);
+    const sourceFiles = await this.computeLibrarySourceFiles(libraryObject);
+    const includeFiles = await this.analyzeLibraryIncludes(
+      libraryObject.path,
+      macroDefinitionsCopy,
+      sourceFiles
+    );
 
     return {
       sourceFiles,
@@ -477,7 +484,11 @@ export class DependencyAnalyzer {
     };
   }
 
-  private async analyzeLibraryIncludes(libraryPath: string, macroDefinitions: Map<string, MacroDefinition>): Promise<string[]> {
+  private async analyzeLibraryIncludes(
+    libraryPath: string,
+    macroDefinitions: Map<string, MacroDefinition>,
+    sourceFiles: string[]
+  ): Promise<string[]> {
     let includeFilePaths: string[] = [];
     try {
       const libraryFiles = await glob('**/*.{h,hpp,cpp,c}', {
@@ -498,13 +509,123 @@ export class DependencyAnalyzer {
       this.logger.debug(`Failed to read header files in ${libraryPath}: ${error instanceof Error ? error.message : error}`);
     }
 
-    const libraryIncludeHeaderFiles: string[] = [];
-    for (const includeFilePath of includeFilePaths) {
-      const headerIncludes = await analyzeFile(includeFilePath, macroDefinitions);
-      libraryIncludeHeaderFiles.push(...headerIncludes);
+    if (includeFilePaths.length === 0) {
+      return [];
     }
 
-    return [...new Set(libraryIncludeHeaderFiles)];
+    const normalizeAbsolutePath = (filePath: string): string => {
+      const normalized = path.resolve(filePath).replace(/\\/g, '/');
+      return process.platform === 'win32' ? normalized.toLowerCase() : normalized;
+    };
+    const normalizeRelativePath = (filePath: string): string => {
+      const normalized = filePath.replace(/\\/g, '/').replace(/^\.\//, '');
+      return process.platform === 'win32' ? normalized.toLowerCase() : normalized;
+    };
+
+    const filesByAbsolutePath = new Map<string, string>();
+    const filesByRelativePath = new Map<string, string>();
+
+    for (const filePath of includeFilePaths) {
+      filesByAbsolutePath.set(normalizeAbsolutePath(filePath), filePath);
+      filesByRelativePath.set(normalizeRelativePath(path.relative(libraryPath, filePath)), filePath);
+    }
+
+    const resolveLocalInclude = (includePath: string, includingFilePath: string): string | undefined => {
+      const relativeInclude = normalizeRelativePath(includePath);
+      const candidates = [
+        path.resolve(path.dirname(includingFilePath), includePath),
+        path.resolve(libraryPath, includePath)
+      ];
+
+      if (path.basename(libraryPath).toLowerCase() === 'src' && relativeInclude.startsWith('src/')) {
+        candidates.push(path.resolve(libraryPath, includePath.slice(4)));
+      }
+
+      for (const candidate of candidates) {
+        const matchedFile = filesByAbsolutePath.get(normalizeAbsolutePath(candidate));
+        if (matchedFile) {
+          return matchedFile;
+        }
+      }
+
+      const relativeMatch = filesByRelativePath.get(relativeInclude);
+      if (relativeMatch) {
+        return relativeMatch;
+      }
+
+      return undefined;
+    };
+
+    const sourceRootPaths = new Set(sourceFiles.map(normalizeAbsolutePath));
+    const entryFiles = includeFilePaths.filter(filePath => {
+      const ext = path.extname(filePath).toLowerCase();
+      if (ext === '.cpp' || ext === '.c') {
+        return sourceRootPaths.has(normalizeAbsolutePath(filePath));
+      }
+
+      if (ext === '.h' || ext === '.hpp') {
+        return path.dirname(path.relative(libraryPath, filePath)) === '.';
+      }
+
+      return false;
+    });
+    const rootFiles = entryFiles.length > 0 ? entryFiles : includeFilePaths;
+    const initialMacroDefinitions = new Map(macroDefinitions);
+    const mergedMacroDefinitions = new Map(macroDefinitions);
+    const externalIncludes = new Set<string>();
+    const sourceCodeCache = new Map<string, string>();
+
+    const readSourceCode = (filePath: string): string => {
+      const normalizedFilePath = normalizeAbsolutePath(filePath);
+      let sourceCode = sourceCodeCache.get(normalizedFilePath);
+      if (sourceCode === undefined) {
+        sourceCode = fs.readFileSync(filePath, 'utf8');
+        sourceCodeCache.set(normalizedFilePath, sourceCode);
+      }
+      return sourceCode;
+    };
+
+    // Each source/public header is an independent translation unit. Local includes share
+    // that unit's macro state and are analyzed synchronously at their include location.
+    for (const rootFilePath of rootFiles) {
+      const translationUnitMacros = new Map(initialMacroDefinitions);
+      const activeIncludeStack = new Set<string>();
+
+      const analyzeLocalFile = (filePath: string): void => {
+        const normalizedFilePath = normalizeAbsolutePath(filePath);
+        if (activeIncludeStack.has(normalizedFilePath)) {
+          return;
+        }
+
+        activeIncludeStack.add(normalizedFilePath);
+        try {
+          analyzeSourceWithDefines(readSourceCode(filePath), translationUnitMacros, {
+            onInclude: includePath => {
+              const localIncludePath = resolveLocalInclude(includePath, filePath);
+              if (localIncludePath) {
+                analyzeLocalFile(localIncludePath);
+              } else {
+                externalIncludes.add(includePath);
+              }
+            }
+          });
+        } finally {
+          activeIncludeStack.delete(normalizedFilePath);
+        }
+      };
+
+      analyzeLocalFile(rootFilePath);
+      for (const [name, macroDefinition] of translationUnitMacros) {
+        mergedMacroDefinitions.set(name, macroDefinition);
+      }
+    }
+
+    macroDefinitions.clear();
+    for (const [name, macroDefinition] of mergedMacroDefinitions) {
+      macroDefinitions.set(name, macroDefinition);
+    }
+
+    return [...externalIncludes];
   }
 
   private getIncludeAnalysisPriority(filePath: string): number {
