@@ -475,13 +475,20 @@ export class NinjaCompilationPipeline {
 
   private getNinjaExecutablePath(): string {
     const executableName = process.platform === 'win32' ? 'ninja.exe' : 'ninja';
-    const ninjaPath = path.join(__dirname, 'ninja', executableName);
-    if (fs.existsSync(ninjaPath)) {
-      return ninjaPath;
+    const candidatePaths = [
+      path.join(__dirname, 'ninja', executableName),
+      path.resolve(__dirname, '..', 'ninja', executableName),
+      path.join(process.cwd(), 'ninja', executableName)
+    ];
+
+    for (const candidatePath of candidatePaths) {
+      if (fs.existsSync(candidatePath)) {
+        return candidatePath;
+      }
     }
 
     throw new Error(
-      `Bundled Ninja executable not found. Expected: ${ninjaPath}`,
+      `Ninja executable not found. Checked: ${candidatePaths.join(', ')}`,
     );
   }
 
