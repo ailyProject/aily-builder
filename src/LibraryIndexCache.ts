@@ -14,7 +14,8 @@ import { Logger } from './utils/Logger';
 import type { MacroDefinition } from './utils/PreprocessorExpression';
 
 const SCHEMA_VERSION = 3;
-const ANALYZER_VERSION = 'library-include-graph-v8';
+export const DEPENDENCY_ANALYZER_VERSION = 'dependency-directive-tape-v2';
+const ANALYZER_VERSION = DEPENDENCY_ANALYZER_VERSION;
 const STAT_CONCURRENCY = 32;
 
 interface FileSnapshot {
@@ -486,7 +487,17 @@ export class LibraryIndexCache {
   }
 
   private getSourceIndexPath(sourceHash: string): string {
-    return path.join(this.cacheDir, 'sources', sourceHash.substring(0, 2), `${sourceHash}.json`);
+    const analyzerNamespace = createHash('sha256')
+      .update(ANALYZER_VERSION)
+      .digest('hex')
+      .substring(0, 16);
+    return path.join(
+      this.cacheDir,
+      'sources',
+      analyzerNamespace,
+      sourceHash.substring(0, 2),
+      `${sourceHash}.json`
+    );
   }
 
   private async readPathState(cachePath: string): Promise<CachedPathState | null> {

@@ -4,12 +4,6 @@ const path = require('path');
 
 const DIST_MAIN_PATH = './dist/main.js';
 const BUNDLE_DIR = './dist/bundle-min';
-const ESBUILD_EXTERNALS = [
-  'tree-sitter',
-  'tree-sitter-cpp',
-  '@ast-grep/napi',
-  '@ast-grep/lang-cpp',
-];
 
 async function bundleWithNativeMinified() {
   try {
@@ -23,7 +17,6 @@ async function bundleWithNativeMinified() {
     await fs.emptyDir(BUNDLE_DIR);
 
     await bundleJavaScript(BUNDLE_DIR);
-    await copyNativeModules(BUNDLE_DIR);
     await copyNinja(BUNDLE_DIR);
     await createLaunchScript(BUNDLE_DIR, options);
     await createPackageJson(BUNDLE_DIR, options);
@@ -68,157 +61,10 @@ async function bundleJavaScript(bundleDir) {
     target: 'node16',
     format: 'cjs',
     outfile: path.join(bundleDir, 'aily-builder.js'),
-    external: ESBUILD_EXTERNALS,
     minify: true,
     sourcemap: false,
     logLevel: 'info',
   });
-}
-
-async function copyNativeModules(bundleDir) {
-  await copyNodeGypBuild(bundleDir);
-  await copyTreeSitter(bundleDir);
-  await copyTreeSitterCpp(bundleDir);
-  await copyAstGrep(bundleDir);
-}
-
-async function copyNodeGypBuild(bundleDir) {
-  const packageSrc = './node_modules/node-gyp-build';
-  if (!(await fs.pathExists(packageSrc))) {
-    return;
-  }
-
-  console.log('Copying node-gyp-build runtime...');
-
-  await copyRequiredPackageRootFiles(
-    packageSrc,
-    path.join(bundleDir, 'node_modules/node-gyp-build'),
-    ['index.js', 'node-gyp-build.js', 'package.json'],
-  );
-}
-
-async function copyTreeSitter(bundleDir) {
-  console.log('Copying tree-sitter native module...');
-
-  const treeSitterSrc = './node_modules/tree-sitter';
-  const treeSitterDest = path.join(bundleDir, 'node_modules/tree-sitter');
-  await fs.ensureDir(treeSitterDest);
-
-  await fs.copy(path.join(treeSitterSrc, 'index.js'), path.join(treeSitterDest, 'index.js'));
-  await fs.copy(path.join(treeSitterSrc, 'package.json'), path.join(treeSitterDest, 'package.json'));
-
-  await copyNodeGypBuildNativeModule(treeSitterSrc, treeSitterDest, 'tree-sitter');
-}
-
-async function copyTreeSitterCpp(bundleDir) {
-  console.log('Copying tree-sitter-cpp native module...');
-
-  const treeSitterCppSrc = './node_modules/tree-sitter-cpp';
-  const treeSitterCppDest = path.join(bundleDir, 'node_modules/tree-sitter-cpp');
-  await fs.ensureDir(treeSitterCppDest);
-
-  await fs.copy(path.join(treeSitterCppSrc, 'package.json'), path.join(treeSitterCppDest, 'package.json'));
-
-  const bindingsSrc = path.join(treeSitterCppSrc, 'bindings', 'node');
-  const bindingsDest = path.join(treeSitterCppDest, 'bindings', 'node');
-  await copyMatchingFiles(bindingsSrc, bindingsDest, (file) => file.endsWith('.js'));
-
-  await copyNodeGypBuildNativeModule(treeSitterCppSrc, treeSitterCppDest, 'tree-sitter-cpp');
-}
-
-async function copyNodeGypBuildNativeModule(packageSrc, packageDest, packageName) {
-  const platformPrebuildSrc = path.join(packageSrc, 'prebuilds', `${process.platform}-${process.arch}`);
-  const platformPrebuildDest = path.join(packageDest, 'prebuilds', `${process.platform}-${process.arch}`);
-  const buildReleaseSrc = path.join(packageSrc, 'build', 'Release');
-  const buildReleaseDest = path.join(packageDest, 'build', 'Release');
-  let copiedNativeModule = false;
-
-  if (await fs.pathExists(platformPrebuildSrc)) {
-    await fs.copy(platformPrebuildSrc, platformPrebuildDest);
-    copiedNativeModule = true;
-  }
-
-  if (await fs.pathExists(buildReleaseSrc)) {
-    const copiedBuildArtifacts = await copyMatchingFiles(
-      buildReleaseSrc,
-      buildReleaseDest,
-      (file) => file.endsWith('.node'),
-    );
-    copiedNativeModule = copiedNativeModule || copiedBuildArtifacts > 0;
-  }
-
-  if (!copiedNativeModule) {
-    throw new Error(`No native prebuild or build output found for ${packageName} on ${process.platform}-${process.arch}`);
-  }
-}
-
-async function copyAstGrep(bundleDir) {
-  console.log('Copying @ast-grep native modules...');
-
-  await copyPackageRootFiles(
-    './node_modules/@ast-grep/napi',
-    path.join(bundleDir, 'node_modules/@ast-grep/napi'),
-    ['index.js', 'package.json'],
-  );
-
-  await copyPackageRootFiles(
-    './node_modules/@ast-grep/setup-lang',
-    path.join(bundleDir, 'node_modules/@ast-grep/setup-lang'),
-    ['index.js', 'package.json'],
-  );
-
-  const astGrepLangCppSrc = './node_modules/@ast-grep/lang-cpp';
-  const astGrepLangCppDest = path.join(bundleDir, 'node_modules/@ast-grep/lang-cpp');
-  await copyPackageRootFiles(astGrepLangCppSrc, astGrepLangCppDest, ['index.js', 'package.json']);
-  await copyAstGrepLangPrebuild(astGrepLangCppSrc, astGrepLangCppDest);
-  await copyAstGrepNativePackage(bundleDir);
-}
-
-async function copyAstGrepLangPrebuild(packageSrc, packageDest) {
-  const prebuildsDir = path.join(packageSrc, 'prebuilds');
-  if (!(await fs.pathExists(prebuildsDir))) {
-    return;
-  }
-
-  const prebuildMap = {
-    win32: 'prebuild-Windows-X64',
-    darwin: process.arch === 'arm64' ? 'prebuild-macOS-ARM64' : 'prebuild-macOS-X64',
-    linux: process.arch === 'arm64' ? 'prebuild-Linux-ARM64' : 'prebuild-Linux-X64',
-  };
-
-  const targetPrebuild = prebuildMap[process.platform];
-  if (!targetPrebuild) {
-    return;
-  }
-
-  const prebuildSrc = path.join(prebuildsDir, targetPrebuild);
-  if (await fs.pathExists(prebuildSrc)) {
-    await fs.copy(prebuildSrc, path.join(packageDest, 'prebuilds', targetPrebuild));
-  }
-}
-
-async function copyAstGrepNativePackage(bundleDir) {
-  const platformNativeModule = {
-    'win32-x64': '@ast-grep/napi-win32-x64-msvc',
-    'darwin-x64': '@ast-grep/napi-darwin-x64',
-    'darwin-arm64': '@ast-grep/napi-darwin-arm64',
-    'linux-x64': '@ast-grep/napi-linux-x64-gnu',
-    'linux-arm64': '@ast-grep/napi-linux-arm64-gnu',
-  };
-
-  const platformKey = `${process.platform}-${process.arch}`;
-  const targetModule = platformNativeModule[platformKey];
-  if (!targetModule) {
-    console.log(`No ast-grep native module configured for platform: ${platformKey}`);
-    return;
-  }
-
-  const modSrc = `./node_modules/${targetModule}`;
-  if (await fs.pathExists(modSrc)) {
-    await fs.copy(modSrc, path.join(bundleDir, 'node_modules', targetModule), {
-      filter: (src) => !src.endsWith('.md') && !src.endsWith('.d.ts'),
-    });
-  }
 }
 
 async function copyNinja(bundleDir) {
@@ -291,52 +137,6 @@ async function createPackageJson(bundleDir, options) {
     path.join(bundleDir, 'package.json'),
     `${JSON.stringify(bundlePackageJson, null, 2)}\n`,
   );
-}
-
-async function copyPackageRootFiles(packageSrc, packageDest, files) {
-  if (!(await fs.pathExists(packageSrc))) {
-    return;
-  }
-
-  await fs.ensureDir(packageDest);
-  for (const file of files) {
-    const src = path.join(packageSrc, file);
-    if (await fs.pathExists(src)) {
-      await fs.copy(src, path.join(packageDest, file));
-    }
-  }
-}
-
-async function copyRequiredPackageRootFiles(packageSrc, packageDest, files) {
-  if (!(await fs.pathExists(packageSrc))) {
-    throw new Error(`Required runtime package is missing: ${packageSrc}`);
-  }
-
-  await fs.ensureDir(packageDest);
-  for (const file of files) {
-    const src = path.join(packageSrc, file);
-    if (!(await fs.pathExists(src))) {
-      throw new Error(`Required runtime file is missing: ${src}`);
-    }
-    await fs.copy(src, path.join(packageDest, file));
-  }
-}
-
-async function copyMatchingFiles(sourceDir, destDir, shouldCopy) {
-  if (!(await fs.pathExists(sourceDir))) {
-    return 0;
-  }
-
-  await fs.ensureDir(destDir);
-  const files = await fs.readdir(sourceDir);
-  let copiedFileCount = 0;
-  for (const file of files) {
-    if (shouldCopy(file)) {
-      await fs.copy(path.join(sourceDir, file), path.join(destDir, file));
-      copiedFileCount++;
-    }
-  }
-  return copiedFileCount;
 }
 
 async function getBundleStats(bundleDir) {

@@ -31,13 +31,9 @@
   "author": "coloz",
   "license": "GPL-3.0-only",
   "dependencies": {
-    "@ast-grep/lang-cpp": "^0.0.4",
-    "@ast-grep/napi": "^0.40.3",
     "commander": "^11.1.0",
     "fs-extra": "^11.2.0",
-    "glob": "^10.4.5",
-    "tree-sitter": "^0.25.0",
-    "tree-sitter-cpp": "^0.23.4"
+    "glob": "^10.4.5"
   },
   "devDependencies": {
     "@types/fs-extra": "^11.0.4",
@@ -51,13 +47,5 @@
   },
   "engines": {
     "node": ">=18"
-  },
-  "overrides": {
-    "tree-sitter-cpp": {
-      "tree-sitter": "$tree-sitter"
-    },
-    "tree-sitter-c": {
-      "tree-sitter": "$tree-sitter"
-    }
   }
 }

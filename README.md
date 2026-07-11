@@ -11,7 +11,7 @@ If this tool helps you, please give it a ⭐️ for support!
 ## Core Features
 
 ### Lightning-Fast Compilation
-- **Ultra-Fast Analysis**: Uses Tree-sitter syntax parsing for precise dependency detection
+- **Ultra-Fast Analysis**: Uses a streaming, macro-aware preprocessor directive scanner for precise dependency detection
 - **Build System**: Uses Ninja build system with parallel compilation to maximize CPU utilization
 - **Smart Caching**: Avoids redundant compilation, significantly reducing build time
 - **Incremental Builds**: Only compiles modified files
@@ -100,24 +100,6 @@ aily-builder compile sketch.ino --board arduino:avr:uno --preprocess-result ./pr
 6. Generate compile configuration
 7. Run prebuild hooks (if configured)
 
-### Lint / Syntax Check
-
-Multi-mode syntax analysis with fast static check or accurate compiler-based validation:
-
-```bash
-# Fast mode - Quick syntax check (~3-5ms, default)
-aily-builder lint sketch.ino --board arduino:avr:uno
-
-# Accurate mode - Compiler-based analysis (~3-5s, high precision)
-aily-builder lint sketch.ino --mode accurate
-
-# Auto mode - Fast first, then accurate if issues found
-aily-builder lint sketch.ino --mode auto
-
-# Different output formats (human, vscode, json)
-aily-builder lint sketch.ino --format json
-```
-
 ### Upload Firmware
 
 ```bash
@@ -199,28 +181,6 @@ Options:
   -h, --help                       Display help for command
 ```
 
-### Lint Command Options
-
-```bash
-Arguments:
-  sketch                           Path to Arduino sketch (.ino file)
-
-Options:
-  -b, --board <board>              Target board (default: "arduino:avr:uno")
-  --build-path <path>              Build output directory
-  --sdk-path <path>                Path to Arduino SDK
-  --tools-path <path>              Path to additional tools
-  --libraries-path <path>          Additional libraries path (can be used multiple times)
-  --build-property <key=value>     Additional build property
-  --build-macros <macro[=value]>   Custom macro definitions
-  --board-options <key=value>      Board menu options
-  --tool-versions <versions>       Specify tool versions
-  --format <format>                Output format: human, vscode, json (default: "human")
-  --mode <mode>                    Analysis mode: fast, accurate, auto (default: "fast")
-  --verbose                        Enable verbose output
-  -h, --help                       Display help for command
-```
-
 ### Upload Command Options
 
 ```bash
@@ -268,5 +228,4 @@ GNU GENERAL PUBLIC LICENSE V3
 ## Acknowledgments
 
 - [Ninja Build System](https://ninja-build.org/) - High-performance build system
-- [Tree-sitter](https://tree-sitter.github.io/) - Syntax parser
 - [Arduino CLI](https://arduino.github.io/arduino-cli/) - Arduino development tools

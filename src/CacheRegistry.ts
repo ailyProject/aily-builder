@@ -3,7 +3,6 @@ import path from 'path';
 import type { Dirent, Stats } from 'fs';
 import { Logger } from './utils/Logger';
 import { CacheManager } from './CacheManager';
-import { LintCacheManager } from './LintCacheManager';
 import { LibraryIndexCache } from './LibraryIndexCache';
 import { ArchiveCloudCacheManager } from './ArchiveCloudCacheManager';
 
@@ -65,7 +64,7 @@ interface CacheBucketDefinition {
   name: string;
   description: string;
   directory: string;
-  kind: 'object' | 'lint' | 'library-index' | 'archive-cloud';
+  kind: 'object' | 'library-index' | 'archive-cloud';
 }
 
 interface CacheFileRecord {
@@ -147,7 +146,6 @@ export class CacheRegistry {
 
   private createBuckets(): CacheBucketDefinition[] {
     const objectCache = new CacheManager(this.logger);
-    const lintCache = new LintCacheManager(this.logger);
     const libraryIndexCache = new LibraryIndexCache(this.logger);
     const archiveCloudCache = new ArchiveCloudCacheManager(this.logger);
 
@@ -165,13 +163,6 @@ export class CacheRegistry {
         description: 'Dependency analyzer source and macro indexes.',
         directory: libraryIndexCache.getCacheDir(),
         kind: 'library-index'
-      },
-      {
-        id: 'lint',
-        name: 'Lint cache',
-        description: 'Static, dependency, compiler, and config lint results.',
-        directory: lintCache.getCacheDir(),
-        kind: 'lint'
       },
       {
         id: 'archive-cloud',
@@ -356,7 +347,7 @@ export class CacheRegistry {
     if (bucket.kind === 'archive-cloud') {
       return files.filter(file => file.name === 'manifest.json' && file.relativePath.startsWith('v1/')).length;
     }
-    if (bucket.kind === 'lint' || bucket.kind === 'library-index') {
+    if (bucket.kind === 'library-index') {
       return files.filter(file => file.name.endsWith('.json')).length;
     }
     return files.length;

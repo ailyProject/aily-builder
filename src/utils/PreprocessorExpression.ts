@@ -7,6 +7,10 @@ export interface MacroDefinition {
     variadic?: boolean;
 }
 
+export type ExpressionEvaluationResult =
+    | { kind: 'known'; value: boolean }
+    | { kind: 'indeterminate'; reason: string };
+
 const INTEGER_BITS = 64;
 const MAX_EXPANSION_DEPTH = 64;
 
@@ -673,7 +677,14 @@ export class ExpressionEvaluator {
     constructor(private definedMacros: Map<string, MacroDefinition>) {}
 
     evaluate(conditionText: string): boolean {
-        if (!conditionText || typeof conditionText !== 'string') return false;
+        const result = this.evaluateDetailed(conditionText);
+        return result.kind === 'known' ? result.value : false;
+    }
+
+    evaluateDetailed(conditionText: string): ExpressionEvaluationResult {
+        if (!conditionText || typeof conditionText !== 'string') {
+            return { kind: 'indeterminate', reason: 'empty preprocessor expression' };
+        }
 
         let expanded = stripDirectiveComments(conditionText).replace(this.definedRegex, (_match, first, second) => {
             return this.hasMacro(first || second) ? '1' : '0';
@@ -686,8 +697,22 @@ export class ExpressionEvaluator {
         }
 
         const tree = new Parser(new Lexer(expanded).tokenize()).parse();
-        const result = tree ? evaluateNode(tree) : null;
-        return result ? isTruthy(result) : false;
+        if (!tree) {
+            return {
+                kind: 'indeterminate',
+                reason: `unsupported or malformed preprocessor expression: ${expanded}`
+            };
+        }
+
+        const result = evaluateNode(tree);
+        if (!result) {
+            return {
+                kind: 'indeterminate',
+                reason: `preprocessor expression could not be evaluated: ${expanded}`
+            };
+        }
+
+        return { kind: 'known', value: isTruthy(result) };
     }
 
     hasMacro(name: string): boolean {
