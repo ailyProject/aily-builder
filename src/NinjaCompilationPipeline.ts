@@ -474,29 +474,15 @@ export class NinjaCompilationPipeline {
   }
 
   private getNinjaExecutablePath(): string {
-    // 打包后路径
-    let projectNinjaPath = path.join(__dirname, 'ninja', process.platform === 'win32' ? 'ninja.exe' : 'ninja');
-    if (fs.existsSync(projectNinjaPath)) {
-      return projectNinjaPath;
+    const executableName = process.platform === 'win32' ? 'ninja.exe' : 'ninja';
+    const ninjaPath = path.join(__dirname, 'ninja', executableName);
+    if (fs.existsSync(ninjaPath)) {
+      return ninjaPath;
     }
-    // 开发环境路径
-    projectNinjaPath = path.join(process.cwd(), 'ninja', process.platform === 'win32' ? 'ninja.exe' : 'ninja');
-    if (fs.existsSync(projectNinjaPath)) {
-      return projectNinjaPath;
-    }
-    // 检查系统PATH中的ninja
-    const systemNinja = process.platform === 'win32' ? 'ninja.exe' : 'ninja';
 
-    // 尝试在PATH中查找
-    try {
-      const { execSync } = require('child_process');
-      const which = process.platform === 'win32' ? 'where' : 'which';
-      const result = execSync(`${which} ${systemNinja}`, { encoding: 'utf8' });
-      return result.trim().split('\n')[0];
-    } catch (error) {
-      // 如果找不到，抛出错误
-      throw new Error(`Ninja executable not found. Please install ninja or place ninja.exe in the project's ninja/ directory.`);
-    }
+    throw new Error(
+      `Bundled Ninja executable not found. Expected: ${ninjaPath}`,
+    );
   }
 
   /**

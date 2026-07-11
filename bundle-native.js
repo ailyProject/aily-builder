@@ -76,9 +76,25 @@ async function bundleJavaScript(bundleDir) {
 }
 
 async function copyNativeModules(bundleDir) {
+  await copyNodeGypBuild(bundleDir);
   await copyTreeSitter(bundleDir);
   await copyTreeSitterCpp(bundleDir);
   await copyAstGrep(bundleDir);
+}
+
+async function copyNodeGypBuild(bundleDir) {
+  const packageSrc = './node_modules/node-gyp-build';
+  if (!(await fs.pathExists(packageSrc))) {
+    return;
+  }
+
+  console.log('Copying node-gyp-build runtime...');
+
+  await copyRequiredPackageRootFiles(
+    packageSrc,
+    path.join(bundleDir, 'node_modules/node-gyp-build'),
+    ['index.js', 'node-gyp-build.js', 'package.json'],
+  );
 }
 
 async function copyTreeSitter(bundleDir) {
@@ -91,9 +107,7 @@ async function copyTreeSitter(bundleDir) {
   await fs.copy(path.join(treeSitterSrc, 'index.js'), path.join(treeSitterDest, 'index.js'));
   await fs.copy(path.join(treeSitterSrc, 'package.json'), path.join(treeSitterDest, 'package.json'));
 
-  const buildSrc = path.join(treeSitterSrc, 'build', 'Release');
-  const buildDest = path.join(treeSitterDest, 'build', 'Release');
-  await copyMatchingFiles(buildSrc, buildDest, (file) => file.endsWith('.node'));
+  await copyNodeGypBuildNativeModule(treeSitterSrc, treeSitterDest, 'tree-sitter');
 }
 
 async function copyTreeSitterCpp(bundleDir) {
@@ -109,9 +123,33 @@ async function copyTreeSitterCpp(bundleDir) {
   const bindingsDest = path.join(treeSitterCppDest, 'bindings', 'node');
   await copyMatchingFiles(bindingsSrc, bindingsDest, (file) => file.endsWith('.js'));
 
-  const buildSrc = path.join(treeSitterCppSrc, 'build', 'Release');
-  const buildDest = path.join(treeSitterCppDest, 'build', 'Release');
-  await copyMatchingFiles(buildSrc, buildDest, (file) => file.endsWith('.node'));
+  await copyNodeGypBuildNativeModule(treeSitterCppSrc, treeSitterCppDest, 'tree-sitter-cpp');
+}
+
+async function copyNodeGypBuildNativeModule(packageSrc, packageDest, packageName) {
+  const platformPrebuildSrc = path.join(packageSrc, 'prebuilds', `${process.platform}-${process.arch}`);
+  const platformPrebuildDest = path.join(packageDest, 'prebuilds', `${process.platform}-${process.arch}`);
+  const buildReleaseSrc = path.join(packageSrc, 'build', 'Release');
+  const buildReleaseDest = path.join(packageDest, 'build', 'Release');
+  let copiedNativeModule = false;
+
+  if (await fs.pathExists(platformPrebuildSrc)) {
+    await fs.copy(platformPrebuildSrc, platformPrebuildDest);
+    copiedNativeModule = true;
+  }
+
+  if (await fs.pathExists(buildReleaseSrc)) {
+    const copiedBuildArtifacts = await copyMatchingFiles(
+      buildReleaseSrc,
+      buildReleaseDest,
+      (file) => file.endsWith('.node'),
+    );
+    copiedNativeModule = copiedNativeModule || copiedBuildArtifacts > 0;
+  }
+
+  if (!copiedNativeModule) {
+    throw new Error(`No native prebuild or build output found for ${packageName} on ${process.platform}-${process.arch}`);
+  }
 }
 
 async function copyAstGrep(bundleDir) {
@@ -239,10 +277,10 @@ async function createPackageJson(bundleDir, options) {
     description: projectPackageJson.description,
     main: 'index.js',
     bin: {
-      aily: 'index.js',
+      'aily-builder': 'index.js',
     },
     engines: {
-      node: '>=16',
+      node: projectPackageJson.engines?.node || '>=18',
     },
     ailyBuilder: {
       defaultGenerateArchiveCloudCache: options.defaultGenerateArchiveCloudCache,
@@ -269,18 +307,36 @@ async function copyPackageRootFiles(packageSrc, packageDest, files) {
   }
 }
 
+async function copyRequiredPackageRootFiles(packageSrc, packageDest, files) {
+  if (!(await fs.pathExists(packageSrc))) {
+    throw new Error(`Required runtime package is missing: ${packageSrc}`);
+  }
+
+  await fs.ensureDir(packageDest);
+  for (const file of files) {
+    const src = path.join(packageSrc, file);
+    if (!(await fs.pathExists(src))) {
+      throw new Error(`Required runtime file is missing: ${src}`);
+    }
+    await fs.copy(src, path.join(packageDest, file));
+  }
+}
+
 async function copyMatchingFiles(sourceDir, destDir, shouldCopy) {
   if (!(await fs.pathExists(sourceDir))) {
-    return;
+    return 0;
   }
 
   await fs.ensureDir(destDir);
   const files = await fs.readdir(sourceDir);
+  let copiedFileCount = 0;
   for (const file of files) {
     if (shouldCopy(file)) {
       await fs.copy(path.join(sourceDir, file), path.join(destDir, file));
+      copiedFileCount++;
     }
   }
+  return copiedFileCount;
 }
 
 async function getBundleStats(bundleDir) {

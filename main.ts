@@ -374,7 +374,7 @@ Preprocessing Steps:
   7. Run prebuild hooks (if configured)
 
 Note: This command only performs preprocessing without actual compilation.
-      Use 'aily compile' to perform full compilation.
+      Use 'aily-builder compile' to perform full compilation.
   `)
   .action(async (sketch, options) => {
     logger.setVerbose(options.verbose);
@@ -522,20 +522,6 @@ Note: This command only performs preprocessing without actual compilation.
     }
 
     process.exit(result.success ? 0 : 1);
-  });
-
-program
-  .command('init')
-  .description('Initialize aily configuration')
-  .option('--arduino-path <path>', 'Path to Arduino IDE installation')
-  .option('--libraries-path <path>', 'Path to Arduino libraries')
-  .action(async (options) => {
-    try {
-      logger.success('Configuration initialized successfully!');
-    } catch (error) {
-      logger.error(`Error initializing config: ${error instanceof Error ? error.message : error}`);
-      process.exit(1);
-    }
   });
 
 program
