@@ -11,6 +11,7 @@ If this tool helps you, please give it a ⭐️ for support!
 ## Core Features
 
 ### Lightning-Fast Compilation
+- **Staged Builds**: Separates preprocessing and compilation to avoid unnecessary repeated dependency analysis
 - **Ultra-Fast Analysis**: Uses a streaming, macro-aware preprocessor directive scanner for precise dependency detection
 - **Build System**: Uses Ninja build system with parallel compilation to maximize CPU utilization
 - **Smart Caching**: Avoids redundant compilation, significantly reducing build time
