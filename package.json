@@ -15,8 +15,7 @@
   ],
   "scripts": {
     "build": "rimraf dist && tsc",
-    "bundle:native:minify": "npm run build && node bundle-native.js --minify",
-    "bundle:native:minify:generate-cache": "npm run build && node bundle-native.js --minify --generate-archive-cloud-cache-default",
+    "bundle": "npm run build && node bundle.js --minify",
     "start": "ts-node main.ts",
     "clean": "rimraf dist",
     "prepack": "npm run build"

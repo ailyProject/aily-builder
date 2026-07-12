@@ -474,7 +474,7 @@ export class NinjaCompilationPipeline {
   }
 
   private getNinjaExecutablePath(): string {
-    const executableName = process.platform === 'win32' ? 'ninja.exe' : 'ninja';
+    const executableName = this.getNinjaExecutableName();
     const candidatePaths = [
       path.join(__dirname, 'ninja', executableName),
       path.resolve(__dirname, '..', 'ninja', executableName),
@@ -483,6 +483,9 @@ export class NinjaCompilationPipeline {
 
     for (const candidatePath of candidatePaths) {
       if (fs.existsSync(candidatePath)) {
+        if (process.platform === 'darwin' && (fs.statSync(candidatePath).mode & 0o111) === 0) {
+          fs.chmodSync(candidatePath, 0o755);
+        }
         return candidatePath;
       }
     }
@@ -490,6 +493,17 @@ export class NinjaCompilationPipeline {
     throw new Error(
       `Ninja executable not found. Checked: ${candidatePaths.join(', ')}`,
     );
+  }
+
+  private getNinjaExecutableName(): string {
+    if (process.platform === 'win32') {
+      return 'ninja.exe';
+    }
+    if (process.platform === 'darwin') {
+      return 'ninja';
+    }
+
+    throw new Error(`Bundled Ninja is not available for platform: ${process.platform}`);
   }
 
   /**

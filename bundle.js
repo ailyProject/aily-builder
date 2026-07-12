@@ -5,12 +5,12 @@ const path = require('path');
 const DIST_MAIN_PATH = './dist/main.js';
 const BUNDLE_DIR = './dist/bundle-min';
 
-async function bundleWithNativeMinified() {
+async function bundleMinified() {
   try {
     const options = parseBundleOptions();
     ensureBuilt();
 
-    console.log('Building minified bundle with native modules...');
+    console.log('Building minified bundle...');
     if (options.defaultGenerateArchiveCloudCache) {
       console.log('Archive cloud cache generation defaults to enabled in this bundle.');
     }
@@ -68,28 +68,29 @@ async function bundleJavaScript(bundleDir) {
 }
 
 async function copyNinja(bundleDir) {
-  console.log('Copying ninja build tool...');
+  console.log('Copying Ninja build tools for Windows and macOS...');
 
   const ninjaDir = './ninja';
   const ninjaDest = path.join(bundleDir, 'ninja');
   await fs.ensureDir(ninjaDest);
 
-  if (process.platform === 'win32') {
-    const ninjaExeSrc = path.join(ninjaDir, 'ninja.exe');
-    if (await fs.pathExists(ninjaExeSrc)) {
-      await fs.copy(ninjaExeSrc, path.join(ninjaDest, 'ninja.exe'));
-    } else {
-      console.log('ninja.exe not found in ./ninja directory.');
-    }
-    return;
-  }
+  const ninjaFiles = [
+    { name: 'ninja.exe', executable: false },
+    { name: 'ninja', executable: true },
+  ];
 
-  const ninjaBinSrc = path.join(ninjaDir, 'ninja');
-  if (await fs.pathExists(ninjaBinSrc)) {
-    await fs.copy(ninjaBinSrc, path.join(ninjaDest, 'ninja'));
-    await fs.chmod(path.join(ninjaDest, 'ninja'), '755');
-  } else {
-    console.log('ninja not found in ./ninja directory.');
+  for (const ninjaFile of ninjaFiles) {
+    const sourcePath = path.join(ninjaDir, ninjaFile.name);
+    const destinationPath = path.join(ninjaDest, ninjaFile.name);
+
+    if (!await fs.pathExists(sourcePath)) {
+      throw new Error(`${ninjaFile.name} not found in ${ninjaDir} directory.`);
+    }
+
+    await fs.copy(sourcePath, destinationPath);
+    if (ninjaFile.executable) {
+      await fs.chmod(destinationPath, '755');
+    }
   }
 }
 
@@ -166,4 +167,4 @@ async function getBundleStats(bundleDir) {
   return { totalSize, totalSizeFormatted, fileCount };
 }
 
-bundleWithNativeMinified();
+bundleMinified();
