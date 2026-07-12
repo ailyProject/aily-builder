@@ -10,6 +10,7 @@ import { initShortPath, sanitizeNonAsciiPaths } from './src/utils/ShortPath';
 import path from 'path';
 import os from 'os';
 import fs from 'fs-extra';
+import packageJson from './package.json';
 
 const program = new Command();
 const logger = new Logger();
@@ -75,7 +76,7 @@ function printCacheClearReport(report: CacheClearReport): void {
 program
   .name('aily-builder')
   .description('Fast Arduino compilation CLI tool with optimized preprocessing and parallel compilation')
-  .version('1.2.4');
+  .version(packageJson.version);
 
 program
   .command('compile')
