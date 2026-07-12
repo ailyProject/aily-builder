@@ -20,7 +20,6 @@
   },
   "include": [
     "**/*.ts",
-    "types.d.ts",
     "src/types/**/*.d.ts"
   ],
   "exclude": [

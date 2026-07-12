@@ -474,29 +474,36 @@ export class NinjaCompilationPipeline {
   }
 
   private getNinjaExecutablePath(): string {
-    // 打包后路径
-    let projectNinjaPath = path.join(__dirname, 'ninja', process.platform === 'win32' ? 'ninja.exe' : 'ninja');
-    if (fs.existsSync(projectNinjaPath)) {
-      return projectNinjaPath;
-    }
-    // 开发环境路径
-    projectNinjaPath = path.join(process.cwd(), 'ninja', process.platform === 'win32' ? 'ninja.exe' : 'ninja');
-    if (fs.existsSync(projectNinjaPath)) {
-      return projectNinjaPath;
-    }
-    // 检查系统PATH中的ninja
-    const systemNinja = process.platform === 'win32' ? 'ninja.exe' : 'ninja';
+    const executableName = this.getNinjaExecutableName();
+    const candidatePaths = [
+      path.join(__dirname, 'ninja', executableName),
+      path.resolve(__dirname, '..', 'ninja', executableName),
+      path.join(process.cwd(), 'ninja', executableName)
+    ];
 
-    // 尝试在PATH中查找
-    try {
-      const { execSync } = require('child_process');
-      const which = process.platform === 'win32' ? 'where' : 'which';
-      const result = execSync(`${which} ${systemNinja}`, { encoding: 'utf8' });
-      return result.trim().split('\n')[0];
-    } catch (error) {
-      // 如果找不到，抛出错误
-      throw new Error(`Ninja executable not found. Please install ninja or place ninja.exe in the project's ninja/ directory.`);
+    for (const candidatePath of candidatePaths) {
+      if (fs.existsSync(candidatePath)) {
+        if (process.platform === 'darwin' && (fs.statSync(candidatePath).mode & 0o111) === 0) {
+          fs.chmodSync(candidatePath, 0o755);
+        }
+        return candidatePath;
+      }
     }
+
+    throw new Error(
+      `Ninja executable not found. Checked: ${candidatePaths.join(', ')}`,
+    );
+  }
+
+  private getNinjaExecutableName(): string {
+    if (process.platform === 'win32') {
+      return 'ninja.exe';
+    }
+    if (process.platform === 'darwin') {
+      return 'ninja';
+    }
+
+    throw new Error(`Bundled Ninja is not available for platform: ${process.platform}`);
   }
 
   /**

@@ -9,7 +9,7 @@
 ## 核心特性
 
 ### 极速编译
-- **超快分析**: 使用Tree-sitter语法解析，精确进行依赖检测
+- **超快分析**: 使用流式、宏感知的预处理指令扫描器，精确进行依赖检测
 - **构建系统**: 使用Ninja构建系统，并行编译，最大化CPU利用率
 - **智能缓存**: 避免重复编译，显著减少构建时间
 - **增量构建**: 只编译修改过的文件
@@ -97,24 +97,6 @@ aily-builder compile sketch.ino --board arduino:avr:uno --preprocess-result ./pr
 6. 生成编译配置
 7. 运行 prebuild 钩子（如配置）
 
-### 语法检查 (Lint)
-
-多模式语法分析，支持快速静态检查或精确的编译器验证：
-
-```bash
-# 快速模式 - 快速语法检查（约3-5毫秒，默认）
-aily-builder lint sketch.ino --board arduino:avr:uno
-
-# 精确模式 - 基于编译器的分析（约3-5秒，高精度）
-aily-builder lint sketch.ino --mode accurate
-
-# 自动模式 - 先快速检查，发现问题再精确验证
-aily-builder lint sketch.ino --mode auto
-
-# 不同输出格式（human、vscode、json）
-aily-builder lint sketch.ino --format json
-```
-
 ### 上传固件
 
 ```bash
@@ -196,28 +178,6 @@ aily-builder cache clear --all
   -h, --help                       显示帮助信息
 ```
 
-### 语法检查命令选项
-
-```bash
-参数:
-  sketch                           Arduino sketch 文件路径 (.ino 文件)
-
-选项:
-  -b, --board <board>              目标开发板 (默认: "arduino:avr:uno")
-  --build-path <path>              构建输出目录
-  --sdk-path <path>                Arduino SDK 路径
-  --tools-path <path>              附加工具路径
-  --libraries-path <path>          附加库路径（可多次使用）
-  --build-property <key=value>     附加构建属性
-  --build-macros <macro[=value]>   自定义宏定义
-  --board-options <key=value>      开发板菜单选项
-  --tool-versions <versions>       指定工具版本
-  --format <format>                输出格式: human, vscode, json (默认: "human")
-  --mode <mode>                    分析模式: fast, accurate, auto (默认: "fast")
-  --verbose                        启用详细输出
-  -h, --help                       显示帮助信息
-```
-
 ### 上传命令选项
 
 ```bash
@@ -267,5 +227,4 @@ GNU GENERAL PUBLIC LICENSE V3
 ## 致谢
 
 - [Ninja Build System](https://ninja-build.org/) - 高性能构建系统
-- [Tree-sitter](https://tree-sitter.github.io/) - 语法解析器
 - [Arduino CLI](https://arduino.github.io/arduino-cli/) - Arduino开发工具

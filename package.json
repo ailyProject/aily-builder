@@ -1,6 +1,6 @@
 {
   "name": "@aily-project/aily-builder-next",
-  "version": "1.2.7",
+  "version": "1.2.8",
   "description": "Fast Arduino compilation CLI tool with optimized preprocessing and parallel compilation",
   "main": "dist/main.js",
   "bin": {
@@ -15,8 +15,7 @@
   ],
   "scripts": {
     "build": "rimraf dist && tsc",
-    "bundle:native:minify": "npm run build && node bundle-native.js --minify",
-    "bundle:native:minify:generate-cache": "npm run build && node bundle-native.js --minify --generate-archive-cloud-cache-default",
+    "bundle": "npm run build && node bundle.js --minify",
     "start": "ts-node main.ts",
     "clean": "rimraf dist",
     "prepack": "npm run build"
@@ -31,13 +30,9 @@
   "author": "coloz",
   "license": "GPL-3.0-only",
   "dependencies": {
-    "@ast-grep/lang-cpp": "^0.0.4",
-    "@ast-grep/napi": "^0.40.3",
     "commander": "^11.1.0",
     "fs-extra": "^11.2.0",
-    "glob": "^10.4.5",
-    "tree-sitter": "^0.20.4",
-    "tree-sitter-cpp": "^0.20.0"
+    "glob": "^10.4.5"
   },
   "devDependencies": {
     "@types/fs-extra": "^11.0.4",
@@ -50,6 +45,6 @@
     "typescript": "^5.3.3"
   },
   "engines": {
-    "node": ">=16"
+    "node": ">=18"
   }
 }

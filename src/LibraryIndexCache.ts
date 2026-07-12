@@ -11,10 +11,11 @@ import path from 'path';
 import { createHash } from 'crypto';
 import { glob } from 'glob';
 import { Logger } from './utils/Logger';
-import type { MacroDefinition } from './DependencyAnalyzer';
+import type { MacroDefinition } from './utils/PreprocessorExpression';
 
-const SCHEMA_VERSION = 2;
-const ANALYZER_VERSION = 'library-index-cache-v5';
+const SCHEMA_VERSION = 3;
+export const DEPENDENCY_ANALYZER_VERSION = 'dependency-directive-tape-v2';
+const ANALYZER_VERSION = DEPENDENCY_ANALYZER_VERSION;
 const STAT_CONCURRENCY = 32;
 
 interface FileSnapshot {
@@ -39,6 +40,9 @@ interface CachedMacroIndex {
 interface CachedMacroDefinition {
   value?: string;
   isDefined: boolean;
+  functionLike?: boolean;
+  parameters?: string[];
+  variadic?: boolean;
 }
 
 interface CachedPathState {
@@ -209,18 +213,24 @@ export class LibraryIndexCache {
       sourceFiles,
       sourceIndex?.macroIndexes || {}
     );
-    nextSourceIndex.macroIndexes[macroKey] = this.createMacroIndex(
-      built.includeFiles,
-      macroDefinitions,
-      built.macroDefinitions || macroDefinitions
-    );
+    const finalMacroDefinitions = built.macroDefinitions || macroDefinitions;
+    const hasSensitiveDelta = this.hasSensitiveMacroDelta(macroDefinitions, finalMacroDefinitions);
+    if (!hasSensitiveDelta) {
+      nextSourceIndex.macroIndexes[macroKey] = this.createMacroIndex(
+        built.includeFiles,
+        macroDefinitions,
+        finalMacroDefinitions
+      );
+    }
 
     await Promise.all([
       this.writeCache(pathStatePath, nextPathState),
       this.writeCache(this.getSourceIndexPath(sourceHash), nextSourceIndex)
     ]);
 
-    this.logger.debug(`[LIB_INDEX] stored ${libraryName}: sources=${built.sourceFiles.length}, includes=${built.includeFiles.length}, ${Date.now() - startedAt}ms`);
+    this.logger.debug(hasSensitiveDelta
+      ? `[LIB_INDEX] skipped macro cache ${libraryName}: sensitive macro state changed, ${Date.now() - startedAt}ms`
+      : `[LIB_INDEX] stored ${libraryName}: sources=${built.sourceFiles.length}, includes=${built.includeFiles.length}, ${Date.now() - startedAt}ms`);
     return {
       sourceFiles: built.sourceFiles,
       includeFiles: built.includeFiles,
@@ -356,7 +366,7 @@ export class LibraryIndexCache {
   private createMacroKey(macroDefinitions: Map<string, MacroDefinition>): string {
     const hash = createHash('sha256');
     const entries = Array.from(macroDefinitions.entries())
-      .map(([name, macro]) => `${name}=${this.getMacroCacheKeyValue(name, macro)}`)
+      .map(([name, macro]) => `${name}=${this.getMacroCacheKeyValue(macro)}|${this.getMacroShapeKey(macro)}`)
       .sort();
 
     for (const entry of entries) {
@@ -367,16 +377,43 @@ export class LibraryIndexCache {
     return hash.digest('hex');
   }
 
-  private getMacroCacheKeyValue(name: string, macro: MacroDefinition): string {
+  private getMacroCacheKeyValue(macro: MacroDefinition): string {
     if (!macro.isDefined) {
       return '<undefined>';
     }
-
-    if (this.isSensitiveMacroName(name)) {
-      return '<sensitive-defined>';
-    }
-
     return macro.value ?? '1';
+  }
+
+  private getMacroShapeKey(macro: MacroDefinition): string {
+    if (!macro.functionLike) {
+      return 'object';
+    }
+    return `function(${(macro.parameters || []).join(',')})${macro.variadic ? ':variadic' : ''}`;
+  }
+
+  private macroDefinitionsEqual(left: MacroDefinition, right: MacroDefinition): boolean {
+    return left.value === right.value
+      && left.isDefined === right.isDefined
+      && !!left.functionLike === !!right.functionLike
+      && !!left.variadic === !!right.variadic
+      && JSON.stringify(left.parameters || []) === JSON.stringify(right.parameters || []);
+  }
+
+  private hasSensitiveMacroDelta(
+    baseMacros: Map<string, MacroDefinition>,
+    finalMacros: Map<string, MacroDefinition>
+  ): boolean {
+    const names = new Set([...baseMacros.keys(), ...finalMacros.keys()]);
+    for (const name of names) {
+      if (!this.isSensitiveMacroName(name)) continue;
+      const baseMacro = baseMacros.get(name);
+      const finalMacro = finalMacros.get(name);
+      if (!baseMacro || !finalMacro || !this.macroDefinitionsEqual(baseMacro, finalMacro)) {
+        this.logger.debug(`[LIB_INDEX] sensitive macro state changed: ${name}`);
+        return true;
+      }
+    }
+    return false;
   }
 
   private serializeMacroDeltas(
@@ -389,12 +426,15 @@ export class LibraryIndexCache {
         continue;
       }
       const baseMacro = baseMacros.get(name);
-      if (baseMacro && baseMacro.value === macro.value && baseMacro.isDefined === macro.isDefined) {
+      if (baseMacro && this.macroDefinitionsEqual(baseMacro, macro)) {
         continue;
       }
       result[name] = {
         value: macro.value,
-        isDefined: macro.isDefined
+        isDefined: macro.isDefined,
+        functionLike: macro.functionLike,
+        parameters: macro.parameters,
+        variadic: macro.variadic
       };
     }
     return result;
@@ -413,7 +453,10 @@ export class LibraryIndexCache {
   }
 
   private isSensitiveMacroName(name: string): boolean {
-    return /(PASSWORD|PASS|SECRET|TOKEN|API[_-]?KEY|PRIVATE|CREDENTIAL|SSID|WIFI)/i.test(name);
+    if (/(?:_H|_HH|_HPP)_?$/i.test(name)) {
+      return false;
+    }
+    return /(?:^|_)(?:PASSWORD|PASSWD|PASSPHRASE|SECRET|TOKEN|API_?KEY|PRIVATE_?KEY|CREDENTIALS?|SSID)(?:$|_)/i.test(name);
   }
 
   private applyMacroDeltas(
@@ -425,7 +468,10 @@ export class LibraryIndexCache {
       result.set(name, {
         name,
         value: macro.value,
-        isDefined: macro.isDefined
+        isDefined: macro.isDefined,
+        functionLike: macro.functionLike,
+        parameters: macro.parameters,
+        variadic: macro.variadic
       });
     }
     return result;
@@ -441,7 +487,17 @@ export class LibraryIndexCache {
   }
 
   private getSourceIndexPath(sourceHash: string): string {
-    return path.join(this.cacheDir, 'sources', sourceHash.substring(0, 2), `${sourceHash}.json`);
+    const analyzerNamespace = createHash('sha256')
+      .update(ANALYZER_VERSION)
+      .digest('hex')
+      .substring(0, 16);
+    return path.join(
+      this.cacheDir,
+      'sources',
+      analyzerNamespace,
+      sourceHash.substring(0, 2),
+      `${sourceHash}.json`
+    );
   }
 
   private async readPathState(cachePath: string): Promise<CachedPathState | null> {

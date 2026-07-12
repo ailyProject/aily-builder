@@ -2,8 +2,6 @@
 import { Command } from 'commander';
 import { ArduinoCompiler, PreprocessResult } from './src/ArduinoCompiler';
 import { ArduinoUploader } from './src/ArduinoUploader';
-import { ArduinoLinter } from './src/ArduinoLinter';
-import { ArduinoConfigParser } from './src/ArduinoConfigParser';
 import { Logger } from './src/utils/Logger';
 import { CacheManager } from './src/CacheManager';
 import { CacheClearMode, CacheRegistry, CacheStatsReport, CacheClearReport } from './src/CacheRegistry';
@@ -374,7 +372,7 @@ Preprocessing Steps:
   7. Run prebuild hooks (if configured)
 
 Note: This command only performs preprocessing without actual compilation.
-      Use 'aily compile' to perform full compilation.
+      Use 'aily-builder compile' to perform full compilation.
   `)
   .action(async (sketch, options) => {
     logger.setVerbose(options.verbose);
@@ -525,20 +523,6 @@ Note: This command only performs preprocessing without actual compilation.
   });
 
 program
-  .command('init')
-  .description('Initialize aily configuration')
-  .option('--arduino-path <path>', 'Path to Arduino IDE installation')
-  .option('--libraries-path <path>', 'Path to Arduino libraries')
-  .action(async (options) => {
-    try {
-      logger.success('Configuration initialized successfully!');
-    } catch (error) {
-      logger.error(`Error initializing config: ${error instanceof Error ? error.message : error}`);
-      process.exit(1);
-    }
-  });
-
-program
   .command('clean')
   .description('Clean build artifacts')
   .argument('[build-path]', 'Build directory to clean', './build')
@@ -549,169 +533,6 @@ program
       logger.success('Build artifacts cleaned!');
     } catch (error) {
       logger.error(`Error cleaning: ${error instanceof Error ? error.message : error}`);
-      process.exit(1);
-    }
-  });
-
-program
-  .command('lint')
-  .description('Multi-mode syntax analysis: fast static check or accurate compiler-based validation')
-  .argument('<sketch>', 'Path to Arduino sketch (.ino file)')
-  .option('-b, --board <board>', 'Target board (e.g., arduino:avr:uno)', 'arduino:avr:uno')
-  .option('--build-path <path>', 'Build output directory (must contain preprocessed files)')
-  .option('--sdk-path <path>', 'Path to Arduino SDK')
-  .option('--tools-path <path>', 'Path to additional tools')
-  .option('--libraries-path <path>', 'Additional libraries path', (val, libraries) => {
-    libraries.push(val);
-    return libraries;
-  }, [])
-  .option('--build-property <key=value>', 'Additional build property', (val, memo) => {
-    const [key, value] = val.split('=');
-    memo[key] = value;
-    return memo;
-  }, {})
-  .option('--build-macros <macro[=value]>', 'Custom macro definitions (e.g., DEBUG, VERSION=1.0.0)', (val, memo) => {
-    if (!memo) memo = [];
-    memo.push(val);
-    return memo;
-  }, [])
-  .option('--board-options <key=value>', 'Board menu option (e.g., flash=2097152_0, uploadmethod=default)', (val, memo) => {
-    const [key, value] = val.split('=');
-    memo[key] = value;
-    return memo;
-  }, {})
-  .option('--tool-versions <versions>', 'Specify tool versions (format: tool1@version1,tool2@version2)', undefined)
-  .option('--format <format>', 'Output format: human, vscode, json', 'human')
-  .option('--mode <mode>', 'Analysis mode: fast, accurate, auto', 'fast')
-  .option('--verbose', 'Enable verbose output', false)
-  .addHelpText('after', `
-Examples:
-  # Fast mode - Quick syntax check (3-5ms, default)
-  $ aily-builder lint sketch.ino --board arduino:avr:uno
-  $ aily-builder lint sketch.ino --mode fast
-  
-  # Accurate mode - Compiler-based analysis (3-5s, high precision)
-  $ aily-builder lint sketch.ino --mode accurate
-  
-  # Auto mode - Fast first, then accurate if issues found
-  $ aily-builder lint sketch.ino --mode auto
-  
-  # With external libraries
-  $ aily-builder lint sketch.ino --libraries-path "C:\\Arduino\\libraries" --mode accurate
-  $ aily-builder lint sketch.ino --libraries-path "/path/to/libs1" --libraries-path "/path/to/libs2"
-  
-  # With SDK and tools paths
-  $ aily-builder lint sketch.ino --sdk-path "C:\\Users\\user\\AppData\\Local\\aily-project\\sdk\\esp32_3.2.1" --tools-path "C:\\Users\\user\\AppData\\Local\\aily-project\\tools" --mode accurate
-  $ aily-builder lint sketch.ino --tool-versions "esp-x32@14.2.0,esptool_py@5.1.0" --mode accurate
-  
-  # With board options and build properties
-  $ aily-builder lint sketch.ino --board esp32:esp32:esp32s3 --board-options flash=16777216_3145728 --mode accurate
-  $ aily-builder lint sketch.ino --build-property "compiler.cpp.extra_flags=-DDEBUG_MODE" --mode accurate
-  $ aily-builder lint sketch.ino --board arduino:renesas_uno:unor4wifi --board-options flash=2097152_0 --board-options uploadmethod=default
-  
-  # Different output formats
-  $ aily-builder lint sketch.ino --format vscode --mode accurate
-  $ aily-builder lint sketch.ino --format json --mode auto
-
-Analysis Modes:
-  fast     - Static analysis, ~3-5ms execution, good for real-time feedback
-  accurate - Compiler-based check, ~3-5s execution, high precision with GCC
-  auto     - Hybrid: fast analysis first, compiler verification if issues found
-
-Features by Mode:
-  fast     ✅ Bracket matching, semicolon checks, basic syntax validation  
-  accurate ✅ GCC-level syntax checking, type validation, precise error location
-  auto     ✅ Best of both: speed when clean, accuracy when problems detected
-
-Note: Accurate mode uses the same compiler toolchain as the compile command.
-  `)
-  .action(async (sketch, options) => {
-    logger.setVerbose(options.verbose);
-
-    const sketchPath = path.resolve(sketch);
-    const sketchName = path.basename(sketchPath, '.ino');
-    const projectPathMD5 = calculateMD5(sketchPath).substring(0, 8);
-    const uniqueSketchName = `${sketchName}_${projectPathMD5}`;
-    // 修复默认构建路径，使其在不同操作系统上都能正常工作
-    const defaultBuildPath = path.join(
-      os.platform() === 'win32'
-        ? path.join(os.homedir(), 'AppData', 'Local')
-        : path.join(os.homedir(), 'Library'),
-      'aily-builder',
-      'project',
-      uniqueSketchName
-    );
-
-    const buildPath = options.buildPath ? path.resolve(options.buildPath) : defaultBuildPath;
-
-    // 验证输出格式
-    const validFormats = ['human', 'vscode', 'json'];
-    if (!validFormats.includes(options.format)) {
-      logger.error(`Invalid format: ${options.format}. Must be one of: ${validFormats.join(', ')}`);
-      process.exit(1);
-    }
-
-    // 验证分析模式
-    const validModes = ['fast', 'accurate', 'auto', 'ast-grep'];
-    if (!validModes.includes(options.mode)) {
-      logger.error(`Invalid mode: ${options.mode}. Must be one of: ${validModes.join(', ')}`);
-      process.exit(1);
-    }
-
-    logger.info(`Starting syntax check for ${sketch}`);
-    logger.info(`Board: ${options.board}`);
-    logger.info(`Mode: ${options.mode}`);
-    logger.info(`Build path: ${buildPath}`);
-
-    if (options.librariesPath && options.librariesPath.length > 0) {
-      logger.info(`Libraries paths: ${options.librariesPath.join(', ')}`);
-    }
-    if (options.sdkPath) {
-      logger.info(`SDK path: ${options.sdkPath}`);
-    }
-    if (options.toolsPath) {
-      logger.info(`Tools path: ${options.toolsPath}`);
-    }
-    if (options.toolVersions) {
-      logger.info(`Tool versions: ${options.toolVersions}`);
-    }
-    if (options.boardOptions && Object.keys(options.boardOptions).length > 0) {
-      logger.info(`Board options: ${JSON.stringify(options.boardOptions)}`);
-    }
-    if (options.buildProperty && Object.keys(options.buildProperty).length > 0) {
-      logger.info(`Build properties: ${JSON.stringify(options.buildProperty)}`);
-    }
-
-    const configParser = new ArduinoConfigParser();
-    const linter = new ArduinoLinter(logger, configParser);
-
-    try {
-      const result = await linter.lint({
-        sketchPath,
-        board: options.board,
-        buildPath,
-        sdkPath: options.sdkPath ? path.resolve(options.sdkPath) : undefined,
-        toolsPath: options.toolsPath ? path.resolve(options.toolsPath) : undefined,
-        librariesPath: options.librariesPath && options.librariesPath.length > 0
-          ? options.librariesPath.map((libPath: string) => path.resolve(libPath))
-          : [],
-        buildProperties: options.buildProperty || {},
-        boardOptions: options.boardOptions || {},
-        toolVersions: options.toolVersions,
-        format: options.format as 'human' | 'vscode' | 'json',
-        mode: options.mode as 'fast' | 'accurate' | 'auto',
-        verbose: options.verbose
-      });
-
-      // 输出结果
-      const output = linter.formatOutput(result, options.format as 'human' | 'vscode' | 'json');
-      console.log(output);
-
-      // 根据结果设置退出码
-      process.exit(result.success ? 0 : 1);
-
-    } catch (error) {
-      logger.error(`Lint failed: ${error instanceof Error ? error.message : error}`);
       process.exit(1);
     }
   });
