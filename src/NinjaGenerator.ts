@@ -3,6 +3,7 @@ import path from 'path';
 import { Logger } from './utils/Logger';
 import { Dependency } from './DependencyAnalyzer';
 import { CompileConfigManager } from './CompileConfigManager';
+import { ArchiveCacheHit, getArchiveDependencyKey } from './ArchiveCloudCacheManager';
 
 export interface NinjaRule {
   name: string;
@@ -36,6 +37,7 @@ export interface NinjaOptions {
   buildPath: string;
   jobs: number;
   skipExistingObjects?: boolean; // 新增：是否跳过已存在的对象文件
+  archiveCacheHits?: Map<string, ArchiveCacheHit>;
 }
 
 export class NinjaGenerator {
@@ -45,8 +47,11 @@ export class NinjaGenerator {
   private buildPath: string;
   private ninjaFile: NinjaFile;
   private objectFiles: string[] = [];
+  private prelinkInputs: string[] = [];
   private skipExistingObjects: boolean = false;
+  private archiveCacheHits: Map<string, ArchiveCacheHit> = new Map();
   private readonly arduinoCoreBuildFlag = '-DARDUINO_CORE_BUILD';
+  static readonly PRELINK_TARGET = '__aily_prelink_ready';
   private compileConfigManager: CompileConfigManager; // 新增：编译配置管理器
 
   constructor(logger: Logger) {
@@ -66,9 +71,20 @@ export class NinjaGenerator {
       this.compileConfig = options.compileConfig;
       this.buildPath = options.buildPath;
       this.skipExistingObjects = options.skipExistingObjects || false;
+      this.archiveCacheHits = options.archiveCacheHits || new Map();
+      this.objectFiles = [];
+      this.prelinkInputs = [];
+      this.ninjaFile = {
+        rules: [],
+        builds: [],
+        variables: {},
+        pools: {}
+      };
 
       // console.log(this.compileConfig);
-      await this.invalidateArduinoCoreBuildObjectsIfNeeded();
+      if (!this.hasCoreArchiveCacheHit()) {
+        await this.invalidateArduinoCoreBuildObjectsIfNeeded();
+      }
 
       // 设置ninja pool限制并发数
       this.ninjaFile.pools = {
@@ -332,12 +348,14 @@ export class NinjaGenerator {
       this.ninjaFile.builds.unshift(sketchBuild);
       sketchObjectFile = sketchBuild.outputs[0];
       this.objectFiles.push(sketchObjectFile);
+      this.prelinkInputs.push(sketchObjectFile);
     } else {
       // 即使跳过编译，也要将对象文件添加到列表中（用于链接）
       const sketchFileName = path.basename(process.env['SKETCH_PATH']!);
       const objectFile = path.join('sketch', `${sketchFileName}.o`);
       sketchObjectFile = objectFile;
       this.objectFiles.push(objectFile);
+      this.prelinkInputs.push(objectFile);
     }
 
     // 2. 创建 phony 目标，让其他所有编译任务依赖于 sketch 编译完成
@@ -356,6 +374,16 @@ export class NinjaGenerator {
       if (dependency.type === 'variant') {
         this.logger.debug(`generateBuilds: variant files = ${(dependency.includes || []).map(f => f.replace(/\\/g, '/')).join(', ')}`);
       }
+
+      const archiveHit = this.getArchiveCacheHit(dependency);
+      if (archiveHit) {
+        if (dependency.type === 'library') {
+          this.objectFiles.push(archiveHit.archiveName);
+        }
+        this.logger.debug(`generateBuilds: archive cache hit '${dependency.name}', using ${archiveHit.archiveName}`);
+        continue;
+      }
+
       const groupObjects: string[] = [];
       let groupNeedsRebuild = false;
 
@@ -388,6 +416,7 @@ export class NinjaGenerator {
           // console.log(`[DEBUG] Processing variant dependency: ${dependency.name}, objects:`, groupObjects);
           // 将变体对象文件直接添加到最终链接的对象文件列表中
           this.objectFiles.push(...groupObjects);
+          this.prelinkInputs.push(...groupObjects);
         } else {
           // console.log(`[DEBUG] Processing ${dependency.type} dependency: ${dependency.name}, objects count: ${groupObjects.length}`);
           // 其他类型（core、library）创建归档文件
@@ -409,6 +438,7 @@ export class NinjaGenerator {
         archivePath = `${dependencyName}.a`;
         this.objectFiles.push(archivePath);
       }
+      this.prelinkInputs.push(archivePath);
 
       // 检查归档文件是否需要重新生成
       let needsRebuild = archiveGroup.needsRebuild;
@@ -452,6 +482,16 @@ export class NinjaGenerator {
         this.ninjaFile.builds.push(archiveBuild);
       }
     }
+
+    this.addPrelinkReadyTarget();
+  }
+
+  private addPrelinkReadyTarget(): void {
+    this.ninjaFile.builds.push({
+      outputs: [NinjaGenerator.PRELINK_TARGET],
+      rule: 'phony',
+      inputs: Array.from(new Set(this.prelinkInputs))
+    });
   }
 
   private calculateObjectFilePath(
@@ -888,5 +928,21 @@ export class NinjaGenerator {
 
   getObjectFiles(): string[] {
     return this.objectFiles;
+  }
+
+  private getArchiveCacheHit(dependency: Dependency): ArchiveCacheHit | undefined {
+    if (dependency.type !== 'core' && dependency.type !== 'library') {
+      return undefined;
+    }
+    return this.archiveCacheHits.get(getArchiveDependencyKey(dependency.type, dependency.name));
+  }
+
+  private hasCoreArchiveCacheHit(): boolean {
+    for (const hit of this.archiveCacheHits.values()) {
+      if (hit.dependencyType === 'core') {
+        return true;
+      }
+    }
+    return false;
   }
 }

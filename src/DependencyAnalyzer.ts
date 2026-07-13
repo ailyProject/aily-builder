@@ -7,8 +7,17 @@ import fs from 'fs-extra';
 import * as path from 'path';
 import { glob } from 'glob';
 import { Logger } from './utils/Logger';
-import { analyzeFile } from './utils/AnalyzeFile';
+import { analyzeDirectiveTapeWithDefines, analyzeFile } from './utils/AnalyzeFile';
+import {
+  PreprocessorDirectiveFlags,
+  PreprocessorDirectiveOpcode,
+  PreprocessorDirectiveTape,
+  scanPreprocessorDirectives
+} from './utils/PreprocessorDirectiveScanner';
+import type { MacroDefinition } from './utils/PreprocessorExpression';
 import { LibraryIndexCache, LibraryIndexBuildResult, LibraryIndexResult } from './LibraryIndexCache';
+
+export type { MacroDefinition } from './utils/PreprocessorExpression';
 
 export interface PreprocessOptions {
   libraries?: string;
@@ -30,12 +39,6 @@ export interface PreprocessResult {
   defines: string[];
 }
 
-export interface MacroDefinition {
-  name: string;
-  value?: string;
-  isDefined: boolean;
-}
-
 export interface ConditionalInclude {
   include: string;
   condition: string;
@@ -43,11 +46,103 @@ export interface ConditionalInclude {
   isActive: boolean;
 }
 
+type DirectiveTapeProvider = (filePath: string) => PreprocessorDirectiveTape;
+
+function stripMacroValueComment(value: string): string {
+  let quote: string | null = null;
+  let escaped = false;
+
+  for (let i = 0; i < value.length; i++) {
+    const char = value[i];
+    const next = value[i + 1];
+
+    if (escaped) {
+      escaped = false;
+      continue;
+    }
+
+    if (quote) {
+      if (char === '\\') {
+        escaped = true;
+      } else if (char === quote) {
+        quote = null;
+      }
+      continue;
+    }
+
+    if (char === '"' || char === "'") {
+      quote = char;
+      continue;
+    }
+
+    if (char === '/' && (next === '/' || next === '*')) {
+      return value.slice(0, i);
+    }
+  }
+
+  return value;
+}
+
+export function extractBuildMacrosFromSketchContent(content: string): string[] {
+  const macros: string[] = [];
+  const lines = content.split(/\r?\n/);
+  let conditionalDepth = 0;
+
+  for (const line of lines) {
+    const trimmedLine = line.trim();
+    if (!trimmedLine || trimmedLine.startsWith('//')) {
+      continue;
+    }
+
+    if (/^\s*#\s*(?:if|ifdef|ifndef)\b/.test(line)) {
+      conditionalDepth++;
+      continue;
+    }
+
+    if (/^\s*#\s*endif\b/.test(line)) {
+      if (conditionalDepth > 0) {
+        conditionalDepth--;
+      }
+      continue;
+    }
+
+    if (/^\s*#\s*(?:else|elif)\b/.test(line)) {
+      continue;
+    }
+
+    if (conditionalDepth > 0) {
+      continue;
+    }
+
+    const match = line.match(/^\s*#\s*define\s+([A-Za-z_][A-Za-z0-9_]*)(.*)$/);
+    if (!match) {
+      continue;
+    }
+
+    const name = match[1];
+    const rawValue = match[2] || '';
+
+    if (rawValue.startsWith('(')) {
+      continue;
+    }
+
+    const value = stripMacroValueComment(rawValue).trim();
+    if (value.endsWith('\\')) {
+      continue;
+    }
+
+    macros.push(value ? `${name}=${value}` : name);
+  }
+
+  return macros;
+}
+
 export class DependencyAnalyzer {
   private logger: Logger;
   private dependencyList: Map<string, Dependency>
   // private processedFiles: Set<string>;
   private macroDefinitions: Map<string, MacroDefinition>;
+  private configuredMacros: Map<string, MacroDefinition>;
   private libraryMap: Map<string, Dependency>
   private libraryIndexCache: LibraryIndexCache;
 
@@ -60,6 +155,8 @@ export class DependencyAnalyzer {
     // this.processedFiles = new Set<string>();
     this.dependencyList = new Map<string, Dependency>()
     this.macroDefinitions = new Map<string, MacroDefinition>();
+    this.configuredMacros = new Map<string, MacroDefinition>();
+    this.libraryMap = new Map<string, Dependency>();
     this.libraryIndexCache = new LibraryIndexCache(logger);
   }
 
@@ -70,6 +167,14 @@ export class DependencyAnalyzer {
  */
   async preprocess(arduinoConfig): Promise<any> {
     this.logger.verbose('Starting dependency analysis...');
+    // A DependencyAnalyzer instance can be reused by callers. Analysis state belongs to
+    // one preprocess session and must never leak into the next project/configuration.
+    this.dependencyList.clear();
+    this.macroDefinitions.clear();
+    for (const [name, macroDefinition] of this.configuredMacros) {
+      this.macroDefinitions.set(name, { ...macroDefinition });
+    }
+    this.libraryMap.clear();
     const sketchPath = process.env['SKETCH_PATH'];
 
     // 获取核心SDK和库路径
@@ -90,7 +195,6 @@ export class DependencyAnalyzer {
     this.initializeDefaultMacros(arduinoConfig);
 
     // 1. 分析主sketch文件
-    const mainIncludeFiles = await analyzeFile(sketchPath, this.macroDefinitions);
 
     // 2. 添加核心SDK依赖
     let coreDependency, variantDependency;
@@ -118,6 +222,12 @@ export class DependencyAnalyzer {
     // 4.5. 添加平台特定的必需库（如 STM32 SrcWrapper）
     await this.addPlatformSpecificLibraries(arduinoConfig);
 
+    // Analyze after the library map exists so __has_include queries the same
+    // dependency search universe used by resolveDependencies().
+    const mainIncludeFiles = await analyzeFile(sketchPath, this.macroDefinitions, {
+      hasInclude: includePath => this.canResolveKnownInclude(includePath, sketchPath)
+    });
+
     // 5. 递归分析依赖，resolveA用于确定是否处理预编译库
     let resolveA = arduinoConfig.platform['compiler.libraries.ldflags'] ? true : false;
     await this.resolveDependencies(mainIncludeFiles, resolveA);
@@ -130,7 +240,7 @@ export class DependencyAnalyzer {
    */
   private initializeDefaultMacros(arduinoConfig): void {
     // Arduino平台默认宏
-    this.setMacro('ARDUINO', '100', true);
+    this.setSessionMacro('ARDUINO', '100', true);
 
     // 从 arduinoConfig.platform['recipe.cpp.o.pattern'] 中提取宏定义
     this.logger.debug('[MACRO_DEBUG] Extracting macros from recipe.cpp.o.pattern...');
@@ -138,8 +248,16 @@ export class DependencyAnalyzer {
     this.logger.debug(`[MACRO_DEBUG] Found ${macros.length} macros from recipe: ${macros.join(', ')}`);
     macros.forEach(macro => {
       let [key, value] = macro.split('=')
-      this.setMacro(key.trim(), value ? value.trim() : '1');
+      this.setSessionMacro(key.trim(), value ? value.trim() : '1');
     })
+
+    const platformPackage = arduinoConfig.fqbnParsed?.package;
+    const buildMcu = arduinoConfig.platform['build.mcu'];
+    // ESP32 compilation gets this from sdkconfig.h; dependency analysis needs it earlier.
+    if (platformPackage === 'esp32' && typeof buildMcu === 'string' && buildMcu.startsWith('esp32')) {
+      const targetMacro = `CONFIG_IDF_TARGET_${buildMcu.replace(/[^A-Za-z0-9]/g, '_').toUpperCase()}`;
+      this.setSessionMacro(targetMacro, '1');
+    }
 
     // 从 build.macros 中提取用户自定义宏定义
     if (arduinoConfig.platform['build.macros']) {
@@ -149,9 +267,11 @@ export class DependencyAnalyzer {
       this.logger.debug(`[MACRO_DEBUG] Found ${extraFlagsMacros.length} macros from build.macros: ${extraFlagsMacros.join(', ')}`);
       extraFlagsMacros.forEach(macro => {
         let [key, value] = macro.split('=')
-        this.setMacro(key.trim(), value ? value.trim() : '1');
+        this.setSessionMacro(key.trim(), value ? value.trim() : '1');
       });
     }
+
+    this.loadPlatformMacroHeaders(arduinoConfig);
 
     // 打印所有宏定义的详细信息
     this.logger.debug('[MACRO_DEBUG] All macro definitions:');
@@ -162,6 +282,28 @@ export class DependencyAnalyzer {
     this.logger.info(`Initialized default macros: ${Array.from(this.macroDefinitions.keys()).join(', ')}`);
   }
 
+  private loadPlatformMacroHeaders(arduinoConfig): void {
+    if (arduinoConfig.fqbnParsed?.package !== 'esp32') return;
+    const compilerSdkPath = arduinoConfig.platform?.['compiler.sdk.path'];
+    if (!compilerSdkPath) return;
+
+    const versionHeader = path.join(
+      compilerSdkPath,
+      'include',
+      'esp_common',
+      'include',
+      'esp_idf_version.h'
+    );
+    if (!fs.existsSync(versionHeader)) return;
+
+    analyzeDirectiveTapeWithDefines(
+      scanPreprocessorDirectives(fs.readFileSync(versionHeader)),
+      this.macroDefinitions,
+      { allowIndeterminate: true, throwOnError: false },
+      versionHeader
+    );
+  }
+
   /**
    * 设置宏定义
    * @param name 宏名称
@@ -169,6 +311,12 @@ export class DependencyAnalyzer {
    * @param isDefined 是否定义
    */
   public setMacro(name: string, value?: string, isDefined: boolean = true): void {
+    const macroDefinition = { name, value, isDefined };
+    this.configuredMacros.set(name, macroDefinition);
+    this.macroDefinitions.set(name, macroDefinition);
+  }
+
+  private setSessionMacro(name: string, value?: string, isDefined: boolean = true): void {
     this.macroDefinitions.set(name, { name, value, isDefined });
   }
 
@@ -188,48 +336,10 @@ export class DependencyAnalyzer {
       }
 
       const content = await fs.readFile(sketchPath, 'utf-8');
-      const lines = content.split('\n');
+      macros.push(...extractBuildMacrosFromSketchContent(content));
 
-      // 正则表达式匹配 #define 指令
-      // 匹配格式：#define MACRO_NAME 或 #define MACRO_NAME value
-      const defineRegex = /^\s*#\s*define\s+([A-Za-z_][A-Za-z0-9_]*)\s*(.*)?$/;
-
-      for (const line of lines) {
-        // 跳过注释行
-        const trimmedLine = line.trim();
-        if (trimmedLine.startsWith('//')) {
-          continue;
-        }
-
-        const match = line.match(defineRegex);
-        if (match) {
-          const name = match[1];
-          let value = match[2] ? match[2].trim() : undefined;
-
-          // 移除行尾注释
-          if (value) {
-            const commentIndex = value.indexOf('//');
-            if (commentIndex !== -1) {
-              value = value.substring(0, commentIndex).trim();
-            }
-            // 处理 /* */ 注释
-            const blockCommentIndex = value.indexOf('/*');
-            if (blockCommentIndex !== -1) {
-              value = value.substring(0, blockCommentIndex).trim();
-            }
-          }
-
-          // 如果值为空字符串，设置为 undefined
-          if (value === '') {
-            value = undefined;
-          }
-
-          // 格式化为 'NAME=value' 或 'NAME' 形式
-          const macroString = value ? `${name}=${value}` : name;
-          macros.push(macroString);
-
-          this.logger.debug(`Found macro in sketch: ${macroString}`);
-        }
+      for (const macro of macros) {
+        this.logger.debug(`Found macro in sketch: ${macro}`);
       }
 
       this.logger.info(`Extracted ${macros.length} macros from sketch: ${macros.join(', ') || 'none'}`);
@@ -414,10 +524,28 @@ export class DependencyAnalyzer {
 
   private async buildLibraryIndex(libraryObject: Dependency, macroDefinitions: Map<string, MacroDefinition>): Promise<LibraryIndexBuildResult> {
     const macroDefinitionsCopy = new Map(macroDefinitions);
-    const [sourceFiles, includeFiles] = await Promise.all([
-      this.computeLibrarySourceFiles(libraryObject),
-      this.analyzeLibraryIncludes(libraryObject.path, macroDefinitionsCopy)
-    ]);
+    const directiveTapeCache = new Map<string, PreprocessorDirectiveTape>();
+    const getTape: DirectiveTapeProvider = (filePath: string) => {
+      const resolved = path.resolve(filePath).replace(/\\/g, '/');
+      const cacheKey = process.platform === 'win32' ? resolved.toLowerCase() : resolved;
+      let tape = directiveTapeCache.get(cacheKey);
+      if (!tape) {
+        tape = scanPreprocessorDirectives(fs.readFileSync(filePath));
+        directiveTapeCache.set(cacheKey, tape);
+      }
+      return tape;
+    };
+    const sourceFiles = await this.computeLibrarySourceFiles(
+      libraryObject,
+      macroDefinitions,
+      getTape
+    );
+    const includeFiles = await this.analyzeLibraryIncludes(
+      libraryObject.path,
+      macroDefinitionsCopy,
+      sourceFiles,
+      getTape
+    );
 
     return {
       sourceFiles,
@@ -426,7 +554,12 @@ export class DependencyAnalyzer {
     };
   }
 
-  private async analyzeLibraryIncludes(libraryPath: string, macroDefinitions: Map<string, MacroDefinition>): Promise<string[]> {
+  private async analyzeLibraryIncludes(
+    libraryPath: string,
+    macroDefinitions: Map<string, MacroDefinition>,
+    sourceFiles: string[],
+    getTape: DirectiveTapeProvider
+  ): Promise<string[]> {
     let includeFilePaths: string[] = [];
     try {
       const libraryFiles = await glob('**/*.{h,hpp,cpp,c}', {
@@ -447,13 +580,118 @@ export class DependencyAnalyzer {
       this.logger.debug(`Failed to read header files in ${libraryPath}: ${error instanceof Error ? error.message : error}`);
     }
 
-    const libraryIncludeHeaderFiles: string[] = [];
-    for (const includeFilePath of includeFilePaths) {
-      const headerIncludes = await analyzeFile(includeFilePath, macroDefinitions);
-      libraryIncludeHeaderFiles.push(...headerIncludes);
+    if (includeFilePaths.length === 0) {
+      return [];
     }
 
-    return [...new Set(libraryIncludeHeaderFiles)];
+    const normalizeAbsolutePath = (filePath: string): string => {
+      const normalized = path.resolve(filePath).replace(/\\/g, '/');
+      return process.platform === 'win32' ? normalized.toLowerCase() : normalized;
+    };
+    const normalizeRelativePath = (filePath: string): string => {
+      const normalized = filePath.replace(/\\/g, '/').replace(/^\.\//, '');
+      return process.platform === 'win32' ? normalized.toLowerCase() : normalized;
+    };
+
+    const filesByAbsolutePath = new Map<string, string>();
+    const filesByRelativePath = new Map<string, string>();
+
+    for (const filePath of includeFilePaths) {
+      filesByAbsolutePath.set(normalizeAbsolutePath(filePath), filePath);
+      filesByRelativePath.set(normalizeRelativePath(path.relative(libraryPath, filePath)), filePath);
+    }
+
+    const resolveLocalInclude = (includePath: string, includingFilePath: string): string | undefined => {
+      const relativeInclude = normalizeRelativePath(includePath);
+      const candidates = [
+        path.resolve(path.dirname(includingFilePath), includePath),
+        path.resolve(libraryPath, includePath)
+      ];
+
+      if (path.basename(libraryPath).toLowerCase() === 'src' && relativeInclude.startsWith('src/')) {
+        candidates.push(path.resolve(libraryPath, includePath.slice(4)));
+      }
+
+      for (const candidate of candidates) {
+        const matchedFile = filesByAbsolutePath.get(normalizeAbsolutePath(candidate));
+        if (matchedFile) {
+          return matchedFile;
+        }
+      }
+
+      const relativeMatch = filesByRelativePath.get(relativeInclude);
+      if (relativeMatch) {
+        return relativeMatch;
+      }
+
+      return undefined;
+    };
+
+    const sourceRootPaths = new Set(sourceFiles.map(normalizeAbsolutePath));
+    const entryFiles = includeFilePaths.filter(filePath => {
+      const ext = path.extname(filePath).toLowerCase();
+      if (ext === '.cpp' || ext === '.c') {
+        return sourceRootPaths.has(normalizeAbsolutePath(filePath));
+      }
+
+      if (ext === '.h' || ext === '.hpp') {
+        return path.dirname(path.relative(libraryPath, filePath)) === '.';
+      }
+
+      return false;
+    });
+    const rootFiles = entryFiles.length > 0 ? entryFiles : includeFilePaths;
+    const initialMacroDefinitions = new Map(macroDefinitions);
+    const mergedMacroDefinitions = new Map(macroDefinitions);
+    const externalIncludes = new Set<string>();
+
+    // Each source/public header is an independent translation unit. Local includes share
+    // that unit's macro state and are analyzed synchronously at their include location.
+    for (const rootFilePath of rootFiles) {
+      const translationUnitMacros = new Map(initialMacroDefinitions);
+      const activeIncludeStack = new Set<string>();
+      const onceFiles = new Set<string>();
+
+      const analyzeLocalFile = (filePath: string): void => {
+        const normalizedFilePath = normalizeAbsolutePath(filePath);
+        if (activeIncludeStack.has(normalizedFilePath) || onceFiles.has(normalizedFilePath)) {
+          return;
+        }
+
+        activeIncludeStack.add(normalizedFilePath);
+        try {
+          analyzeDirectiveTapeWithDefines(getTape(filePath), translationUnitMacros, {
+            onPragmaOnce: () => onceFiles.add(normalizedFilePath),
+            hasInclude: includePath => {
+              return !!resolveLocalInclude(includePath, filePath)
+                || this.canResolveKnownInclude(includePath, filePath);
+            },
+            onInclude: includePath => {
+              const localIncludePath = resolveLocalInclude(includePath, filePath);
+              if (localIncludePath) {
+                analyzeLocalFile(localIncludePath);
+              } else {
+                externalIncludes.add(includePath);
+              }
+            }
+          }, filePath);
+        } finally {
+          activeIncludeStack.delete(normalizedFilePath);
+        }
+      };
+
+      analyzeLocalFile(rootFilePath);
+      for (const [name, macroDefinition] of translationUnitMacros) {
+        mergedMacroDefinitions.set(name, macroDefinition);
+      }
+    }
+
+    macroDefinitions.clear();
+    for (const [name, macroDefinition] of mergedMacroDefinitions) {
+      macroDefinitions.set(name, macroDefinition);
+    }
+
+    return [...externalIncludes];
   }
 
   private getIncludeAnalysisPriority(filePath: string): number {
@@ -465,6 +703,26 @@ export class DependencyAnalyzer {
       return 1;
     }
     return 2;
+  }
+
+  private canResolveKnownInclude(includePath: string, includingFilePath?: string): boolean {
+    if (!includePath) return false;
+    if (this.libraryMap.has(includePath) || this.libraryMap.has(path.basename(includePath))) {
+      return true;
+    }
+
+    const roots = [
+      includingFilePath ? path.dirname(includingFilePath) : undefined,
+      process.env['SDK_CORE_PATH'],
+      process.env['SDK_VARIANT_PATH']
+    ].filter((root): root is string => !!root);
+    for (const root of roots) {
+      if (fs.existsSync(path.resolve(root, includePath))) {
+        return true;
+      }
+    }
+
+    return this.isSystemHeader(includePath);
   }
 
   /**
@@ -565,36 +823,98 @@ export class DependencyAnalyzer {
     }
   }
 
-  private async computeLibrarySourceFiles(libraryObject: Dependency): Promise<string[]> {
+  private async computeLibrarySourceFiles(
+    libraryObject: Dependency,
+    macroDefinitions: Map<string, MacroDefinition>,
+    getTape: DirectiveTapeProvider
+  ): Promise<string[]> {
     const extensions = ['.cpp', '.c', '.S', '.s'];
     // 直接扫描传入的路径（可能是库根目录或src目录）
     const allFiles = await this.scanDirectoryRecursive(libraryObject.path, extensions);
 
     // 过滤掉被其他文件 #include 的代码片段文件
     const includedFiles = new Set<string>();
+    const normalizeFileKey = (filePath: string): string => {
+      const normalized = path.resolve(filePath).replace(/\\/g, '/');
+      return process.platform === 'win32' ? normalized.toLowerCase() : normalized;
+    };
 
     // 第一遍：扫描所有 .cpp 和 .c 文件，找出哪些文件被 #include
-    for (const file of allFiles) {
-      if (file.endsWith('.cpp')) {
-        const includedCpp = await this.findIncludedCppFiles(file, libraryObject.path);
-        includedCpp.forEach(f => includedFiles.add(f));
-
-        const includedC = await this.findIncludedCFiles(file, libraryObject.path);
-        includedC.forEach(f => includedFiles.add(f));
-      } else if (file.endsWith('.c')) {
-        const includedCpp = await this.findIncludedCppFiles(file, libraryObject.path);
-        includedCpp.forEach(f => includedFiles.add(f));
-
-        const includedC = await this.findIncludedCFiles(file, libraryObject.path);
-        includedC.forEach(f => includedFiles.add(f));
+    const resolveLocalInclude = (includePath: string, includingFilePath: string): string | undefined => {
+      const candidates = [
+        path.resolve(path.dirname(includingFilePath), includePath),
+        path.resolve(libraryObject.path, includePath)
+      ];
+      if (path.basename(libraryObject.path).toLowerCase() === 'src'
+        && includePath.replace(/\\/g, '/').startsWith('src/')) {
+        candidates.push(path.resolve(libraryObject.path, includePath.slice(4)));
       }
+      return candidates.find(candidate => fs.existsSync(candidate));
+    };
+
+    // Local headers execute synchronously so their macros can control a later
+    // .c/.cpp fragment include in the same translation unit.
+    for (const rootFile of allFiles) {
+      if (!/\.(?:c|cpp)$/i.test(rootFile)) continue;
+      const rootTape = getTape(rootFile);
+
+      // Preserve the historical duplicate-definition guard: a literal source
+      // include marks that file as a fragment even when its controlling macro
+      // comes from a compiler context the dependency executor cannot model.
+      for (let index = 0; index < rootTape.opcodes.length; index++) {
+        const opcode = rootTape.opcodes[index] as PreprocessorDirectiveOpcode;
+        if (opcode !== PreprocessorDirectiveOpcode.Include
+          && opcode !== PreprocessorDirectiveOpcode.IncludeNext
+          && opcode !== PreprocessorDirectiveOpcode.Import) continue;
+        const flags = rootTape.flags[index] as PreprocessorDirectiveFlags;
+        if ((flags & PreprocessorDirectiveFlags.IncludeMacro) !== 0) continue;
+        const includePath = rootTape.payloads[rootTape.payloadIndices[index]];
+        if (!/\.(?:c|cpp)$/i.test(includePath || '')) continue;
+        const localPath = resolveLocalInclude(includePath, rootFile);
+        if (localPath) includedFiles.add(normalizeFileKey(localPath));
+      }
+
+      const translationUnitMacros = new Map(macroDefinitions);
+      const activeIncludeStack = new Set<string>();
+      const onceFiles = new Set<string>();
+
+      const analyzeLocalFile = (filePath: string): void => {
+        const normalized = path.resolve(filePath);
+        const key = process.platform === 'win32' ? normalized.toLowerCase() : normalized;
+        if (activeIncludeStack.has(key) || onceFiles.has(key)) return;
+
+        activeIncludeStack.add(key);
+        try {
+          analyzeDirectiveTapeWithDefines(getTape(filePath), translationUnitMacros, {
+            onPragmaOnce: () => onceFiles.add(key),
+            hasInclude: includePath => {
+              return !!resolveLocalInclude(includePath, filePath)
+                || this.canResolveKnownInclude(includePath, filePath);
+            },
+            onInclude: includePath => {
+              const localPath = resolveLocalInclude(includePath, filePath);
+              if (!localPath) return;
+              if (/\.(?:c|cpp)$/i.test(localPath)) {
+                includedFiles.add(normalizeFileKey(localPath));
+              }
+              if (/\.(?:h|hpp|c|cpp)$/i.test(localPath)) {
+                analyzeLocalFile(localPath);
+              }
+            }
+          }, filePath);
+        } finally {
+          activeIncludeStack.delete(key);
+        }
+      };
+
+      analyzeLocalFile(rootFile);
     }
 
     // 第二遍：过滤代码片段
     const validFiles: string[] = [];
     for (const file of allFiles) {
       // 1. 被 #include 的文件
-      if (includedFiles.has(file)) {
+      if (includedFiles.has(normalizeFileKey(file))) {
         this.logger.debug(`[CODE_FRAGMENT] Skipping included file: ${path.relative(libraryObject.path, file)}`);
         continue;
       }
@@ -627,86 +947,6 @@ export class DependencyAnalyzer {
     }
 
     return [...new Set(validFiles)].sort();
-  }
-
-  /**
-   * 查找文件中通过 #include 引入的 .cpp 文件
-   * @param filePath 要分析的文件路径
-   * @param basePath 库的基础路径
-   * @returns 被 #include 的 .cpp 文件的绝对路径列表
-   */
-  private async findIncludedCppFiles(filePath: string, basePath: string): Promise<string[]> {
-    try {
-      const content = await fs.readFile(filePath, 'utf-8');
-      const lines = content.split('\n');
-      const includedFiles: string[] = [];
-
-      for (const line of lines) {
-        const trimmed = line.trim();
-        // 匹配 #include "xxx.cpp" 或 #include <xxx.cpp>
-        const match = trimmed.match(/^#include\s+["<]([^">]+\.cpp)[">]/);
-        if (match) {
-          const includedPath = match[1];
-          // 尝试解析相对路径
-          const fileDir = path.dirname(filePath);
-          let resolvedPath = path.resolve(fileDir, includedPath);
-
-          // 如果文件不存在，尝试相对于库根目录解析
-          if (!await fs.pathExists(resolvedPath)) {
-            resolvedPath = path.resolve(basePath, includedPath);
-          }
-
-          if (await fs.pathExists(resolvedPath)) {
-            includedFiles.push(resolvedPath);
-          }
-        }
-      }
-
-      return includedFiles;
-    } catch (error) {
-      this.logger.debug(`Failed to find included cpp files in ${filePath}: ${error instanceof Error ? error.message : error}`);
-      return [];
-    }
-  }
-
-  /**
-   * 查找文件中通过 #include 引入的 .c 文件
-   * @param filePath 要分析的文件路径
-   * @param basePath 库的基础路径
-   * @returns 被 #include 的 .c 文件的绝对路径列表
-   */
-  private async findIncludedCFiles(filePath: string, basePath: string): Promise<string[]> {
-    try {
-      const content = await fs.readFile(filePath, 'utf-8');
-      const lines = content.split('\n');
-      const includedFiles: string[] = [];
-
-      for (const line of lines) {
-        const trimmed = line.trim();
-        // 匹配 #include "xxx.c" 或 #include <xxx.c>
-        const match = trimmed.match(/^#include\s+["<]([^">]+\.c)[">]/);
-        if (match) {
-          const includedPath = match[1];
-          // 尝试解析相对路径
-          const fileDir = path.dirname(filePath);
-          let resolvedPath = path.resolve(fileDir, includedPath);
-
-          // 如果文件不存在，尝试相对于库根目录解析
-          if (!await fs.pathExists(resolvedPath)) {
-            resolvedPath = path.resolve(basePath, includedPath);
-          }
-
-          if (await fs.pathExists(resolvedPath)) {
-            includedFiles.push(resolvedPath);
-          }
-        }
-      }
-
-      return includedFiles;
-    } catch (error) {
-      this.logger.debug(`Failed to find included cpp files in ${filePath}: ${error instanceof Error ? error.message : error}`);
-      return [];
-    }
   }
 
   /**

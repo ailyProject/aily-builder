@@ -8,6 +8,7 @@ import { ArduinoConfigParser } from './ArduinoConfigParser';
 import { DependencyAnalyzer } from './DependencyAnalyzer';
 import { escapeQuotedDefines } from './utils/escapeQuotes';
 import { sanitizeNonAsciiPaths, sanitizeObjectPaths } from './utils/ShortPath';
+import { collectPackageIdentitiesFromPaths, extractPackageIdentityFromPath } from './utils/PackageIdentity';
 
 export interface ExecutableSectionSize {
   name: string;
@@ -39,8 +40,15 @@ export interface PreprocessResult {
   compileConfig?: any;
   dependencies?: any[];
   error?: string;
+  cacheIdentity?: ArchiveCacheIdentity;
   // 保存编译所需的环境变量
   envVars?: Record<string, string>;
+}
+
+export interface ArchiveCacheIdentity {
+  sdkIdentity?: string;
+  toolPackages?: string[];
+  requestedToolVersions?: Record<string, string>;
 }
 
 export interface CompileOptions {
@@ -168,12 +176,16 @@ export class ArduinoCompiler {
 
       this.logger.verbose(`Saved ${Object.keys(envVars).length} environment variables for later compilation`);
 
+      const cacheIdentity = this.createArchiveCacheIdentity(options, arduinoConfig, compileConfig);
+      (compileConfig as any).cacheIdentity = cacheIdentity;
+
       return {
         success: true,
         preprocessTime,
         arduinoConfig,
         compileConfig,
         dependencies,
+        cacheIdentity,
         envVars
       };
     } catch (error) {
@@ -209,6 +221,9 @@ export class ArduinoCompiler {
       arduinoConfig = options.preprocessResult.arduinoConfig;
       compileConfig = options.preprocessResult.compileConfig;
       dependencies = options.preprocessResult.dependencies!;
+      if (options.preprocessResult.cacheIdentity && compileConfig && !compileConfig.cacheIdentity) {
+        compileConfig.cacheIdentity = options.preprocessResult.cacheIdentity;
+      }
     } else {
       // 执行预处理
       const preprocessResult = await this.preprocess(options);
@@ -227,7 +242,12 @@ export class ArduinoCompiler {
       arduinoConfig = preprocessResult.arduinoConfig;
       compileConfig = preprocessResult.compileConfig;
       dependencies = preprocessResult.dependencies!;
+      if (preprocessResult.cacheIdentity && compileConfig && !compileConfig.cacheIdentity) {
+        compileConfig.cacheIdentity = preprocessResult.cacheIdentity;
+      }
     }
+
+    const buildStartTime = Date.now();
 
     // 在 Windows 上，对 compileConfig 和 dependencies 中嵌入的所有路径做 sanitize
     compileConfig = sanitizeObjectPaths(compileConfig);
@@ -324,8 +344,9 @@ export class ArduinoCompiler {
     NRF52 ZIP 文件生成 end
     */
 
-    const totalTime = Date.now() - startTime;
-    const buildTime = totalTime - preprocessTime;
+    const finishedAt = Date.now();
+    const totalTime = finishedAt - startTime;
+    const buildTime = finishedAt - buildStartTime;
     // 6. 计算固件大小信息
     const firmwareSize = await this.calculateFirmwareSize(arduinoConfig);
 
@@ -348,6 +369,49 @@ export class ArduinoCompiler {
     } catch (error) {
       throw new Error(`Failed to clean build directory: ${error instanceof Error ? error.message : error}`);
     }
+  }
+
+  private createArchiveCacheIdentity(options: CompileOptions, arduinoConfig: any, compileConfig: any): ArchiveCacheIdentity {
+    const platform = arduinoConfig?.platform || {};
+    const sdkPath = platform['runtime.platform.path'] || process.env['SDK_PATH'];
+    const sdkIdentity = extractPackageIdentityFromPath(
+      sdkPath,
+      arduinoConfig?.fqbnParsed?.platform || process.env['platform']
+    );
+    const toolPackages = this.collectCompileRelevantToolPackages(platform, compileConfig);
+
+    return {
+      ...(sdkIdentity ? { sdkIdentity } : {}),
+      ...(toolPackages.length > 0 ? { toolPackages } : {}),
+      ...(options.toolVersions && Object.keys(options.toolVersions).length > 0
+        ? { requestedToolVersions: { ...options.toolVersions } }
+        : {})
+    };
+  }
+
+  private collectCompileRelevantToolPackages(platform: Record<string, any>, compileConfig: any): string[] {
+    const compileText = [
+      compileConfig?.args?.c,
+      compileConfig?.args?.cpp,
+      compileConfig?.args?.s,
+      compileConfig?.compiler?.c,
+      compileConfig?.compiler?.cpp,
+      compileConfig?.compiler?.ar
+    ].filter(Boolean).join('\n').replace(/\\/g, '/');
+
+    const paths: string[] = [];
+    for (const [key, value] of Object.entries(platform || {})) {
+      if (typeof value !== 'string') {
+        continue;
+      }
+
+      const normalized = value.replace(/\\/g, '/');
+      if (key === 'compiler.sdk.path' || (key.startsWith('runtime.tools.') && compileText.includes(normalized))) {
+        paths.push(value);
+      }
+    }
+
+    return collectPackageIdentitiesFromPaths(paths);
   }
 
 

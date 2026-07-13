@@ -5,6 +5,7 @@ import { Logger } from './utils/Logger';
 import { Dependency } from './DependencyAnalyzer';
 import { CacheManager, CacheKey } from './CacheManager';
 import { NinjaGenerator, NinjaOptions } from './NinjaGenerator';
+import { ArchiveCacheFetchResult, ArchiveCacheHit, ArchiveCloudCacheManager, getArchiveDependencyKey } from './ArchiveCloudCacheManager';
 import { escapeQuotedDefines } from './utils/escapeQuotes';
 import { sanitizeNonAsciiPaths } from './utils/ShortPath';
 
@@ -25,12 +26,14 @@ export class NinjaCompilationPipeline {
   private dependencies: Dependency[];
   private compileConfig: any;
   private cacheManager: CacheManager;
+  private archiveCloudCacheManager: ArchiveCloudCacheManager;
   private ninjaGenerator: NinjaGenerator;
   private readonly arduinoCoreBuildFlag = '-DARDUINO_CORE_BUILD';
 
   constructor(logger: Logger) {
     this.logger = logger;
     this.cacheManager = new CacheManager(logger);
+    this.archiveCloudCacheManager = new ArchiveCloudCacheManager(logger);
     this.ninjaGenerator = new NinjaGenerator(logger);
   }
 
@@ -41,9 +44,13 @@ export class NinjaCompilationPipeline {
     try {
       const startTime = Date.now();
 
-      // 1. 预处理：从缓存中恢复对象文件
+      // 1. 预处理：先恢复整包 .a 缓存，再恢复剩余对象文件缓存
+      this.logger.verbose('Checking archive cloud cache for compiled archives...');
+      const archiveCacheHits = await this.archiveCloudCacheManager.restoreArchives(dependencies, compileConfig);
+      const remoteFetches = this.archiveCloudCacheManager.startRemoteFetches(archiveCacheHits);
+
       this.logger.verbose('Checking cache for compiled objects...');
-      const cacheHits = await this.restoreFromCache(dependencies);
+      await this.restoreFromCache(dependencies, archiveCacheHits);
       // if (cacheHits > 0) {
       //   this.logger.info(`Cache hit: ${cacheHits} objects restored from cache`);
       // }
@@ -55,11 +62,76 @@ export class NinjaCompilationPipeline {
         compileConfig,
         buildPath: process.env['BUILD_PATH'] || '',
         jobs: parseInt(process.env['BUILD_JOBS'] || '4'),
-        skipExistingObjects: true // 启用增量构建
+        skipExistingObjects: true, // 启用增量构建
+        archiveCacheHits
       };
 
       const ninjaFilePath = await this.ninjaGenerator.generateNinjaFile(ninjaOptions);
       this.logger.verbose(`Ninja file generated: ${ninjaFilePath}`);
+
+      if (remoteFetches.size > 0) {
+        this.logger.info('Building source archives while remote archive downloads run...');
+        let result = await this.executeNinjaBuild(ninjaFilePath, [NinjaGenerator.PRELINK_TARGET]);
+        if (!result.success) {
+          await this.collectFailedRemoteFetches(remoteFetches);
+          return {
+            success: false,
+            warnings: result.warnings
+          };
+        }
+
+        const failedRemoteKeys = await this.collectFailedRemoteFetches(remoteFetches);
+        let finalNinjaFilePath = ninjaFilePath;
+
+        if (failedRemoteKeys.length > 0) {
+          for (const key of failedRemoteKeys) {
+            archiveCacheHits.delete(key);
+          }
+
+          this.logger.info(`[ARCHIVE_CLOUD_CACHE] falling back to source archives=${failedRemoteKeys.length}`);
+          this.logger.verbose('Checking cache for fallback archive objects...');
+          await this.restoreFromCache(dependencies, archiveCacheHits);
+
+          this.logger.verbose('Regenerating ninja build file for fallback archives...');
+          finalNinjaFilePath = await this.ninjaGenerator.generateNinjaFile({
+            ...ninjaOptions,
+            archiveCacheHits
+          });
+          this.logger.verbose(`Ninja file regenerated: ${finalNinjaFilePath}`);
+
+          result = await this.executeNinjaBuild(finalNinjaFilePath, [NinjaGenerator.PRELINK_TARGET]);
+          if (!result.success) {
+            return {
+              success: false,
+              warnings: result.warnings
+            };
+          }
+        }
+
+        if (compileConfig.arduino) {
+          await this.runPreLinkHooks(compileConfig.arduino);
+        }
+
+        this.logger.info('Starting ninja link...');
+        result = await this.executeNinjaBuild(finalNinjaFilePath);
+        const buildTime = Date.now() - startTime;
+
+        if (result.success) {
+          await this.archiveCloudCacheManager.storeArchives(dependencies, compileConfig, archiveCacheHits);
+
+          return {
+            success: true,
+            outFilePath: this.getOutputFilePath(),
+            buildTime,
+            warnings: result.warnings
+          };
+        }
+
+        return {
+          success: false,
+          warnings: result.warnings
+        };
+      }
 
       // 2.5. 运行链接前钩子（RP2040需要生成链接脚本）
       if (compileConfig.arduino) {
@@ -73,6 +145,8 @@ export class NinjaCompilationPipeline {
       const buildTime = Date.now() - startTime;
 
       if (result.success) {
+
+        await this.archiveCloudCacheManager.storeArchives(dependencies, compileConfig, archiveCacheHits);
 
         // 显示缓存统计信息
         // await this.showCacheStats();
@@ -114,7 +188,41 @@ export class NinjaCompilationPipeline {
     }
   }
 
-  private async executeNinjaBuild(ninjaFilePath: string): Promise<{ success: boolean; warnings?: string[] }> {
+  private async collectFailedRemoteFetches(
+    remoteFetches: Map<string, Promise<ArchiveCacheFetchResult>>
+  ): Promise<string[]> {
+    const failedKeys: string[] = [];
+
+    for (const [key, fetchPromise] of remoteFetches) {
+      const result = await fetchPromise;
+      if (!result.success) {
+        failedKeys.push(key);
+        this.logger.warn(
+          `[ARCHIVE_CLOUD_CACHE] remote download failed ${result.hit.archiveName} ${result.hit.cacheKey}: ${result.error || 'unknown error'}`
+        );
+      }
+    }
+
+    return failedKeys;
+  }
+
+  private getOutputFilePath(): string {
+    const sketchName = process.env['SKETCH_NAME'] || 'sketch';
+    const buildPath = process.env['BUILD_PATH'] || '';
+
+    if (this.compileConfig.args.zip) {
+      return path.join(buildPath, `${sketchName}.zip`);
+    }
+    if (this.compileConfig.args.hex) {
+      return path.join(buildPath, `${sketchName}.hex`);
+    }
+    if (this.compileConfig.compiler.bin) {
+      return path.join(buildPath, `${sketchName}.bin`);
+    }
+    return path.join(buildPath, `${sketchName}.elf`);
+  }
+
+  private async executeNinjaBuild(ninjaFilePath: string, targets: string[] = []): Promise<{ success: boolean; warnings?: string[] }> {
     return new Promise((resolve, reject) => {
       const ninjaPath = this.getNinjaExecutablePath();
       const buildDir = sanitizeNonAsciiPaths(path.dirname(ninjaFilePath));
@@ -125,6 +233,8 @@ export class NinjaCompilationPipeline {
         '-j', jobs.toString(),
         '-v' // verbose模式显示执行的命令
       ];
+
+      args.push(...targets);
 
       this.logger.verbose(`Executing: ${ninjaPath} ${args.join(' ')}`);
       this.logger.verbose(`Working directory: ${buildDir}`);
@@ -364,29 +474,36 @@ export class NinjaCompilationPipeline {
   }
 
   private getNinjaExecutablePath(): string {
-    // 打包后路径
-    let projectNinjaPath = path.join(__dirname, 'ninja', process.platform === 'win32' ? 'ninja.exe' : 'ninja');
-    if (fs.existsSync(projectNinjaPath)) {
-      return projectNinjaPath;
-    }
-    // 开发环境路径
-    projectNinjaPath = path.join(process.cwd(), 'ninja', process.platform === 'win32' ? 'ninja.exe' : 'ninja');
-    if (fs.existsSync(projectNinjaPath)) {
-      return projectNinjaPath;
-    }
-    // 检查系统PATH中的ninja
-    const systemNinja = process.platform === 'win32' ? 'ninja.exe' : 'ninja';
+    const executableName = this.getNinjaExecutableName();
+    const candidatePaths = [
+      path.join(__dirname, 'ninja', executableName),
+      path.resolve(__dirname, '..', 'ninja', executableName),
+      path.join(process.cwd(), 'ninja', executableName)
+    ];
 
-    // 尝试在PATH中查找
-    try {
-      const { execSync } = require('child_process');
-      const which = process.platform === 'win32' ? 'where' : 'which';
-      const result = execSync(`${which} ${systemNinja}`, { encoding: 'utf8' });
-      return result.trim().split('\n')[0];
-    } catch (error) {
-      // 如果找不到，抛出错误
-      throw new Error(`Ninja executable not found. Please install ninja or place ninja.exe in the project's ninja/ directory.`);
+    for (const candidatePath of candidatePaths) {
+      if (fs.existsSync(candidatePath)) {
+        if (process.platform === 'darwin' && (fs.statSync(candidatePath).mode & 0o111) === 0) {
+          fs.chmodSync(candidatePath, 0o755);
+        }
+        return candidatePath;
+      }
     }
+
+    throw new Error(
+      `Ninja executable not found. Checked: ${candidatePaths.join(', ')}`,
+    );
+  }
+
+  private getNinjaExecutableName(): string {
+    if (process.platform === 'win32') {
+      return 'ninja.exe';
+    }
+    if (process.platform === 'darwin') {
+      return 'ninja';
+    }
+
+    throw new Error(`Bundled Ninja is not available for platform: ${process.platform}`);
   }
 
   /**
@@ -458,7 +575,10 @@ export class NinjaCompilationPipeline {
   /**
    * 从缓存中恢复对象文件
    */
-  private async restoreFromCache(dependencies: Dependency[]): Promise<number> {
+  private async restoreFromCache(
+    dependencies: Dependency[],
+    archiveCacheHits: Map<string, ArchiveCacheHit> = new Map()
+  ): Promise<number> {
     let cacheHits = 0;
     const buildPath = process.env['BUILD_PATH'] || '';
 
@@ -466,6 +586,11 @@ export class NinjaCompilationPipeline {
     for (const dependency of dependencies) {
       // 跳过sketch类型的依赖
       if (dependency.type === 'sketch') {
+        continue;
+      }
+
+      if (archiveCacheHits.has(getArchiveDependencyKey(dependency.type, dependency.name))) {
+        this.logger.debug(`Skipping object cache restore for archive hit: ${dependency.type}/${dependency.name}`);
         continue;
       }
 
