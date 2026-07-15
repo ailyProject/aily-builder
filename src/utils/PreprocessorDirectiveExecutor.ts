@@ -256,15 +256,18 @@ function parseMacroDefinition(argument: string, functionLike: boolean): MacroDef
         for (let index = 0; index < rawParameters.length; index++) {
             const parameter = rawParameters[index].trim();
             const last = index === rawParameters.length - 1;
+            const namedVariadicMatch = parameter.match(
+                /^([A-Za-z_][A-Za-z0-9_]*)\s*\.\.\.$/
+            );
             let parameterName: string;
 
             if (parameter === '...') {
                 if (!last) return null;
                 parameterName = '__VA_ARGS__';
                 variadic = true;
-            } else if (/^[A-Za-z_][A-Za-z0-9_]*\.\.\.$/.test(parameter)) {
+            } else if (namedVariadicMatch) {
                 if (!last) return null;
-                parameterName = parameter.slice(0, -3);
+                parameterName = namedVariadicMatch[1];
                 variadic = true;
             } else if (/^[A-Za-z_][A-Za-z0-9_]*$/.test(parameter)) {
                 parameterName = parameter;
