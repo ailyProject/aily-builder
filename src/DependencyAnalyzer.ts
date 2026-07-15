@@ -145,6 +145,8 @@ export class DependencyAnalyzer {
   private configuredMacros: Map<string, MacroDefinition>;
   private libraryMap: Map<string, Dependency>
   private libraryIndexCache: LibraryIndexCache;
+  private platformHeaderRoots: string[];
+  private platformContextKey: string;
 
   /**
    * 构造函数，初始化预处理引擎
@@ -158,6 +160,8 @@ export class DependencyAnalyzer {
     this.configuredMacros = new Map<string, MacroDefinition>();
     this.libraryMap = new Map<string, Dependency>();
     this.libraryIndexCache = new LibraryIndexCache(logger);
+    this.platformHeaderRoots = [];
+    this.platformContextKey = '';
   }
 
   /**
@@ -182,6 +186,7 @@ export class DependencyAnalyzer {
     const variantPath = process.env['SDK_VARIANT_PATH'];
     const librariesPathEnv = process.env['LIBRARIES_PATH'];
     const coreLibrariesPath = process.env['SDK_CORE_LIBRARIES_PATH'];
+    this.configurePlatformHeaderContext(arduinoConfig, coreSDKPath, variantPath);
 
     // 处理 librariesPath，支持多个路径（用分号或冒号分隔）
     const pathSeparator = process.platform === 'win32' ? ';' : ':';
@@ -318,6 +323,79 @@ export class DependencyAnalyzer {
         headerPath
       );
     }
+  }
+
+  /**
+   * Builds the platform include context from Arduino's resolved build paths.
+   * No package, MCU, header name, or version macro is assumed here.
+   */
+  private configurePlatformHeaderContext(
+    arduinoConfig,
+    coreSDKPath?: string,
+    variantPath?: string
+  ): void {
+    const candidates = [
+      coreSDKPath,
+      arduinoConfig.platform?.['build.core.path'],
+      variantPath,
+      arduinoConfig.platform?.['build.variant.path'],
+      arduinoConfig.platform?.['build.system.path'],
+      arduinoConfig.platform?.['compiler.sdk.path']
+    ];
+    const roots = new Map<string, string>();
+    for (const candidate of candidates) {
+      if (!candidate || !fs.existsSync(candidate)) continue;
+      const resolved = path.resolve(candidate);
+      roots.set(this.normalizeAnalysisPath(resolved), resolved);
+    }
+
+    this.platformHeaderRoots = [...roots.values()];
+    this.platformContextKey = [
+      arduinoConfig.fqbn || '',
+      arduinoConfig.fqbnParsed?.package || '',
+      arduinoConfig.fqbnParsed?.platform || '',
+      arduinoConfig.fqbnParsed?.boardId || '',
+      ...this.platformHeaderRoots.map(root => this.normalizeAnalysisPath(root))
+    ].join('|');
+  }
+
+  private normalizeAnalysisPath(filePath: string): string {
+    const normalized = path.resolve(filePath).replace(/\\/g, '/');
+    return process.platform === 'win32' ? normalized.toLowerCase() : normalized;
+  }
+
+  private isPathWithinRoot(filePath: string, rootPath: string): boolean {
+    const relative = path.relative(rootPath, filePath);
+    return relative === ''
+      || (!relative.startsWith(`..${path.sep}`) && relative !== '..' && !path.isAbsolute(relative));
+  }
+
+  private isPlatformHeaderPath(filePath: string): boolean {
+    const resolved = path.resolve(filePath);
+    return this.platformHeaderRoots.some(root => this.isPathWithinRoot(resolved, root));
+  }
+
+  /** Resolve only headers that stay inside the active platform search roots. */
+  private resolvePlatformHeader(includePath: string, includingFilePath: string): string | undefined {
+    if (!includePath || this.platformHeaderRoots.length === 0) return undefined;
+
+    const candidates: string[] = [];
+    if (this.isPlatformHeaderPath(includingFilePath)) {
+      candidates.push(path.resolve(path.dirname(includingFilePath), includePath));
+    }
+    for (const root of this.platformHeaderRoots) {
+      candidates.push(path.resolve(root, includePath));
+    }
+
+    for (const candidate of candidates) {
+      if (!this.isPlatformHeaderPath(candidate)) continue;
+      try {
+        if (fs.statSync(candidate).isFile()) return candidate;
+      } catch {
+        // Continue with the remaining platform include roots.
+      }
+    }
+    return undefined;
   }
 
   /**
@@ -531,7 +609,8 @@ export class DependencyAnalyzer {
       libraryObject.name,
       libraryObject.path,
       macroDefinitions,
-      () => this.buildLibraryIndex(libraryObject, macroDefinitions)
+      () => this.buildLibraryIndex(libraryObject, macroDefinitions),
+      this.platformContextKey
     );
 
     libraryObject.includes = index.sourceFiles;
@@ -678,15 +757,18 @@ export class DependencyAnalyzer {
         try {
           analyzeDirectiveTapeWithDefines(getTape(filePath), translationUnitMacros, {
             onPragmaOnce: () => onceFiles.add(normalizedFilePath),
+            allowIndeterminate: this.isPlatformHeaderPath(filePath),
             hasInclude: includePath => {
               return !!resolveLocalInclude(includePath, filePath)
+                || !!this.resolvePlatformHeader(includePath, filePath)
                 || this.canResolveKnownInclude(includePath, filePath);
             },
             onInclude: includePath => {
               const localIncludePath = resolveLocalInclude(includePath, filePath);
-              if (localIncludePath) {
-                analyzeLocalFile(localIncludePath);
-              } else {
+              const resolvedPath = localIncludePath || this.resolvePlatformHeader(includePath, filePath);
+              if (resolvedPath) {
+                analyzeLocalFile(resolvedPath);
+              } else if (!this.isPlatformHeaderPath(filePath)) {
                 externalIncludes.add(includePath);
               }
             }
@@ -729,8 +811,7 @@ export class DependencyAnalyzer {
 
     const roots = [
       includingFilePath ? path.dirname(includingFilePath) : undefined,
-      process.env['SDK_CORE_PATH'],
-      process.env['SDK_VARIANT_PATH']
+      ...this.platformHeaderRoots
     ].filter((root): root is string => !!root);
     for (const root of roots) {
       if (fs.existsSync(path.resolve(root, includePath))) {
@@ -903,18 +984,22 @@ export class DependencyAnalyzer {
         try {
           analyzeDirectiveTapeWithDefines(getTape(filePath), translationUnitMacros, {
             onPragmaOnce: () => onceFiles.add(key),
+            allowIndeterminate: this.isPlatformHeaderPath(filePath),
             hasInclude: includePath => {
               return !!resolveLocalInclude(includePath, filePath)
+                || !!this.resolvePlatformHeader(includePath, filePath)
                 || this.canResolveKnownInclude(includePath, filePath);
             },
             onInclude: includePath => {
               const localPath = resolveLocalInclude(includePath, filePath);
-              if (!localPath) return;
-              if (/\.(?:c|cpp)$/i.test(localPath)) {
+              const resolvedPath = localPath || this.resolvePlatformHeader(includePath, filePath);
+              if (!resolvedPath) return;
+              if (localPath && /\.(?:c|cpp)$/i.test(localPath)) {
                 includedFiles.add(normalizeFileKey(localPath));
               }
-              if (/\.(?:h|hpp|c|cpp)$/i.test(localPath)) {
-                analyzeLocalFile(localPath);
+              if (this.isPlatformHeaderPath(resolvedPath)
+                || /\.(?:h|hpp|c|cpp)$/i.test(resolvedPath)) {
+                analyzeLocalFile(resolvedPath);
               }
             }
           }, filePath);
