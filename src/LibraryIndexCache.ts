@@ -90,12 +90,13 @@ export class LibraryIndexCache {
     libraryName: string,
     libraryPath: string,
     macroDefinitions: Map<string, MacroDefinition>,
-    builder: () => Promise<LibraryIndexBuildResult>
+    builder: () => Promise<LibraryIndexBuildResult>,
+    analysisContext: string = ''
   ): Promise<LibraryIndexResult> {
     const startedAt = Date.now();
     const normalizedLibraryPath = this.normalizePath(libraryPath);
     const pathStatePath = this.getPathStatePath(normalizedLibraryPath);
-    const macroKey = this.createMacroKey(macroDefinitions);
+    const macroKey = this.createMacroKey(macroDefinitions, analysisContext);
     const files = await this.collectFiles(libraryPath);
     const fastFingerprint = this.createFastFingerprint(files);
     const cachedPathState = await this.readPathState(pathStatePath);
@@ -363,8 +364,12 @@ export class LibraryIndexCache {
     await Promise.all(workers);
   }
 
-  private createMacroKey(macroDefinitions: Map<string, MacroDefinition>): string {
+  private createMacroKey(
+    macroDefinitions: Map<string, MacroDefinition>,
+    analysisContext: string
+  ): string {
     const hash = createHash('sha256');
+    hash.update(`analysis-context=${analysisContext}\n`);
     const entries = Array.from(macroDefinitions.entries())
       .map(([name, macro]) => `${name}=${this.getMacroCacheKeyValue(macro)}|${this.getMacroShapeKey(macro)}`)
       .sort();
