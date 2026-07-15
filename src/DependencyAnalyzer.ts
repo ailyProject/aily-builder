@@ -244,7 +244,11 @@ export class DependencyAnalyzer {
 
     // 从 arduinoConfig.platform['recipe.cpp.o.pattern'] 中提取宏定义
     this.logger.debug('[MACRO_DEBUG] Extracting macros from recipe.cpp.o.pattern...');
-    const macros = extractMacroDefinitions(arduinoConfig.platform['recipe.cpp.o.pattern'])
+    const recipe = arduinoConfig.platform['recipe.cpp.o.pattern'];
+    const macros = [
+      ...extractMacroDefinitions(recipe),
+      ...extractResponseFileMacroDefinitions(recipe)
+    ];
     this.logger.debug(`[MACRO_DEBUG] Found ${macros.length} macros from recipe: ${macros.join(', ')}`);
     macros.forEach(macro => {
       let [key, value] = macro.split('=')
@@ -279,7 +283,7 @@ export class DependencyAnalyzer {
       this.logger.debug(`[MACRO_DEBUG]   ${name} = ${macroDef.value} (defined: ${macroDef.isDefined})`);
     });
 
-    this.logger.info(`Initialized default macros: ${Array.from(this.macroDefinitions.keys()).join(', ')}`);
+    this.logger.info(`Initialized default macros: ${this.macroDefinitions.size} definitions`);
   }
 
   private loadPlatformMacroHeaders(arduinoConfig): void {
@@ -287,21 +291,33 @@ export class DependencyAnalyzer {
     const compilerSdkPath = arduinoConfig.platform?.['compiler.sdk.path'];
     if (!compilerSdkPath) return;
 
-    const versionHeader = path.join(
-      compilerSdkPath,
-      'include',
-      'esp_common',
-      'include',
-      'esp_idf_version.h'
-    );
-    if (!fs.existsSync(versionHeader)) return;
+    const platformHeaders = [
+      arduinoConfig.platform?.['build.memory_type']
+        ? path.join(
+          compilerSdkPath,
+          arduinoConfig.platform['build.memory_type'],
+          'include',
+          'sdkconfig.h'
+        )
+        : undefined,
+      path.join(
+        compilerSdkPath,
+        'include',
+        'esp_common',
+        'include',
+        'esp_idf_version.h'
+      )
+    ];
 
-    analyzeDirectiveTapeWithDefines(
-      scanPreprocessorDirectives(fs.readFileSync(versionHeader)),
-      this.macroDefinitions,
-      { allowIndeterminate: true, throwOnError: false },
-      versionHeader
-    );
+    for (const headerPath of platformHeaders) {
+      if (!headerPath || !fs.existsSync(headerPath)) continue;
+      analyzeDirectiveTapeWithDefines(
+        scanPreprocessorDirectives(fs.readFileSync(headerPath)),
+        this.macroDefinitions,
+        { allowIndeterminate: true, throwOnError: false },
+        headerPath
+      );
+    }
   }
 
   /**
@@ -1561,6 +1577,10 @@ export class DependencyAnalyzer {
 }
 
 function extractMacroDefinitions(text: string): string[] {
+  if (!text || typeof text !== 'string') {
+    return [];
+  }
+
   // 使用正则表达式匹配 -D 后的宏定义
   // 匹配 -D 后跟非空白字符，直到遇到空格或引号结束
   const regex = /-D([^\s]+(?:"[^"]*")?[^\s]*)/g;
@@ -1577,4 +1597,66 @@ function extractMacroDefinitions(text: string): string[] {
   }
 
   return macros;
+}
+
+function extractResponseFileMacroDefinitions(command: string): string[] {
+  if (!command || typeof command !== 'string') {
+    return [];
+  }
+
+  const macros: string[] = [];
+  const pending = extractResponseFilePaths(command).map(filePath => ({
+    filePath,
+    basePath: process.cwd()
+  }));
+  const visited = new Set<string>();
+
+  while (pending.length > 0) {
+    const current = pending.shift()!;
+    const resolvedPath = path.isAbsolute(current.filePath)
+      ? path.normalize(current.filePath)
+      : path.resolve(current.basePath, current.filePath);
+    const normalizedPath = process.platform === 'win32'
+      ? resolvedPath.toLowerCase()
+      : resolvedPath;
+
+    if (visited.has(normalizedPath) || !fs.pathExistsSync(resolvedPath)) {
+      continue;
+    }
+
+    let stat;
+    try {
+      stat = fs.statSync(resolvedPath);
+    } catch {
+      continue;
+    }
+    if (!stat.isFile()) {
+      continue;
+    }
+
+    visited.add(normalizedPath);
+    const content = fs.readFileSync(resolvedPath, 'utf8');
+    macros.push(...extractMacroDefinitions(content));
+
+    for (const nestedPath of extractResponseFilePaths(content)) {
+      pending.push({
+        filePath: nestedPath,
+        basePath: path.dirname(resolvedPath)
+      });
+    }
+  }
+
+  return macros;
+}
+
+function extractResponseFilePaths(text: string): string[] {
+  const paths: string[] = [];
+  const pattern = /"@([^"]+)"|(?:^|\s)@([^\s"]+)/g;
+  let match: RegExpExecArray | null;
+
+  while ((match = pattern.exec(text)) !== null) {
+    paths.push(match[1] || match[2]);
+  }
+
+  return paths;
 }
