@@ -197,9 +197,10 @@ export class NinjaGenerator {
     });
 
     // 汇编编译规则
+    const assemblerArgs = this.ensureAssemblerTargetFlags(this.compileConfig.args.s);
     this.ninjaFile.rules.push({
       name: 's_compile',
-      command: this.formatCommand(this.compileConfig.args.s, {
+      command: this.formatCommand(assemblerArgs, {
         compiler: '$c_compiler',
         input: '$in',
         output: '$out'
@@ -267,7 +268,7 @@ export class NinjaGenerator {
   }
 
   private async generateBuilds(): Promise<void> {
-    const archiveGroups = new Map<string, string[]>();
+    const archiveGroups = new Map<string, { objects: string[]; needsRebuild: boolean }>();
     const processedFiles = new Set<string>(); // 避免重复处理同一个文件
     let sketchObjectFile: string | null = null;
 
@@ -312,6 +313,7 @@ export class NinjaGenerator {
         this.logger.debug(`generateBuilds: variant files = ${(dependency.includes || []).map(f => f.replace(/\\/g, '/')).join(', ')}`);
       }
       const groupObjects: string[] = [];
+      let groupNeedsRebuild = false;
 
       for (const file of dependency.includes) {
         // 避免重复处理同一个文件
@@ -322,6 +324,7 @@ export class NinjaGenerator {
 
         const build = await this.createCompileBuild(file, dependency.type, dependency.name);
         if (build) {
+          groupNeedsRebuild = true;
           // 让所有非 sketch 的编译任务依赖于 sketch_first
           if (sketchObjectFile) {
             build.orderOnly = ['sketch_first'];
@@ -344,15 +347,16 @@ export class NinjaGenerator {
         } else {
           // console.log(`[DEBUG] Processing ${dependency.type} dependency: ${dependency.name}, objects count: ${groupObjects.length}`);
           // 其他类型（core、library）创建归档文件
-          archiveGroups.set(dependency.name, groupObjects);
+          archiveGroups.set(dependency.name, { objects: groupObjects, needsRebuild: groupNeedsRebuild });
         }
       }
     }
 
     // 3. 生成归档目标
-    for (const [dependencyName, objects] of archiveGroups) {
+    for (const [dependencyName, archiveGroup] of archiveGroups) {
       const dependency = this.dependencies.find(d => d.name === dependencyName);
       if (!dependency) continue;
+      const objects = archiveGroup.objects;
 
       let archivePath: string;
       if (dependency.type === 'core' || dependencyName === 'core') {
@@ -363,10 +367,10 @@ export class NinjaGenerator {
       }
 
       // 检查归档文件是否需要重新生成
-      let needsRebuild = true;
+      let needsRebuild = archiveGroup.needsRebuild;
       if (this.skipExistingObjects) {
         const fullArchivePath = path.join(this.buildPath, archivePath);
-        if (await fs.pathExists(fullArchivePath)) {
+        if (!needsRebuild && await fs.pathExists(fullArchivePath)) {
           try {
             const archiveStat = await fs.stat(fullArchivePath);
             // 检查所有对象文件是否都存在且比归档文件旧
@@ -382,10 +386,15 @@ export class NinjaGenerator {
             if (objectChecks.every(check => check)) {
               needsRebuild = false;
               this.logger.debug(`Skipping archive ${archivePath}: up to date`);
+            } else {
+              needsRebuild = true;
             }
           } catch (error) {
             this.logger.debug(`Cannot check archive timestamps for ${archivePath}, will rebuild`);
+            needsRebuild = true;
           }
+        } else if (!needsRebuild) {
+          needsRebuild = true;
         }
       }
 
@@ -438,9 +447,10 @@ export class NinjaGenerator {
 
     const objectFile = this.calculateObjectFilePath(sourceFile, type, dependencyName);
     let rule: string;
+    const isAssemblySource = ext === '.s' || ext === '.S';
     if (this.skipExistingObjects) {
       const fullObjectPath = path.join(this.buildPath, objectFile);
-      if (await fs.pathExists(fullObjectPath)) {
+      if (!isAssemblySource && await fs.pathExists(fullObjectPath)) {
         // 检查对象文件是否比源文件新
         try {
           const [sourceStat, objectStat] = await Promise.all([
@@ -556,6 +566,57 @@ export class NinjaGenerator {
         inputs: [elfFile]
       });
     }
+  }
+
+  private ensureAssemblerTargetFlags(argsTemplate: string): string {
+    if (!argsTemplate) {
+      return argsTemplate;
+    }
+
+    const platform = this.compileConfig?.arduino?.platform || {};
+    const candidateSources = [
+      platform['compiler.S.flags'],
+      platform['compiler.c.flags'],
+      platform['compiler.cpp.flags'],
+      platform['compiler.ldflags'],
+      platform['build.extra_flags']
+    ].filter(Boolean).join(' ');
+
+    const targetFlags = this.extractAssemblerTargetFlags(candidateSources);
+    let result = argsTemplate;
+
+    for (const flag of targetFlags) {
+      if (!this.hasCompilerFlag(result, flag)) {
+        result = `${flag} ${result}`;
+      }
+    }
+
+    return result;
+  }
+
+  private extractAssemblerTargetFlags(source: string): string[] {
+    const flags: string[] = [];
+    const patterns = [
+      /(?:^|\s)(-mcpu=[^\s"']+)/,
+      /(?:^|\s)(-march=[^\s"']+)/,
+      /(?:^|\s)(-mthumb)(?=\s|$)/,
+      /(?:^|\s)(-mfloat-abi=[^\s"']+)/,
+      /(?:^|\s)(-mfpu=[^\s"']+)/
+    ];
+
+    for (const pattern of patterns) {
+      const match = source.match(pattern);
+      if (match && !flags.includes(match[1])) {
+        flags.push(match[1]);
+      }
+    }
+
+    return flags;
+  }
+
+  private hasCompilerFlag(args: string, flag: string): boolean {
+    const escapedFlag = flag.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    return new RegExp(`(?:^|\\s)${escapedFlag}(?=\\s|$)`).test(args);
   }
 
   private formatCommand(argsTemplate: string, replacements: { [key: string]: string }): string {
