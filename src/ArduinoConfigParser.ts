@@ -255,40 +255,12 @@ export class ArduinoConfigParser {
      * @param {Object} boardConfig 板子配置
      */
     private applyBoardConfigOverrides(variables: { [key: string]: string }, boardConfig: any): void {
-        const overrides: string[] = [];
-        const skipped: string[] = [];
-
         Object.keys(boardConfig).forEach(key => {
             // 检查 platform 配置中是否已存在相同的 key
             if (variables.hasOwnProperty(key) && variables[key] !== boardConfig[key]) {
-                const originalValue = variables[key];
-
-                // 检查原值是否为 {} 包裹的变量形式
-                if (originalValue && originalValue.match(/^\{[^}]+\}$/)) {
-                    // 如果是变量形式，跳过覆盖
-                    skipped.push(`${key}: 保持变量 "${originalValue}"，跳过覆盖 "${boardConfig[key]}"`);
-                } else {
-                    // 正常覆盖
-                    variables[key] = boardConfig[key];
-                    overrides.push(`${key}: "${originalValue}" -> "${boardConfig[key]}"`);
-                }
+                variables[key] = boardConfig[key];
             }
         });
-        // // 记录覆盖信息
-        // if (overrides.length > 0) {
-        //     // console.log(`  检测到 ${overrides.length} 个重复键，应用 boardConfig 覆盖:`);
-        //     overrides.forEach(override => {
-        //         console.log(`    ${override}`);
-        //     });
-        // }
-
-        // // 记录跳过的变量覆盖
-        // if (skipped.length > 0) {
-        //     // console.log(`  检测到 ${skipped.length} 个变量形式的键，跳过覆盖:`);
-        //     skipped.forEach(skip => {
-        //         console.log(`    ${skip}`);
-        //     });
-        // }
     }
 
     /**
@@ -785,7 +757,7 @@ export class ArduinoConfigParser {
 
         // 自动扫描 platform.txt 中带版本号的 runtime.tools.*.path 变量，
         // 去掉版本号后使用 findToolPath 解析其真实路径
-        const versionedToolPaths = await this.resolveVersionedToolPaths(platformTxtPath, toolVersions);
+        const versionedToolPaths = await this.resolveVersionedToolPaths(platformTxtPath, toolVersions, boardConfig);
         Object.assign(moreConfig, versionedToolPaths);
 
         // console.log('moreConfig:', moreConfig);
@@ -935,16 +907,25 @@ export class ArduinoConfigParser {
      */
     private async resolveVersionedToolPaths(
         platformPath: string,
-        toolVersions: { [key: string]: string } = {}
+        toolVersions: { [key: string]: string } = {},
+        boardConfig: { [key: string]: string } = {}
     ): Promise<{ [key: string]: string }> {
         const result: { [key: string]: string } = {};
         try {
             const content = fs.readFileSync(platformPath, 'utf8');
-            const regex = /runtime\.tools\.([^=\s{}]+)\.path/g;
+            const regex = /runtime\.tools\.([^\s=]+?)\.path/g;
             const seen = new Set<string>();
+            const templateVariables = { ...boardConfig };
+            if (!templateVariables['build.chip_variant'] && templateVariables['build.mcu']) {
+                templateVariables['build.chip_variant'] = templateVariables['build.mcu'];
+            }
+            const templateNames = new Set(Object.keys(templateVariables));
             let match: RegExpExecArray | null;
             while ((match = regex.exec(content)) !== null) {
-                const toolId = match[1];
+                const rawToolId = match[1];
+                const toolId = this.expandVariablesOptimized(rawToolId, templateVariables, templateNames);
+                if (!toolId || toolId.includes('{')) { continue; }
+
                 const fullKey = `runtime.tools.${toolId}.path`;
                 if (seen.has(fullKey)) { continue; }
                 seen.add(fullKey);

@@ -1,122 +1,170 @@
 const esbuild = require('esbuild');
-const fs = require('fs');
+const fs = require('fs-extra');
 const path = require('path');
 
-// 构建单个 JS 文件
-async function bundle() {
-  try {
-    // 首先检查 dist/main.js 是否存在，如果不存在先编译 TypeScript
-    const distMainPath = './dist/main.js';
-    if (!fs.existsSync(distMainPath)) {
-      console.log('❌ dist/main.js not found. Please run "npm run build" first.');
-      process.exit(1);
-    }
+const DIST_MAIN_PATH = './dist/main.js';
+const BUNDLE_DIR = './dist/bundle-min';
 
-    console.log('📦 Building single JS bundle...');
-    
-    const result = await esbuild.build({
-      entryPoints: ['./dist/main.js'],
-      bundle: true,
-      platform: 'node',
-      target: 'node16',
-      format: 'cjs',
-      outfile: './dist/aily-builder-bundle.js',
-      external: [
-        // 排除一些 Node.js 原生模块和二进制依赖
-        'tree-sitter',
-        'tree-sitter-cpp',
-        'test'
-      ],
-      banner: {
-        js: process.platform === 'win32' ? '' : '#!/usr/bin/env node\n'
-      },
-      minify: false, // 保持可读性，可以设置为 true 来压缩
-      sourcemap: false,
-      metafile: true,
-      logLevel: 'info'
-    });
-
-    // 确保输出文件具有执行权限
-    if (process.platform !== 'win32') {
-      fs.chmodSync('./dist/aily-builder-bundle.js', '755');
-    }
-
-    console.log('✅ Bundle created successfully!');
-    console.log('📁 Output: ./dist/aily-builder-bundle.js');
-    
-    // 显示打包分析信息
-    if (result.metafile) {
-      const analysis = await esbuild.analyzeMetafile(result.metafile);
-      console.log('\n📊 Bundle analysis:');
-      console.log(analysis);
-    }
-
-    // 显示文件大小
-    const stats = fs.statSync('./dist/aily-builder-bundle.js');
-    const sizeInMB = (stats.size / 1024 / 1024).toFixed(2);
-    console.log(`📦 Bundle size: ${sizeInMB} MB`);
-    
-  } catch (error) {
-    console.error('❌ Bundle failed:', error);
-    process.exit(1);
-  }
-}
-
-// 构建压缩版本
 async function bundleMinified() {
   try {
-    const distMainPath = './dist/main.js';
-    if (!fs.existsSync(distMainPath)) {
-      console.log('❌ dist/main.js not found. Please run "npm run build" first.');
-      process.exit(1);
+    const options = parseBundleOptions();
+    ensureBuilt();
+
+    console.log('Building minified bundle...');
+    if (options.defaultGenerateArchiveCloudCache) {
+      console.log('Archive cloud cache generation defaults to enabled in this bundle.');
     }
+    await fs.emptyDir(BUNDLE_DIR);
 
-    console.log('📦 Building minified JS bundle...');
-    
-    await esbuild.build({
-      entryPoints: ['./dist/main.js'],
-      bundle: true,
-      platform: 'node',
-      target: 'node16',
-      format: 'cjs',
-      outfile: './dist/aily-builder-bundle.min.js',
-      external: [
-        'tree-sitter',
-        'tree-sitter-cpp',
-      ],
-      banner: {
-        js: process.platform === 'win32' ? '' : '#!/usr/bin/env node\n'
-      },
-      minify: true,
-      sourcemap: false,
-      logLevel: 'info'
-    });
+    await bundleJavaScript(BUNDLE_DIR);
+    await copyNinja(BUNDLE_DIR);
+    await createLaunchScript(BUNDLE_DIR, options);
+    await createPackageJson(BUNDLE_DIR, options);
 
-    // 确保输出文件具有执行权限
-    if (process.platform !== 'win32') {
-      fs.chmodSync('./dist/aily-builder-bundle.min.js', '755');
-    }
-
-    console.log('✅ Minified bundle created successfully!');
-    console.log('📁 Output: ./dist/aily-builder-bundle.min.js');
-    
-    // 显示文件大小
-    const stats = fs.statSync('./dist/aily-builder-bundle.min.js');
-    const sizeInMB = (stats.size / 1024 / 1024).toFixed(2);
-    console.log(`📦 Minified bundle size: ${sizeInMB} MB`);
-    
+    const bundleStats = await getBundleStats(BUNDLE_DIR);
+    console.log('Minified bundle created successfully.');
+    console.log(`Output directory: ${BUNDLE_DIR}`);
+    console.log(`Total bundle size: ${bundleStats.totalSizeFormatted}`);
+    console.log(`Files included: ${bundleStats.fileCount}`);
   } catch (error) {
-    console.error('❌ Minified bundle failed:', error);
+    console.error('Minified bundle creation failed:', error);
     process.exit(1);
   }
 }
 
-// 根据命令行参数决定构建类型
-const arg = process.argv[2];
-if (arg === '--minify' || arg === '-m') {
-  bundleMinified();
-} else if (arg === '--both' || arg === '-b') {
-  bundle().then(() => bundleMinified());
-} else {
-  bundle();
+function parseBundleOptions() {
+  const args = new Set(process.argv.slice(2));
+  const envValue = process.env.AILY_BUILDER_BUNDLE_GENERATE_ARCHIVE_CLOUD_CACHE?.toLowerCase();
+
+  return {
+    defaultGenerateArchiveCloudCache:
+      args.has('--generate-archive-cloud-cache-default') ||
+      args.has('--default-generate-archive-cloud-cache') ||
+      envValue === '1' ||
+      envValue === 'true',
+  };
 }
+
+function ensureBuilt() {
+  if (!fs.existsSync(DIST_MAIN_PATH)) {
+    console.log('dist/main.js not found. Please run "npm run build" first.');
+    process.exit(1);
+  }
+}
+
+async function bundleJavaScript(bundleDir) {
+  console.log('Bundling JavaScript code...');
+  await esbuild.build({
+    entryPoints: [DIST_MAIN_PATH],
+    bundle: true,
+    platform: 'node',
+    target: 'node16',
+    format: 'cjs',
+    outfile: path.join(bundleDir, 'aily-builder.js'),
+    minify: true,
+    sourcemap: false,
+    logLevel: 'info',
+  });
+}
+
+async function copyNinja(bundleDir) {
+  console.log('Copying Ninja build tools for Windows and macOS...');
+
+  const ninjaDir = './ninja';
+  const ninjaDest = path.join(bundleDir, 'ninja');
+  await fs.ensureDir(ninjaDest);
+
+  const ninjaFiles = [
+    { name: 'ninja.exe', executable: false },
+    { name: 'ninja', executable: true },
+  ];
+
+  for (const ninjaFile of ninjaFiles) {
+    const sourcePath = path.join(ninjaDir, ninjaFile.name);
+    const destinationPath = path.join(ninjaDest, ninjaFile.name);
+
+    if (!await fs.pathExists(sourcePath)) {
+      throw new Error(`${ninjaFile.name} not found in ${ninjaDir} directory.`);
+    }
+
+    await fs.copy(sourcePath, destinationPath);
+    if (ninjaFile.executable) {
+      await fs.chmod(destinationPath, '755');
+    }
+  }
+}
+
+async function createLaunchScript(bundleDir, options) {
+  const defaultEnv = options.defaultGenerateArchiveCloudCache
+    ? `if (process.env.AILY_BUILDER_GENERATE_ARCHIVE_CLOUD_CACHE === undefined) {
+  process.env.AILY_BUILDER_GENERATE_ARCHIVE_CLOUD_CACHE = '1';
+}
+`
+    : '';
+
+  const launchScript = `#!/usr/bin/env node
+${defaultEnv}
+require('./aily-builder.js');
+`;
+
+  const launchScriptPath = path.join(bundleDir, 'index.js');
+  await fs.writeFile(launchScriptPath, launchScript);
+
+  if (process.platform !== 'win32') {
+    await fs.chmod(launchScriptPath, '755');
+    await fs.chmod(path.join(bundleDir, 'aily-builder.js'), '755');
+  }
+}
+
+async function createPackageJson(bundleDir, options) {
+  const projectPackageJson = await fs.readJson('./package.json');
+  const bundlePackageJson = {
+    name: projectPackageJson.name,
+    version: projectPackageJson.version,
+    description: projectPackageJson.description,
+    main: 'index.js',
+    bin: {
+      'aily-builder': 'index.js',
+    },
+    engines: {
+      node: projectPackageJson.engines?.node || '>=18',
+    },
+    ailyBuilder: {
+      defaultGenerateArchiveCloudCache: options.defaultGenerateArchiveCloudCache,
+    },
+  };
+
+  await fs.writeFile(
+    path.join(bundleDir, 'package.json'),
+    `${JSON.stringify(bundlePackageJson, null, 2)}\n`,
+  );
+}
+
+async function getBundleStats(bundleDir) {
+  let totalSize = 0;
+  let fileCount = 0;
+
+  async function walkDir(dir) {
+    const items = await fs.readdir(dir);
+    for (const item of items) {
+      const itemPath = path.join(dir, item);
+      const stat = await fs.stat(itemPath);
+      if (stat.isDirectory()) {
+        await walkDir(itemPath);
+      } else {
+        totalSize += stat.size;
+        fileCount++;
+      }
+    }
+  }
+
+  await walkDir(bundleDir);
+
+  const totalSizeFormatted = totalSize > 1024 * 1024
+    ? `${(totalSize / 1024 / 1024).toFixed(2)} MB`
+    : `${(totalSize / 1024).toFixed(1)} KB`;
+
+  return { totalSize, totalSizeFormatted, fileCount };
+}
+
+bundleMinified();

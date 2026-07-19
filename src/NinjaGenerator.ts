@@ -3,6 +3,7 @@ import path from 'path';
 import { Logger } from './utils/Logger';
 import { Dependency } from './DependencyAnalyzer';
 import { CompileConfigManager } from './CompileConfigManager';
+import { ArchiveCacheHit, getArchiveDependencyKey } from './ArchiveCloudCacheManager';
 
 export interface NinjaRule {
   name: string;
@@ -36,6 +37,7 @@ export interface NinjaOptions {
   buildPath: string;
   jobs: number;
   skipExistingObjects?: boolean; // 新增：是否跳过已存在的对象文件
+  archiveCacheHits?: Map<string, ArchiveCacheHit>;
 }
 
 export class NinjaGenerator {
@@ -45,7 +47,11 @@ export class NinjaGenerator {
   private buildPath: string;
   private ninjaFile: NinjaFile;
   private objectFiles: string[] = [];
+  private prelinkInputs: string[] = [];
   private skipExistingObjects: boolean = false;
+  private archiveCacheHits: Map<string, ArchiveCacheHit> = new Map();
+  private readonly arduinoCoreBuildFlag = '-DARDUINO_CORE_BUILD';
+  static readonly PRELINK_TARGET = '__aily_prelink_ready';
   private compileConfigManager: CompileConfigManager; // 新增：编译配置管理器
 
   constructor(logger: Logger) {
@@ -65,8 +71,20 @@ export class NinjaGenerator {
       this.compileConfig = options.compileConfig;
       this.buildPath = options.buildPath;
       this.skipExistingObjects = options.skipExistingObjects || false;
+      this.archiveCacheHits = options.archiveCacheHits || new Map();
+      this.objectFiles = [];
+      this.prelinkInputs = [];
+      this.ninjaFile = {
+        rules: [],
+        builds: [],
+        variables: {},
+        pools: {}
+      };
 
       // console.log(this.compileConfig);
+      if (!this.hasCoreArchiveCacheHit()) {
+        await this.invalidateArduinoCoreBuildObjectsIfNeeded();
+      }
 
       // 设置ninja pool限制并发数
       this.ninjaFile.pools = {
@@ -170,10 +188,16 @@ export class NinjaGenerator {
   }
 
   private generateRules(): void {
+    const cppArgs = this.compileConfig.args.cpp;
+    const cArgs = this.compileConfig.args.c;
+    const assemblerArgs = this.ensureAssemblerTargetFlags(this.compileConfig.args.s);
+    const coreCppArgs = this.withArduinoCoreBuildFlag(cppArgs);
+    const coreCArgs = this.withArduinoCoreBuildFlag(cArgs);
+    const coreAssemblerArgs = this.withArduinoCoreBuildFlag(assemblerArgs);
     // C++编译规则
     this.ninjaFile.rules.push({
       name: 'cpp_compile',
-      command: this.formatCommand(this.compileConfig.args.cpp, {
+      command: this.formatCommand(cppArgs, {
         compiler: '$cpp_compiler',
         input: '$in',
         output: '$out'
@@ -186,7 +210,7 @@ export class NinjaGenerator {
     // C编译规则
     this.ninjaFile.rules.push({
       name: 'c_compile',
-      command: this.formatCommand(this.compileConfig.args.c, {
+      command: this.formatCommand(cArgs, {
         compiler: '$c_compiler',
         input: '$in',
         output: '$out'
@@ -196,8 +220,31 @@ export class NinjaGenerator {
       depfile: '$out.d'
     });
 
-    // 汇编编译规则
-    const assemblerArgs = this.ensureAssemblerTargetFlags(this.compileConfig.args.s);
+    // Core and variant sources need a separate rule for platform core hooks.
+    this.ninjaFile.rules.push({
+      name: 'core_cpp_compile',
+      command: this.formatCommand(coreCppArgs, {
+        compiler: '$cpp_compiler',
+        input: '$in',
+        output: '$out'
+      }),
+      description: 'Compiling core C++ $in',
+      deps: 'gcc',
+      depfile: '$out.d'
+    });
+
+    this.ninjaFile.rules.push({
+      name: 'core_c_compile',
+      command: this.formatCommand(coreCArgs, {
+        compiler: '$c_compiler',
+        input: '$in',
+        output: '$out'
+      }),
+      description: 'Compiling core C $in',
+      deps: 'gcc',
+      depfile: '$out.d'
+    });
+
     this.ninjaFile.rules.push({
       name: 's_compile',
       command: this.formatCommand(assemblerArgs, {
@@ -210,7 +257,20 @@ export class NinjaGenerator {
       depfile: '$out.d'
     });
 
-    // 归档规则
+    // Assembly compile rule
+    this.ninjaFile.rules.push({
+      name: 'core_s_compile',
+      command: this.formatCommand(coreAssemblerArgs, {
+        compiler: '$c_compiler',
+        input: '$in',
+        output: '$out'
+      }),
+      description: 'Assembling core $in',
+      deps: 'gcc',
+      depfile: '$out.d'
+    });
+
+    // Archive rule
     this.ninjaFile.rules.push({
       name: 'archive',
       command: '$ar rcs $out $in',
@@ -288,12 +348,14 @@ export class NinjaGenerator {
       this.ninjaFile.builds.unshift(sketchBuild);
       sketchObjectFile = sketchBuild.outputs[0];
       this.objectFiles.push(sketchObjectFile);
+      this.prelinkInputs.push(sketchObjectFile);
     } else {
       // 即使跳过编译，也要将对象文件添加到列表中（用于链接）
       const sketchFileName = path.basename(process.env['SKETCH_PATH']!);
       const objectFile = path.join('sketch', `${sketchFileName}.o`);
       sketchObjectFile = objectFile;
       this.objectFiles.push(objectFile);
+      this.prelinkInputs.push(objectFile);
     }
 
     // 2. 创建 phony 目标，让其他所有编译任务依赖于 sketch 编译完成
@@ -312,6 +374,16 @@ export class NinjaGenerator {
       if (dependency.type === 'variant') {
         this.logger.debug(`generateBuilds: variant files = ${(dependency.includes || []).map(f => f.replace(/\\/g, '/')).join(', ')}`);
       }
+
+      const archiveHit = this.getArchiveCacheHit(dependency);
+      if (archiveHit) {
+        if (dependency.type === 'library') {
+          this.objectFiles.push(archiveHit.archiveName);
+        }
+        this.logger.debug(`generateBuilds: archive cache hit '${dependency.name}', using ${archiveHit.archiveName}`);
+        continue;
+      }
+
       const groupObjects: string[] = [];
       let groupNeedsRebuild = false;
 
@@ -344,6 +416,7 @@ export class NinjaGenerator {
           // console.log(`[DEBUG] Processing variant dependency: ${dependency.name}, objects:`, groupObjects);
           // 将变体对象文件直接添加到最终链接的对象文件列表中
           this.objectFiles.push(...groupObjects);
+          this.prelinkInputs.push(...groupObjects);
         } else {
           // console.log(`[DEBUG] Processing ${dependency.type} dependency: ${dependency.name}, objects count: ${groupObjects.length}`);
           // 其他类型（core、library）创建归档文件
@@ -365,6 +438,7 @@ export class NinjaGenerator {
         archivePath = `${dependencyName}.a`;
         this.objectFiles.push(archivePath);
       }
+      this.prelinkInputs.push(archivePath);
 
       // 检查归档文件是否需要重新生成
       let needsRebuild = archiveGroup.needsRebuild;
@@ -408,6 +482,16 @@ export class NinjaGenerator {
         this.ninjaFile.builds.push(archiveBuild);
       }
     }
+
+    this.addPrelinkReadyTarget();
+  }
+
+  private addPrelinkReadyTarget(): void {
+    this.ninjaFile.builds.push({
+      outputs: [NinjaGenerator.PRELINK_TARGET],
+      rule: 'phony',
+      inputs: Array.from(new Set(this.prelinkInputs))
+    });
   }
 
   private calculateObjectFilePath(
@@ -470,17 +554,18 @@ export class NinjaGenerator {
     }
 
     // 确定编译规则
+    const isCoreBuildSource = type === 'core' || type === 'variant';
     switch (ext) {
       case '.ino':
       case '.cpp':
-        rule = 'cpp_compile';
+        rule = isCoreBuildSource ? 'core_cpp_compile' : 'cpp_compile';
         break;
       case '.c':
-        rule = 'c_compile';
+        rule = isCoreBuildSource ? 'core_c_compile' : 'c_compile';
         break;
       case '.s':
       case '.S':
-        rule = 's_compile';
+        rule = isCoreBuildSource ? 'core_s_compile' : 's_compile';
         break;
       default:
         throw new Error(`Unsupported file extension: ${ext}`);
@@ -617,6 +702,62 @@ export class NinjaGenerator {
   private hasCompilerFlag(args: string, flag: string): boolean {
     const escapedFlag = flag.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
     return new RegExp(`(?:^|\\s)${escapedFlag}(?=\\s|$)`).test(args);
+  }
+
+  private withArduinoCoreBuildFlag(argsTemplate: string): string {
+    if (!this.platformUsesArduinoCoreBuildHook() || !argsTemplate || argsTemplate.includes(this.arduinoCoreBuildFlag)) {
+      return argsTemplate;
+    }
+
+    return this.insertCompileFlagBeforeSource(argsTemplate, this.arduinoCoreBuildFlag);
+  }
+
+  private platformUsesArduinoCoreBuildHook(): boolean {
+    const platform = this.compileConfig?.arduino?.platform || {};
+    return Object.entries(platform).some(([key, value]) => {
+      return key.startsWith('recipe.hooks.core.prebuild.')
+        && key.includes('pattern')
+        && typeof value === 'string'
+        && value.includes('ARDUINO_CORE_BUILD');
+    });
+  }
+
+  private insertCompileFlagBeforeSource(argsTemplate: string, flag: string): string {
+    const quotedSourcePlaceholder = '"%SOURCE_FILE_PATH%"';
+    if (argsTemplate.includes(quotedSourcePlaceholder)) {
+      return argsTemplate.replace(quotedSourcePlaceholder, `${flag} ${quotedSourcePlaceholder}`);
+    }
+
+    const sourcePlaceholder = '%SOURCE_FILE_PATH%';
+    if (argsTemplate.includes(sourcePlaceholder)) {
+      return argsTemplate.replace(sourcePlaceholder, `${flag} ${sourcePlaceholder}`);
+    }
+
+    return `${argsTemplate} ${flag}`;
+  }
+
+  private async invalidateArduinoCoreBuildObjectsIfNeeded(): Promise<void> {
+    if (!this.platformUsesArduinoCoreBuildHook() || !this.buildPath) {
+      return;
+    }
+
+    const markerPath = path.join(this.buildPath, '.arduino-core-build-flag-v1');
+    const markerValue = 'ARDUINO_CORE_BUILD=v1';
+
+    try {
+      if (await fs.pathExists(markerPath)) {
+        const existing = await fs.readFile(markerPath, 'utf8');
+        if (existing === markerValue) {
+          return;
+        }
+      }
+
+      await fs.remove(path.join(this.buildPath, 'core'));
+      await fs.remove(path.join(this.buildPath, 'core.a'));
+      await fs.outputFile(markerPath, markerValue);
+    } catch (error) {
+      this.logger.debug(`Failed to invalidate core build objects: ${error instanceof Error ? error.message : error}`);
+    }
   }
 
   private formatCommand(argsTemplate: string, replacements: { [key: string]: string }): string {
@@ -787,5 +928,21 @@ export class NinjaGenerator {
 
   getObjectFiles(): string[] {
     return this.objectFiles;
+  }
+
+  private getArchiveCacheHit(dependency: Dependency): ArchiveCacheHit | undefined {
+    if (dependency.type !== 'core' && dependency.type !== 'library') {
+      return undefined;
+    }
+    return this.archiveCacheHits.get(getArchiveDependencyKey(dependency.type, dependency.name));
+  }
+
+  private hasCoreArchiveCacheHit(): boolean {
+    for (const hit of this.archiveCacheHits.values()) {
+      if (hit.dependencyType === 'core') {
+        return true;
+      }
+    }
+    return false;
   }
 }

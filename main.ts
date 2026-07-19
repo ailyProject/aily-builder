@@ -1,15 +1,16 @@
+#!/usr/bin/env node
 import { Command } from 'commander';
 import { ArduinoCompiler, PreprocessResult } from './src/ArduinoCompiler';
 import { ArduinoUploader } from './src/ArduinoUploader';
-import { ArduinoLinter } from './src/ArduinoLinter';
-import { ArduinoConfigParser } from './src/ArduinoConfigParser';
 import { Logger } from './src/utils/Logger';
 import { CacheManager } from './src/CacheManager';
+import { CacheClearMode, CacheRegistry, CacheStatsReport, CacheClearReport } from './src/CacheRegistry';
 import { calculateMD5 } from './src/utils/md5';
 import { initShortPath, sanitizeNonAsciiPaths } from './src/utils/ShortPath';
 import path from 'path';
 import os from 'os';
 import fs from 'fs-extra';
+import packageJson from './package.json';
 
 const program = new Command();
 const logger = new Logger();
@@ -18,10 +19,68 @@ function getSourceBaseName(sourcePath: string): string {
   return path.parse(sourcePath).name;
 }
 
+function isTruthyEnv(name: string): boolean {
+  const value = process.env[name];
+  return value === '1' || value?.toLowerCase() === 'true';
+}
+
+function resolveCacheClearMode(options: any): CacheClearMode {
+  const selected: CacheClearMode[] = [];
+
+  if (options.all) selected.push('all');
+  if (options.unused30) selected.push('unused-30');
+  if (options.unused7) selected.push('unused-7');
+
+  if (selected.length !== 1) {
+    throw new Error('Choose exactly one clear option: --all, --unused-30, or --unused-7');
+  }
+
+  return selected[0];
+}
+
+function printCacheStats(report: CacheStatsReport, verbose = false): void {
+  logger.info('Cache statistics:');
+  for (const bucket of report.buckets) {
+    logger.info(`- ${bucket.name} (${bucket.id})`);
+    logger.info(`  Entries: ${bucket.entries}`);
+    logger.info(`  Files: ${bucket.files}`);
+    logger.info(`  Size: ${bucket.totalSizeFormatted}`);
+    logger.info(`  Path: ${bucket.directory}`);
+    if (bucket.newestLastUsedAt) {
+      logger.info(`  Last used: ${bucket.newestLastUsedAt}`);
+    }
+    if (verbose) {
+      logger.info(`  Description: ${bucket.description}`);
+      if (bucket.oldestLastUsedAt) {
+        logger.info(`  Oldest file use: ${bucket.oldestLastUsedAt}`);
+      }
+    }
+  }
+
+  logger.info(`Total entries: ${report.total.entries}`);
+  logger.info(`Total files: ${report.total.files}`);
+  logger.info(`Total size: ${report.total.totalSizeFormatted}`);
+}
+
+function printCacheClearReport(report: CacheClearReport): void {
+  const action = report.dryRun ? 'Would delete' : 'Deleted';
+  logger.info(`Cache clear mode: ${report.mode}${report.dryRun ? ' (dry run)' : ''}`);
+  if (report.cutoffAt) {
+    logger.info(`Cutoff: unused since before ${report.cutoffAt}`);
+  }
+
+  for (const bucket of report.buckets) {
+    logger.info(`- ${bucket.name}: ${action} ${bucket.deletedFiles} files, ${bucket.deletedDirectories} directories, ${bucket.bytesFreedFormatted}`);
+    logger.info(`  Path: ${bucket.directory}`);
+  }
+
+  logger.success(`${report.dryRun ? 'Cache clear dry run completed' : 'Cache clear completed'}: ${action.toLowerCase()} ${report.total.deletedFiles} files, ${report.total.deletedDirectories} directories, ${report.total.bytesFreedFormatted}`);
+}
+
 program
-  .name('aily')
+  .name('aily-builder')
   .description('Fast Arduino compilation CLI tool with optimized preprocessing and parallel compilation')
-  .version('1.0.0');
+  .version(packageJson.version);
 
 program
   .command('compile')
@@ -55,6 +114,12 @@ program
   .option('--log-file', 'Write logs to file in build directory', false)
   .option('--tool-versions <versions>', 'Specify tool versions (format: tool1@version1,tool2@version2)', undefined)
   .option('--preprocess-result <path>', 'Path to preprocess result JSON file (skip preprocessing if provided)')
+  .option('--archive-cloud-cache <path>', 'Local archive cloud cache directory')
+  .option('--no-archive-cloud-cache', 'Disable archive cloud cache restore and generation')
+  .option('--archive-cloud-cache-url <url>', 'Remote archive cloud cache base URL')
+  .option('--no-fetch-archive-cloud-cache', 'Do not fetch compiled .a archives from remote cloud cache')
+  .option('--archive-cloud-cache-local-only', 'Only use local archive cloud cache; do not request remote cache', false)
+  .option('--generate-archive-cloud-cache', 'Generate uploadable archive cloud cache entries after successful builds', isTruthyEnv('AILY_BUILDER_GENERATE_ARCHIVE_CLOUD_CACHE'))
   .action(async (sketch, options) => {
     // console.log('options:', options);
     logger.setVerbose(options.verbose);
@@ -82,6 +147,23 @@ program
         logger.error('Expected format: tool1@version1,tool2@version2');
         process.exit(1);
       }
+    }
+
+    if (options.archiveCloudCache === false) {
+      process.env['AILY_BUILDER_ARCHIVE_CLOUD_CACHE'] = '0';
+    } else if (typeof options.archiveCloudCache === 'string') {
+      process.env['AILY_BUILDER_ARCHIVE_CLOUD_CACHE'] = '1';
+      process.env['AILY_BUILDER_ARCHIVE_CLOUD_CACHE_DIR'] = path.resolve(options.archiveCloudCache);
+    }
+    if (options.archiveCloudCacheUrl) {
+      process.env['AILY_BUILDER_ARCHIVE_CLOUD_CACHE_URL'] = options.archiveCloudCacheUrl;
+    }
+    if (options.fetchArchiveCloudCache === false || options.archiveCloudCacheLocalOnly) {
+      process.env['AILY_BUILDER_FETCH_ARCHIVE_CLOUD_CACHE'] = '0';
+      process.env['AILY_BUILDER_ARCHIVE_CLOUD_CACHE_LOCAL_ONLY'] = '1';
+    }
+    if (options.generateArchiveCloudCache) {
+      process.env['AILY_BUILDER_GENERATE_ARCHIVE_CLOUD_CACHE'] = '1';
     }
 
     const compiler = new ArduinoCompiler(logger);
@@ -270,20 +352,20 @@ program
   .addHelpText('after', `
 Examples:
   # Basic preprocessing
-  $ aily preprocess sketch.ino --board arduino:avr:uno
+  $ aily-builder preprocess sketch.ino --board arduino:avr:uno
   
   # With external libraries
-  $ aily preprocess sketch.ino --board esp32:esp32:esp32 --libraries-path "C:\\Arduino\\libraries"
+  $ aily-builder preprocess sketch.ino --board esp32:esp32:esp32 --libraries-path "C:\\Arduino\\libraries"
   
   # Output as JSON for programmatic use
-  $ aily preprocess sketch.ino --board arduino:avr:uno --output-json
+  $ aily-builder preprocess sketch.ino --board arduino:avr:uno --output-json
   
   # Save result for later compilation
-  $ aily preprocess sketch.ino --board arduino:avr:uno --save-result ./preprocess.json
-  $ aily compile sketch.ino --board arduino:avr:uno --preprocess-result ./preprocess.json
+  $ aily-builder preprocess sketch.ino --board arduino:avr:uno --save-result ./preprocess.json
+  $ aily-builder compile sketch.ino --board arduino:avr:uno --preprocess-result ./preprocess.json
   
   # With SDK and tools paths
-  $ aily preprocess sketch.ino --sdk-path "C:\\sdk\\esp32" --tools-path "C:\\tools"
+  $ aily-builder preprocess sketch.ino --sdk-path "C:\\sdk\\esp32" --tools-path "C:\\tools"
 
 Preprocessing Steps:
   1. Validate sketch file
@@ -295,7 +377,7 @@ Preprocessing Steps:
   7. Run prebuild hooks (if configured)
 
 Note: This command only performs preprocessing without actual compilation.
-      Use 'aily compile' to perform full compilation.
+      Use 'aily-builder compile' to perform full compilation.
   `)
   .action(async (sketch, options) => {
     logger.setVerbose(options.verbose);
@@ -415,7 +497,7 @@ Note: This command only performs preprocessing without actual compilation.
         await fs.ensureDir(path.dirname(saveResultPath));
         await fs.writeJson(saveResultPath, result, { spaces: 2 });
         logger.success(`Preprocess result saved to: ${saveResultPath}`);
-        logger.info(`Use with: aily compile sketch.ino --preprocess-result "${saveResultPath}"`);
+        logger.info(`Use with: aily-builder compile sketch.ino --preprocess-result "${saveResultPath}"`);
       } catch (error) {
         logger.error(`Failed to save preprocess result: ${error instanceof Error ? error.message : error}`);
       }
@@ -446,20 +528,6 @@ Note: This command only performs preprocessing without actual compilation.
   });
 
 program
-  .command('init')
-  .description('Initialize aily configuration')
-  .option('--arduino-path <path>', 'Path to Arduino IDE installation')
-  .option('--libraries-path <path>', 'Path to Arduino libraries')
-  .action(async (options) => {
-    try {
-      logger.success('Configuration initialized successfully!');
-    } catch (error) {
-      logger.error(`Error initializing config: ${error instanceof Error ? error.message : error}`);
-      process.exit(1);
-    }
-  });
-
-program
   .command('clean')
   .description('Clean build artifacts')
   .argument('[build-path]', 'Build directory to clean', './build')
@@ -470,169 +538,6 @@ program
       logger.success('Build artifacts cleaned!');
     } catch (error) {
       logger.error(`Error cleaning: ${error instanceof Error ? error.message : error}`);
-      process.exit(1);
-    }
-  });
-
-program
-  .command('lint')
-  .description('Multi-mode syntax analysis: fast static check or accurate compiler-based validation')
-  .argument('<sketch>', 'Path to Arduino sketch (.ino file)')
-  .option('-b, --board <board>', 'Target board (e.g., arduino:avr:uno)', 'arduino:avr:uno')
-  .option('--build-path <path>', 'Build output directory (must contain preprocessed files)')
-  .option('--sdk-path <path>', 'Path to Arduino SDK')
-  .option('--tools-path <path>', 'Path to additional tools')
-  .option('--libraries-path <path>', 'Additional libraries path', (val, libraries) => {
-    libraries.push(val);
-    return libraries;
-  }, [])
-  .option('--build-property <key=value>', 'Additional build property', (val, memo) => {
-    const [key, value] = val.split('=');
-    memo[key] = value;
-    return memo;
-  }, {})
-  .option('--build-macros <macro[=value]>', 'Custom macro definitions (e.g., DEBUG, VERSION=1.0.0)', (val, memo) => {
-    if (!memo) memo = [];
-    memo.push(val);
-    return memo;
-  }, [])
-  .option('--board-options <key=value>', 'Board menu option (e.g., flash=2097152_0, uploadmethod=default)', (val, memo) => {
-    const [key, value] = val.split('=');
-    memo[key] = value;
-    return memo;
-  }, {})
-  .option('--tool-versions <versions>', 'Specify tool versions (format: tool1@version1,tool2@version2)', undefined)
-  .option('--format <format>', 'Output format: human, vscode, json', 'human')
-  .option('--mode <mode>', 'Analysis mode: fast, accurate, auto', 'fast')
-  .option('--verbose', 'Enable verbose output', false)
-  .addHelpText('after', `
-Examples:
-  # Fast mode - Quick syntax check (3-5ms, default)
-  $ aily lint sketch.ino --board arduino:avr:uno
-  $ aily lint sketch.ino --mode fast
-  
-  # Accurate mode - Compiler-based analysis (3-5s, high precision)
-  $ aily lint sketch.ino --mode accurate
-  
-  # Auto mode - Fast first, then accurate if issues found
-  $ aily lint sketch.ino --mode auto
-  
-  # With external libraries
-  $ aily lint sketch.ino --libraries-path "C:\\Arduino\\libraries" --mode accurate
-  $ aily lint sketch.ino --libraries-path "/path/to/libs1" --libraries-path "/path/to/libs2"
-  
-  # With SDK and tools paths
-  $ aily lint sketch.ino --sdk-path "C:\\Users\\user\\AppData\\Local\\aily-project\\sdk\\esp32_3.2.1" --tools-path "C:\\Users\\user\\AppData\\Local\\aily-project\\tools" --mode accurate
-  $ aily lint sketch.ino --tool-versions "esp-x32@14.2.0,esptool_py@5.1.0" --mode accurate
-  
-  # With board options and build properties
-  $ aily lint sketch.ino --board esp32:esp32:esp32s3 --board-options flash=16777216_3145728 --mode accurate
-  $ aily lint sketch.ino --build-property "compiler.cpp.extra_flags=-DDEBUG_MODE" --mode accurate
-  $ aily lint sketch.ino --board arduino:renesas_uno:unor4wifi --board-options flash=2097152_0 --board-options uploadmethod=default
-  
-  # Different output formats
-  $ aily lint sketch.ino --format vscode --mode accurate
-  $ aily lint sketch.ino --format json --mode auto
-
-Analysis Modes:
-  fast     - Static analysis, ~3-5ms execution, good for real-time feedback
-  accurate - Compiler-based check, ~3-5s execution, high precision with GCC
-  auto     - Hybrid: fast analysis first, compiler verification if issues found
-
-Features by Mode:
-  fast     ✅ Bracket matching, semicolon checks, basic syntax validation  
-  accurate ✅ GCC-level syntax checking, type validation, precise error location
-  auto     ✅ Best of both: speed when clean, accuracy when problems detected
-
-Note: Accurate mode uses the same compiler toolchain as the compile command.
-  `)
-  .action(async (sketch, options) => {
-    logger.setVerbose(options.verbose);
-
-    const sketchPath = path.resolve(sketch);
-    const sketchName = path.basename(sketchPath, '.ino');
-    const projectPathMD5 = calculateMD5(sketchPath).substring(0, 8);
-    const uniqueSketchName = `${sketchName}_${projectPathMD5}`;
-    // 修复默认构建路径，使其在不同操作系统上都能正常工作
-    const defaultBuildPath = path.join(
-      os.platform() === 'win32'
-        ? path.join(os.homedir(), 'AppData', 'Local')
-        : path.join(os.homedir(), 'Library'),
-      'aily-builder',
-      'project',
-      uniqueSketchName
-    );
-
-    const buildPath = options.buildPath ? path.resolve(options.buildPath) : defaultBuildPath;
-
-    // 验证输出格式
-    const validFormats = ['human', 'vscode', 'json'];
-    if (!validFormats.includes(options.format)) {
-      logger.error(`Invalid format: ${options.format}. Must be one of: ${validFormats.join(', ')}`);
-      process.exit(1);
-    }
-
-    // 验证分析模式
-    const validModes = ['fast', 'accurate', 'auto', 'ast-grep'];
-    if (!validModes.includes(options.mode)) {
-      logger.error(`Invalid mode: ${options.mode}. Must be one of: ${validModes.join(', ')}`);
-      process.exit(1);
-    }
-
-    logger.info(`Starting syntax check for ${sketch}`);
-    logger.info(`Board: ${options.board}`);
-    logger.info(`Mode: ${options.mode}`);
-    logger.info(`Build path: ${buildPath}`);
-
-    if (options.librariesPath && options.librariesPath.length > 0) {
-      logger.info(`Libraries paths: ${options.librariesPath.join(', ')}`);
-    }
-    if (options.sdkPath) {
-      logger.info(`SDK path: ${options.sdkPath}`);
-    }
-    if (options.toolsPath) {
-      logger.info(`Tools path: ${options.toolsPath}`);
-    }
-    if (options.toolVersions) {
-      logger.info(`Tool versions: ${options.toolVersions}`);
-    }
-    if (options.boardOptions && Object.keys(options.boardOptions).length > 0) {
-      logger.info(`Board options: ${JSON.stringify(options.boardOptions)}`);
-    }
-    if (options.buildProperty && Object.keys(options.buildProperty).length > 0) {
-      logger.info(`Build properties: ${JSON.stringify(options.buildProperty)}`);
-    }
-
-    const configParser = new ArduinoConfigParser();
-    const linter = new ArduinoLinter(logger, configParser);
-
-    try {
-      const result = await linter.lint({
-        sketchPath,
-        board: options.board,
-        buildPath,
-        sdkPath: options.sdkPath ? path.resolve(options.sdkPath) : undefined,
-        toolsPath: options.toolsPath ? path.resolve(options.toolsPath) : undefined,
-        librariesPath: options.librariesPath && options.librariesPath.length > 0
-          ? options.librariesPath.map((libPath: string) => path.resolve(libPath))
-          : [],
-        buildProperties: options.buildProperty || {},
-        boardOptions: options.boardOptions || {},
-        toolVersions: options.toolVersions,
-        format: options.format as 'human' | 'vscode' | 'json',
-        mode: options.mode as 'fast' | 'accurate' | 'auto',
-        verbose: options.verbose
-      });
-
-      // 输出结果
-      const output = linter.formatOutput(result, options.format as 'human' | 'vscode' | 'json');
-      console.log(output);
-
-      // 根据结果设置退出码
-      process.exit(result.success ? 0 : 1);
-
-    } catch (error) {
-      logger.error(`Lint failed: ${error instanceof Error ? error.message : error}`);
       process.exit(1);
     }
   });
@@ -707,22 +612,22 @@ program
 
 program
   .command('cache')
-  .description('Manage compilation cache')
+  .description('Manage persistent caches')
   .addCommand(
     new Command('stats')
-      .description('Show cache statistics')
-      .action(async () => {
+      .description('Show statistics for all persistent caches')
+      .option('--json', 'Output machine-readable JSON', false)
+      .option('--verbose', 'Show cache descriptions and oldest access times', false)
+      .action(async (options) => {
         try {
-          const cacheManager = new CacheManager(logger);
-          const stats = await cacheManager.getCacheStats();
+          logger.setVerbose(options.verbose);
+          const registry = new CacheRegistry(logger);
+          const report = await registry.getStats();
 
-          logger.info('📊 Cache Statistics:');
-          logger.info(`Cache directory: ${stats.cacheDir}`);
-          logger.info(`Total files: ${stats.totalFiles}`);
-          logger.info(`Total size: ${stats.totalSizeFormatted}`);
-
-          if (stats.totalFiles === 0) {
-            logger.info('No cached files found.');
+          if (options.json) {
+            console.log(JSON.stringify(report, null, 2));
+          } else {
+            printCacheStats(report, options.verbose);
           }
         } catch (error) {
           logger.error(`Error getting cache stats: ${error instanceof Error ? error.message : error}`);
@@ -732,30 +637,28 @@ program
   )
   .addCommand(
     new Command('clear')
-      .description('Clear compilation cache')
-      .option('--older-than <days>', 'Clear files older than specified days', undefined)
-      .option('--pattern <pattern>', 'Clear files matching pattern', undefined)
-      .option('--all', 'Clear all cached files', false)
+      .description('Clear persistent caches')
+      .option('--all', 'Clear every persistent cache entry', false)
+      .option('--unused-30', 'Clear entries not used in the last 30 days', false)
+      .option('--unused-7', 'Clear entries not used in the last 7 days', false)
+      .option('--dry-run', 'Show what would be deleted without deleting files', false)
+      .option('--json', 'Output machine-readable JSON', false)
+      .addHelpText('after', `
+Examples:
+  $ aily-builder cache clear --all
+  $ aily-builder cache clear --unused-30
+  $ aily-builder cache clear --unused-7 --dry-run
+`)
       .action(async (options) => {
         try {
-          const cacheManager = new CacheManager(logger);
+          const clearMode = resolveCacheClearMode(options);
+          const registry = new CacheRegistry(logger);
+          const report = await registry.clear(clearMode, options.dryRun);
 
-          if (options.all) {
-            logger.info('🗑️  Clearing all cache files...');
-            await cacheManager.clearAllCache();
-            logger.success('All cache files cleared!');
+          if (options.json) {
+            console.log(JSON.stringify(report, null, 2));
           } else {
-            const clearOptions: any = {};
-            if (options.olderThan) {
-              clearOptions.olderThanDays = parseInt(options.olderThan);
-            }
-            if (options.pattern) {
-              clearOptions.pattern = options.pattern;
-            }
-
-            logger.info('🗑️  Clearing cache files...');
-            await cacheManager.clearCache(clearOptions);
-            logger.success('Cache files cleared!');
+            printCacheClearReport(report);
           }
         } catch (error) {
           logger.error(`Error clearing cache: ${error instanceof Error ? error.message : error}`);
@@ -763,79 +666,6 @@ program
         }
       })
   );
-
-// 缓存统计命令
-program
-  .command('cache-stats')
-  .description('Display cache statistics')
-  .option('--verbose', 'Enable verbose output', false)
-  .action(async (options) => {
-    try {
-      logger.setVerbose(options.verbose);
-      const cacheManager = new CacheManager(logger);
-
-      const stats = await cacheManager.getCacheStats();
-
-      console.log('\n📊 Cache Statistics:');
-      console.log(`   Files: ${stats.totalFiles.toString()}`);
-      console.log(`   Size: ${stats.totalSizeFormatted}`);
-      console.log(`   Location: ${stats.cacheDir}`);
-
-      if (stats.totalFiles > 0) {
-        const avgSize = stats.totalSize / stats.totalFiles;
-        console.log(`   Average file size: ${(avgSize / 1024).toFixed(1)} KB`);
-      }
-
-      console.log('\nCache statistics displayed successfully');
-    } catch (error) {
-      logger.error(`Error getting cache statistics: ${error instanceof Error ? error.message : error}`);
-      process.exit(1);
-    }
-  });
-
-// 缓存维护命令
-program
-  .command('cache-clean')
-  .description('Clean old cache files')
-  .option('--days <number>', 'Remove cache files older than specified days', '30')
-  .option('--pattern <pattern>', 'Only remove files matching pattern')
-  .option('--dry-run', 'Show what would be deleted without actually deleting', false)
-  .option('--verbose', 'Enable verbose output', false)
-  .action(async (options) => {
-    try {
-      logger.setVerbose(options.verbose);
-      const cacheManager = new CacheManager(logger);
-
-      const days = parseInt(options.days);
-      if (isNaN(days) || days < 0) {
-        throw new Error('Days must be a non-negative number');
-      }
-
-      console.log(`\n🧹 Cleaning cache files older than ${days} days...`);
-      if (options.pattern) {
-        console.log(`   Pattern: ${options.pattern}`);
-      }
-      if (options.dryRun) {
-        console.log('   (Dry run - no files will be deleted)');
-      }
-
-      if (!options.dryRun) {
-        await cacheManager.clearCache({
-          olderThanDays: days,
-          pattern: options.pattern
-        });
-      } else {
-        // 对于dry run，我们只显示统计信息
-        const stats = await cacheManager.getCacheStats();
-        console.log(`   Would analyze ${stats.totalFiles} files in cache`);
-      }
-
-      console.log('\nCache cleaning completed');
-    } catch (error) {
-      logger.error(`Error cleaning cache: ${error instanceof Error ? error.message : error}`);
-      process.exit(1);
-    }
-  });
 
 // 错误处理
 process.on('uncaughtException', (error) => {

@@ -44,6 +44,24 @@ export class CacheManager {
         this.logger.debug(`Cache directory: ${this.cacheDir}`);
     }
 
+    private async touchCacheAccess(cacheKey: CacheKey): Promise<void> {
+        const now = new Date();
+        const paths = [
+            this.getCacheFilePath(cacheKey),
+            this.getCacheMetaPath(cacheKey)
+        ];
+
+        await Promise.all(paths.map(async (cachePath) => {
+            try {
+                if (await fs.pathExists(cachePath)) {
+                    await fs.utimes(cachePath, now, now);
+                }
+            } catch (error) {
+                this.logger.debug(`Failed to update cache access time for ${cachePath}: ${error}`);
+            }
+        }));
+    }
+
     /**
      * 生成缓存键的MD5值
      */
@@ -129,6 +147,8 @@ export class CacheManager {
             if (!await this.hasCache(cacheKey)) {
                 return false;
             }
+
+            await this.touchCacheAccess(cacheKey);
 
             // 确保目标目录存在
             await fs.ensureDir(path.dirname(targetPath));
