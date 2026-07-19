@@ -475,14 +475,20 @@ export class NinjaCompilationPipeline {
 
   private getNinjaExecutablePath(): string {
     const executableName = this.getNinjaExecutableName();
+    const configuredPath = process.env['AILY_NINJA_PATH'];
+    const cliDirectory = process.argv[1] ? path.dirname(path.resolve(process.argv[1])) : '';
     const candidatePaths = [
+      configuredPath,
       path.join(__dirname, 'ninja', executableName),
       path.resolve(__dirname, '..', 'ninja', executableName),
-      path.join(process.cwd(), 'ninja', executableName)
-    ];
+      path.join(__dirname, '..', '..', 'ninja', executableName),
+      cliDirectory ? path.join(cliDirectory, 'ninja', executableName) : '',
+      cliDirectory ? path.join(cliDirectory, '..', 'ninja', executableName) : '',
+      path.join(process.cwd(), 'ninja', executableName),
+    ].filter((candidate): candidate is string => Boolean(candidate));
 
-    for (const candidatePath of candidatePaths) {
-      if (fs.existsSync(candidatePath)) {
+    for (const candidatePath of [...new Set(candidatePaths)]) {
+      if (fs.existsSync(candidatePath) && fs.statSync(candidatePath).isFile()) {
         if (process.platform === 'darwin' && (fs.statSync(candidatePath).mode & 0o111) === 0) {
           fs.chmodSync(candidatePath, 0o755);
         }

@@ -9,6 +9,10 @@ import { DependencyAnalyzer } from './DependencyAnalyzer';
 import { escapeQuotedDefines } from './utils/escapeQuotes';
 import { sanitizeNonAsciiPaths, sanitizeObjectPaths } from './utils/ShortPath';
 import { collectPackageIdentitiesFromPaths, extractPackageIdentityFromPath } from './utils/PackageIdentity';
+import {
+  emitSimulationArtifactManifest,
+  SimulationArtifactManifest,
+} from './ArtifactManifest';
 
 export interface ExecutableSectionSize {
   name: string;
@@ -25,6 +29,8 @@ export interface FirmwareSizeInfo {
 export interface CompileResult {
   success: boolean;
   outFilePath?: string,
+  artifactManifestPath?: string;
+  artifactManifest?: SimulationArtifactManifest;
   preprocessTime: number;
   buildTime: number;
   totalTime: number;
@@ -59,6 +65,7 @@ export interface CompileOptions {
   toolVersions?: Record<string, string>;
   buildMacros?: string[];
   preprocessResult?: PreprocessResult;
+  artifactManifestPath?: string;
 }
 
 export class ArduinoCompiler {
@@ -350,12 +357,29 @@ export class ArduinoCompiler {
     // 6. 计算固件大小信息
     const firmwareSize = await this.calculateFirmwareSize(arduinoConfig);
 
+    let artifactManifest: SimulationArtifactManifest | undefined;
+    if (options.artifactManifestPath) {
+      this.logger.info('Generating simulation artifact manifest...');
+      artifactManifest = await emitSimulationArtifactManifest({
+        buildPath: options.buildPath,
+        sketchPath: options.sketchPath,
+        board: options.board,
+        mcu: arduinoConfig.board?.['build.mcu'],
+        toolVersions: options.toolVersions,
+        primaryOutputPath: finalOutputPath,
+        manifestPath: options.artifactManifestPath,
+      });
+      this.logger.info(`Simulation artifact manifest: ${options.artifactManifestPath}`);
+    }
+
     return {
       success: true,
       preprocessTime,
       buildTime,
       totalTime,
       outFilePath: finalOutputPath,
+      artifactManifestPath: options.artifactManifestPath,
+      artifactManifest,
       firmwareSize
     }
   }

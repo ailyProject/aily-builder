@@ -190,11 +190,7 @@ export class ArchiveCloudCacheManager {
       }
     }
 
-    if (localHits || remoteHits) {
-      this.logger.info(`[ARCHIVE_CLOUD_CACHE] local hits=${localHits} remote hits=${remoteHits} misses=${misses}`);
-    } else {
-      this.logger.debug(`[ARCHIVE_CLOUD_CACHE] local hits=0 remote hits=0 misses=${misses}`);
-    }
+    this.logger.info(`[ARCHIVE_CLOUD_CACHE] local hits=${localHits} remote hits=${remoteHits} misses=${misses}`);
 
     return hits;
   }

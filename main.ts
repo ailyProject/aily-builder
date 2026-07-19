@@ -83,6 +83,43 @@ program
   .version(packageJson.version);
 
 program
+  .command('capabilities')
+  .description('Print machine-readable builder capabilities')
+  .option('--json', 'Print compact JSON', false)
+  .action((options) => {
+    const capabilities = {
+      schemaVersion: 1,
+      service: 'aily-builder',
+      version: packageJson.version,
+      capabilities: {
+        simulationArtifactManifest: {
+          schemaVersion: 1,
+          cliOption: '--emit-artifact-manifest',
+          defaultFileName: 'aily-artifact-manifest.json',
+        },
+        blockSourceMap: {
+          schemaVersion: 1,
+          inputFileName: 'aily-block-source-map.json',
+          artifactRole: 'source-map',
+        },
+        debugSourceSnapshot: {
+          schemaVersion: 1,
+          outputFileName: 'aily-debug-source.txt',
+          artifactRole: 'debug-source',
+          maxSizeBytes: 2 * 1024 * 1024,
+        },
+        debugMemoryMap: {
+          schemaVersion: 1,
+          outputFileName: 'aily-debug-memory-map.json',
+          artifactRole: 'memory-map',
+          source: 'gnu-linker-memory-configuration',
+        },
+      },
+    };
+    console.log(JSON.stringify(capabilities, null, options.json ? 0 : 2));
+  });
+
+program
   .command('compile')
   .description('Compile Arduino source')
   .argument('<sketch>', 'Path to Arduino source (.ino or .cpp file)')
@@ -120,6 +157,10 @@ program
   .option('--no-fetch-archive-cloud-cache', 'Do not fetch compiled .a archives from remote cloud cache')
   .option('--archive-cloud-cache-local-only', 'Only use local archive cloud cache; do not request remote cache', false)
   .option('--generate-archive-cloud-cache', 'Generate uploadable archive cloud cache entries after successful builds', isTruthyEnv('AILY_BUILDER_GENERATE_ARCHIVE_CLOUD_CACHE'))
+  .option(
+    '--emit-artifact-manifest [path]',
+    'Emit a portable simulation artifact manifest (default: <build-path>/aily-artifact-manifest.json)'
+  )
   .action(async (sketch, options) => {
     // console.log('options:', options);
     logger.setVerbose(options.verbose);
@@ -187,6 +228,13 @@ program
     );
 
     const buildPath = options.buildPath ? path.resolve(options.buildPath) : defaultBuildPath;
+    const artifactManifestPath = options.emitArtifactManifest
+      ? path.resolve(
+        typeof options.emitArtifactManifest === 'string'
+          ? options.emitArtifactManifest
+          : path.join(buildPath, 'aily-artifact-manifest.json')
+      )
+      : undefined;
 
     // 如果启用了日志文件功能，设置日志文件路径
     if (options.logFile) {
@@ -275,7 +323,8 @@ program
       toolVersions: toolVersions,
       jobs: parseInt(options.jobs),
       verbose: options.verbose,
-      preprocessResult: preprocessResult
+      preprocessResult: preprocessResult,
+      artifactManifestPath
     };
 
     logger.info(`Starting compilation of ${sketch}`);
@@ -298,6 +347,9 @@ program
     if (result.success) {
       logger.success(`Compilation successful!`);
       logger.info(`Output File: ${result.outFilePath}`);
+      if (result.artifactManifestPath) {
+        logger.info(`Artifact Manifest: ${result.artifactManifestPath}`);
+      }
     } else {
       logger.error(`Compilation failed: ${result.error}`);
       process.exit(1);
