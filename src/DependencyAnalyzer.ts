@@ -16,6 +16,12 @@ import {
 } from './utils/PreprocessorDirectiveScanner';
 import type { MacroDefinition } from './utils/PreprocessorExpression';
 import { LibraryIndexCache, LibraryIndexBuildResult, LibraryIndexResult } from './LibraryIndexCache';
+import {
+  collectGeneratedSketchSources,
+  GENERATED_SKETCH_DEPENDENCY_NAME,
+  getGeneratedSketchSourceRoot
+} from './GeneratedSketchSources';
+import { getPathListDelimiter, toHostPathKey } from './utils/HostPlatform';
 
 export type { MacroDefinition } from './utils/PreprocessorExpression';
 
@@ -189,8 +195,9 @@ export class DependencyAnalyzer {
     this.configurePlatformHeaderContext(arduinoConfig, coreSDKPath, variantPath);
 
     // 处理 librariesPath，支持多个路径（用分号或冒号分隔）
-    const pathSeparator = process.platform === 'win32' ? ';' : ':';
-    const librariesPaths = librariesPathEnv ? librariesPathEnv.split(pathSeparator).filter(p => p.trim()) : [];
+    const librariesPaths = librariesPathEnv
+      ? librariesPathEnv.split(getPathListDelimiter()).filter(p => p.trim())
+      : [];
 
     this.logger.info(`- Sketch Path: ${sketchPath}`)
     this.logger.info(`- Core SDK Path: ${coreSDKPath}`);
@@ -227,8 +234,27 @@ export class DependencyAnalyzer {
     // 4.5. 添加平台特定的必需库（如 STM32 SrcWrapper）
     await this.addPlatformSpecificLibraries(arduinoConfig);
 
+    // Platform prebuild hooks may emit additional sketch translation units, for
+    // example STM32's sketch/requiredLibraries.cpp. Persist them as a sketch
+    // dependency so the compile phase consumes the exact files analyzed here.
+    const generatedSketchSources = await collectGeneratedSketchSources();
+    const generatedSketchSourceRoot = getGeneratedSketchSourceRoot();
+    if (generatedSketchSourceRoot && generatedSketchSources.length > 0) {
+      this.dependencyList.set(GENERATED_SKETCH_DEPENDENCY_NAME, {
+        name: GENERATED_SKETCH_DEPENDENCY_NAME,
+        path: generatedSketchSourceRoot,
+        type: 'sketch',
+        includes: generatedSketchSources,
+        others: []
+      });
+      this.logger.info(`- Generated Sketch Sources: ${generatedSketchSources.length}`);
+    }
+
     // Analyze after the library map exists so __has_include queries the same
     // dependency search universe used by resolveDependencies().
+    // Generated sources are separate translation units, so retain the platform
+    // macro state from before the main sketch mutates its own analysis map.
+    const generatedSourceMacros = new Map(this.macroDefinitions);
     const mainIncludeFiles = await analyzeFile(sketchPath, this.macroDefinitions, {
       hasInclude: includePath => this.canResolveKnownInclude(includePath, sketchPath)
     });
@@ -236,6 +262,14 @@ export class DependencyAnalyzer {
     // 5. 递归分析依赖，resolveA用于确定是否处理预编译库
     let resolveA = arduinoConfig.platform['compiler.libraries.ldflags'] ? true : false;
     await this.resolveDependencies(mainIncludeFiles, resolveA);
+
+    for (const generatedSource of generatedSketchSources) {
+      const translationUnitMacros = new Map(generatedSourceMacros);
+      const includeFiles = await analyzeFile(generatedSource, translationUnitMacros, {
+        hasInclude: includePath => this.canResolveKnownInclude(includePath, generatedSource)
+      });
+      await this.resolveDependencies(includeFiles, resolveA, 0, 10, translationUnitMacros);
+    }
 
     return Array.from(this.dependencyList.values());
   }
@@ -359,9 +393,10 @@ export class DependencyAnalyzer {
     ].join('|');
   }
 
+  /** 将文件路径转换为依赖分析使用的绝对、正斜杠、主机大小写比较键。 */
   private normalizeAnalysisPath(filePath: string): string {
     const normalized = path.resolve(filePath).replace(/\\/g, '/');
-    return process.platform === 'win32' ? normalized.toLowerCase() : normalized;
+    return toHostPathKey(normalized);
   }
 
   private isPathWithinRoot(filePath: string, rootPath: string): boolean {
@@ -621,8 +656,7 @@ export class DependencyAnalyzer {
     const macroDefinitionsCopy = new Map(macroDefinitions);
     const directiveTapeCache = new Map<string, PreprocessorDirectiveTape>();
     const getTape: DirectiveTapeProvider = (filePath: string) => {
-      const resolved = path.resolve(filePath).replace(/\\/g, '/');
-      const cacheKey = process.platform === 'win32' ? resolved.toLowerCase() : resolved;
+      const cacheKey = this.normalizeAnalysisPath(filePath);
       let tape = directiveTapeCache.get(cacheKey);
       if (!tape) {
         tape = scanPreprocessorDirectives(fs.readFileSync(filePath));
@@ -679,13 +713,10 @@ export class DependencyAnalyzer {
       return [];
     }
 
-    const normalizeAbsolutePath = (filePath: string): string => {
-      const normalized = path.resolve(filePath).replace(/\\/g, '/');
-      return process.platform === 'win32' ? normalized.toLowerCase() : normalized;
-    };
+    const normalizeAbsolutePath = (filePath: string): string => this.normalizeAnalysisPath(filePath);
     const normalizeRelativePath = (filePath: string): string => {
       const normalized = filePath.replace(/\\/g, '/').replace(/^\.\//, '');
-      return process.platform === 'win32' ? normalized.toLowerCase() : normalized;
+      return toHostPathKey(normalized);
     };
 
     const filesByAbsolutePath = new Map<string, string>();
@@ -931,10 +962,7 @@ export class DependencyAnalyzer {
 
     // 过滤掉被其他文件 #include 的代码片段文件
     const includedFiles = new Set<string>();
-    const normalizeFileKey = (filePath: string): string => {
-      const normalized = path.resolve(filePath).replace(/\\/g, '/');
-      return process.platform === 'win32' ? normalized.toLowerCase() : normalized;
-    };
+    const normalizeFileKey = (filePath: string): string => this.normalizeAnalysisPath(filePath);
 
     // 第一遍：扫描所有 .cpp 和 .c 文件，找出哪些文件被 #include
     const resolveLocalInclude = (includePath: string, includingFilePath: string): string | undefined => {
@@ -977,7 +1005,7 @@ export class DependencyAnalyzer {
 
       const analyzeLocalFile = (filePath: string): void => {
         const normalized = path.resolve(filePath);
-        const key = process.platform === 'win32' ? normalized.toLowerCase() : normalized;
+        const key = toHostPathKey(normalized);
         if (activeIncludeStack.has(key) || onceFiles.has(key)) return;
 
         activeIncludeStack.add(key);
@@ -1701,9 +1729,7 @@ function extractResponseFileMacroDefinitions(command: string): string[] {
     const resolvedPath = path.isAbsolute(current.filePath)
       ? path.normalize(current.filePath)
       : path.resolve(current.basePath, current.filePath);
-    const normalizedPath = process.platform === 'win32'
-      ? resolvedPath.toLowerCase()
-      : resolvedPath;
+    const normalizedPath = toHostPathKey(resolvedPath);
 
     if (visited.has(normalizedPath) || !fs.pathExistsSync(resolvedPath)) {
       continue;

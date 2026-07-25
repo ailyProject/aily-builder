@@ -218,6 +218,22 @@ aily-builder cache clear --all
 
 
 
+## 编译进度协议
+
+从 1.2.11 起，`compile` 命令会在标准输出中发送单行、机器可读的全局进度事件：
+
+```text
+[aily-builder:progress] {"protocolVersion":1,"stage":"core","percent":63,"status":"running","message":"Compiling core"}
+```
+
+- `protocolVersion`：协议版本，当前为 `1`。
+- `stage`：`preparing`、`sketch`、`libraries`、`core`、`linking`、`objcopy`、`finalizing` 或 `complete`。
+- `percent`：整次编译的全局进度，范围为 `0`–`100`，保证单调不回退。
+- `status`：`running` 或 `complete`；只有最终成功完成时才发送 `complete` 和 `100`。
+- `message`：适合直接显示的英文阶段说明，客户端可以按 `stage` 本地化。
+
+该行是进度协议数据，不应当作为普通构建日志显示。未输出该协议的 1.2.10 及更早版本仍可通过原始 Ninja 进度格式兼容。
+
 ## 贡献
 欢迎提交 Issue 和 Pull Request！
 

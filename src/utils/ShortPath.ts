@@ -1,7 +1,7 @@
 import { execSync } from 'child_process';
 import fs from 'fs-extra';
 import path from 'path';
-import os from 'os';
+import { isWindowsHost } from './HostPlatform';
 
 // 缓存：长路径 → junction 路径
 const shortPathCache = new Map<string, string>();
@@ -179,7 +179,7 @@ export function initShortPath(): void {
  * 非 Windows 平台或不含非 ASCII 字符时直接返回原字符串。
  */
 export function sanitizeNonAsciiPaths(input: string): string {
-  if (os.platform() !== 'win32') {
+  if (!isWindowsHost()) {
     return input;
   }
   if (!hasNonAscii(input)) {
@@ -199,7 +199,7 @@ export function sanitizeNonAsciiPaths(input: string): string {
  * 返回一个新对象（不修改原对象）。
  */
 export function sanitizeObjectPaths<T>(obj: T): T {
-  if (os.platform() !== 'win32') {
+  if (!isWindowsHost()) {
     return obj;
   }
   return deepSanitize(obj, new WeakSet()) as T;

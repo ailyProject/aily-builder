@@ -3,6 +3,8 @@ import path from 'path';
 import os from 'os';
 import { createHash } from 'crypto';
 import { Logger } from './utils/Logger';
+import { getAilyBuilderCacheDirectory } from './utils/CacheDirectory';
+import { isMacOSHost, isWindowsHost } from './utils/HostPlatform';
 
 export interface CacheStats {
     totalFiles: number;
@@ -19,6 +21,17 @@ export interface CacheKey {
     sourceFile: string;
 }
 
+/**
+ * 返回单文件对象缓存目录。
+ * Linux 路径保留历史上的 `~/.aily-builder/cache` 布局，避免重构导致现有缓存失效。
+ */
+function getObjectCacheDirectory(): string {
+    if (isWindowsHost() || isMacOSHost()) {
+        return getAilyBuilderCacheDirectory('cache');
+    }
+    return path.join(os.homedir(), '.aily-builder', 'cache');
+}
+
 export class CacheManager {
     private cacheDir: string;
     private logger: Logger;
@@ -27,16 +40,7 @@ export class CacheManager {
 
     constructor(logger: Logger) {
         this.logger = logger;
-        if (os.platform() === 'win32') {
-            // 使用用户的AppData\Local\aily-builder\cache作为缓存目录
-            this.cacheDir = path.join(os.homedir(), 'AppData', 'Local', 'aily-builder', 'cache');
-        } else if (os.platform() === 'darwin') {
-            // 使用用户的Library/Caches/aily-builder/cache作为缓存目录
-            this.cacheDir = path.join(os.homedir(), 'Library', 'Caches', 'aily-builder', 'cache');
-        } else {
-            // 对于其他平台，使用用户的主目录下的.aily-builder/cache作为缓存目录
-            this.cacheDir = path.join(os.homedir(), '.aily-builder', 'cache');
-        }
+        this.cacheDir = getObjectCacheDirectory();
 
         // 确保缓存目录存在
         fs.ensureDirSync(this.cacheDir);
