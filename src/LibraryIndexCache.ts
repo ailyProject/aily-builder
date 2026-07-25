@@ -6,12 +6,13 @@
  * project directories reuse the same analysis result without cache migration.
  */
 import fs from 'fs-extra';
-import os from 'os';
 import path from 'path';
 import { createHash } from 'crypto';
 import { glob } from 'glob';
 import { Logger } from './utils/Logger';
 import type { MacroDefinition } from './utils/PreprocessorExpression';
+import { getAilyBuilderCacheDirectory } from './utils/CacheDirectory';
+import { toHostPathKey } from './utils/HostPlatform';
 
 const SCHEMA_VERSION = 3;
 export const DEPENDENCY_ANALYZER_VERSION = 'dependency-directive-tape-v2';
@@ -260,13 +261,7 @@ export class LibraryIndexCache {
   }
 
   private getDefaultCacheDir(): string {
-    if (os.platform() === 'win32') {
-      return path.join(os.homedir(), 'AppData', 'Local', 'aily-builder', 'library-index-cache-v5');
-    }
-    if (os.platform() === 'darwin') {
-      return path.join(os.homedir(), 'Library', 'Caches', 'aily-builder', 'library-index-cache-v5');
-    }
-    return path.join(os.homedir(), '.cache', 'aily-builder', 'library-index-cache-v5');
+    return getAilyBuilderCacheDirectory('library-index-cache-v5');
   }
 
   private async collectFiles(libraryPath: string): Promise<FileSnapshot[]> {
@@ -594,7 +589,7 @@ export class LibraryIndexCache {
 
   private normalizePath(inputPath: string): string {
     const resolved = path.resolve(inputPath);
-    return os.platform() === 'win32' ? resolved.toLowerCase() : resolved;
+    return toHostPathKey(resolved);
   }
 
   private toRelativePath(rootPath: string, filePath: string): string {

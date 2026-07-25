@@ -15,6 +15,7 @@ import type { Dirent } from 'fs';
 import { Logger } from './utils/Logger';
 import { Dependency } from './DependencyAnalyzer';
 import { collectPackageIdentitiesFromPaths, extractPackageIdentityFromPath } from './utils/PackageIdentity';
+import { getAilyBuilderCacheDirectory } from './utils/CacheDirectory';
 
 const CACHE_SCHEMA = 'aily.archive-cache.v1';
 const INPUT_SCHEMA = 'aily.archive-build-inputs.v1';
@@ -489,7 +490,7 @@ export class ArchiveCloudCacheManager {
     const platform = compileConfig?.arduino?.platform || {};
     const sourceFiles = await this.collectSourceFiles(target.dependency);
     const sourceRoot = target.dependency.path || '';
-    const projectConfigFiles = await this.collectProjectConfigFiles();
+    const projectConfigFiles = await this.collectProjectConfigFiles(compileConfig);
     const responseFiles = await this.collectResponseFiles(compileConfig);
     const compileArgs = this.createCompileSignature(dependencies, compileConfig);
 
@@ -620,18 +621,20 @@ export class ArchiveCloudCacheManager {
     return Array.from(files).sort((a, b) => this.normalizePath(a).localeCompare(this.normalizePath(b)));
   }
 
-  private async collectProjectConfigFiles(): Promise<string[]> {
+  private async collectProjectConfigFiles(compileConfig: any): Promise<string[]> {
     const names = [
       'lv_conf.h',
       'User_Setup.h',
       'config.h',
       'sdkconfig.h',
       'build_opt.h',
-      'file_opts'
+      'file_opts',
+      'build.opt',
+      'Updater_Signing.h'
     ];
+    const buildPath = process.env['BUILD_PATH'];
     const dirs = [
       process.env['SKETCH_DIR_PATH'],
-      process.env['BUILD_PATH'],
       process.cwd()
     ].filter(Boolean) as string[];
 
@@ -641,6 +644,43 @@ export class ArchiveCloudCacheManager {
         const candidate = path.resolve(dir, name);
         if (await fs.pathExists(candidate)) {
           result.add(candidate);
+        }
+      }
+    }
+
+    if (buildPath && await fs.pathExists(buildPath)) {
+      const configNames = new Set(['file_opts', 'sdkconfig']);
+      const configExtensions = new Set([
+        '.h', '.hh', '.hpp', '.inc', '.opt', '.cfg', '.json', '.csv', '.rsp', '.ld', '.lds'
+      ]);
+      const derivedExtensions = new Set([
+        '.o', '.a', '.elf', '.bin', '.hex', '.eep', '.uf2', '.zip', '.map', '.d'
+      ]);
+      const sourceExtensions = new Set(['.c', '.cc', '.cpp', '.cxx', '.s']);
+      const platform = compileConfig?.arduino?.platform || {};
+      const hasInputGeneratingHooks = Object.keys(platform).some(key =>
+        key.startsWith('recipe.hooks.prebuild')
+        || key.startsWith('recipe.hooks.sketch.prebuild')
+      );
+      const ignoredNames = new Set([
+        'build.ninja', '.ninja_deps', '.ninja_log', '.aily-build-context-v1'
+      ]);
+      const generatedConfigs = await glob('**/*', {
+        cwd: buildPath,
+        absolute: true,
+        nodir: true,
+        follow: false
+      });
+      for (const candidate of generatedConfigs) {
+        const name = path.basename(candidate);
+        const extension = path.extname(candidate).toLowerCase();
+        const isKnownConfig = configNames.has(name) || configExtensions.has(extension);
+        const isOpaqueHookOutput = hasInputGeneratingHooks
+          && !ignoredNames.has(name)
+          && !derivedExtensions.has(extension)
+          && !sourceExtensions.has(extension);
+        if (isKnownConfig || isOpaqueHookOutput) {
+          result.add(path.resolve(candidate));
         }
       }
     }
@@ -656,11 +696,11 @@ export class ArchiveCloudCacheManager {
     ].filter(Boolean) as string[];
 
     const files = new Set<string>();
-    const responsePattern = /@(?:"([^"]+)"|'([^']+)'|([^\s]+))/g;
+    const responsePattern = /(?:"@([^"]+)"|'@([^']+)'|@"([^"]+)"|@'([^']+)'|@([^\s"']+))/g;
     for (const argString of args) {
       let match: RegExpExecArray | null;
       while ((match = responsePattern.exec(argString)) !== null) {
-        const rawPath = match[1] || match[2] || match[3];
+        const rawPath = match[1] || match[2] || match[3] || match[4] || match[5];
         const resolved = path.resolve(rawPath);
         if (await fs.pathExists(resolved)) {
           files.add(resolved);
@@ -1169,13 +1209,7 @@ export class ArchiveCloudCacheManager {
       return path.resolve(process.env['AILY_BUILDER_ARCHIVE_CLOUD_CACHE_DIR']);
     }
 
-    if (os.platform() === 'win32') {
-      return path.join(os.homedir(), 'AppData', 'Local', 'aily-builder', 'archive-cloud-cache');
-    }
-    if (os.platform() === 'darwin') {
-      return path.join(os.homedir(), 'Library', 'Caches', 'aily-builder', 'archive-cloud-cache');
-    }
-    return path.join(os.homedir(), '.cache', 'aily-builder', 'archive-cloud-cache');
+    return getAilyBuilderCacheDirectory('archive-cloud-cache');
   }
 
   private isLocalOnly(): boolean {
