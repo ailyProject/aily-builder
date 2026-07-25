@@ -1,6 +1,31 @@
 import fs from 'fs';
 import path from 'path';
 
+export const AILY_BUILDER_PROGRESS_PREFIX = '[aily-builder:progress]';
+export const AILY_BUILDER_PROGRESS_PROTOCOL_VERSION = 1 as const;
+
+export type AilyBuilderProgressStage =
+  | 'preparing'
+  | 'sketch'
+  | 'libraries'
+  | 'core'
+  | 'linking'
+  | 'objcopy'
+  | 'finalizing'
+  | 'complete';
+
+export type AilyBuilderProgressStatus = 'running' | 'complete';
+
+export interface AilyBuilderProgressEvent {
+  protocolVersion: typeof AILY_BUILDER_PROGRESS_PROTOCOL_VERSION;
+  stage: AilyBuilderProgressStage;
+  percent: number;
+  status: AilyBuilderProgressStatus;
+  message: string;
+}
+
+export type AilyBuilderProgressInput = Omit<AilyBuilderProgressEvent, 'protocolVersion'>;
+
 export class Logger {
   private isVerbose: boolean = false;
   private logFilePath: string | null = null;
@@ -69,6 +94,21 @@ export class Logger {
     const coloredMessage = `${this.colors.blue}[INFO]${this.colors.reset} ${message}`;
     console.log(coloredMessage);
     this.writeToFile(`[INFO] ${message}`);
+  }
+
+  /**
+   * Emit a stable, machine-readable build progress event on stdout.
+   * Consumers should treat this line as protocol data rather than a log entry.
+   */
+  progress(event: AilyBuilderProgressInput): void {
+    const payload: AilyBuilderProgressEvent = {
+      protocolVersion: AILY_BUILDER_PROGRESS_PROTOCOL_VERSION,
+      stage: event.stage,
+      percent: Math.max(0, Math.min(100, Math.round(event.percent))),
+      status: event.status,
+      message: event.message
+    };
+    console.log(`${AILY_BUILDER_PROGRESS_PREFIX} ${JSON.stringify(payload)}`);
   }
 
   success(message: string): void {

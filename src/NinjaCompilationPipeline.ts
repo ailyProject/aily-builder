@@ -3,7 +3,11 @@ import path from 'path';
 import { spawn } from 'child_process';
 import { createHash } from 'crypto';
 import { glob } from 'glob';
-import { Logger } from './utils/Logger';
+import {
+  AilyBuilderProgressStage,
+  AilyBuilderProgressStatus,
+  Logger
+} from './utils/Logger';
 import { Dependency } from './DependencyAnalyzer';
 import { CacheManager, CacheKey } from './CacheManager';
 import { NinjaGenerator, NinjaOptions } from './NinjaGenerator';
@@ -30,6 +34,13 @@ export interface NinjaCompilationResult {
   error?: string;
 }
 
+interface NinjaStageProgressRange {
+  stage: AilyBuilderProgressStage;
+  start: number;
+  end: number;
+  message: string;
+}
+
 export class NinjaCompilationPipeline {
   private logger: Logger;
   private dependencies: Dependency[];
@@ -39,6 +50,9 @@ export class NinjaCompilationPipeline {
   private ninjaGenerator: NinjaGenerator;
   private readonly arduinoCoreBuildFlag = '-DARDUINO_CORE_BUILD';
   private cacheContextFingerprint = '';
+  private lastReportedProgress = -1;
+  private lastReportedStage: AilyBuilderProgressStage | undefined;
+  private lastReportedStatus: AilyBuilderProgressStatus | undefined;
 
   constructor(logger: Logger) {
     this.logger = logger;
@@ -52,6 +66,11 @@ export class NinjaCompilationPipeline {
     this.compileConfig = compileConfig;
     let remoteFetches = new Map<string, Promise<ArchiveCacheFetchResult>>();
     let archiveCacheHits = new Map<string, ArchiveCacheHit>();
+
+    this.lastReportedProgress = -1;
+    this.lastReportedStage = undefined;
+    this.lastReportedStatus = undefined;
+    this.reportProgress('preparing', 1, 'Preparing build');
 
     try {
       const startTime = Date.now();
@@ -124,7 +143,13 @@ export class NinjaCompilationPipeline {
           return await this.runNinjaStage(
             ninjaFilePath,
             NinjaGenerator.SKETCH_TARGET,
-            warnings
+            warnings,
+            {
+              stage: 'sketch',
+              start: 5,
+              end: 15,
+              message: 'Compiling sketch'
+            }
           );
         }
       );
@@ -167,7 +192,17 @@ export class NinjaCompilationPipeline {
             await this.invalidatePhaseOutputs('libraries');
             ninjaFilePath = await this.ninjaGenerator.generateNinjaFile(ninjaOptions);
           }
-          return await this.runNinjaStage(ninjaFilePath, NinjaGenerator.LIBRARIES_TARGET, warnings);
+          return await this.runNinjaStage(
+            ninjaFilePath,
+            NinjaGenerator.LIBRARIES_TARGET,
+            warnings,
+            {
+              stage: 'libraries',
+              start: 15,
+              end: 50,
+              message: 'Compiling libraries'
+            }
+          );
         }
       );
       if (!librariesSucceeded) {
@@ -188,7 +223,17 @@ export class NinjaCompilationPipeline {
             await this.invalidatePhaseOutputs('core');
             ninjaFilePath = await this.ninjaGenerator.generateNinjaFile(ninjaOptions);
           }
-          return await this.runNinjaStage(ninjaFilePath, NinjaGenerator.CORE_TARGET, warnings);
+          return await this.runNinjaStage(
+            ninjaFilePath,
+            NinjaGenerator.CORE_TARGET,
+            warnings,
+            {
+              stage: 'core',
+              start: 50,
+              end: 85,
+              message: 'Compiling core'
+            }
+          );
         }
       );
       if (!coreSucceeded) {
@@ -209,7 +254,17 @@ export class NinjaCompilationPipeline {
           if (hasLinkPrebuild) {
             await fs.remove(path.join(buildPath, elfTarget));
           }
-          return await this.runNinjaStage(ninjaFilePath, elfTarget, warnings);
+          return await this.runNinjaStage(
+            ninjaFilePath,
+            elfTarget,
+            warnings,
+            {
+              stage: 'linking',
+              start: 85,
+              end: 93,
+              message: 'Linking firmware'
+            }
+          );
         }
       );
       if (!linkingSucceeded) {
@@ -218,6 +273,7 @@ export class NinjaCompilationPipeline {
 
       const artifactSnapshot = await this.snapshotBuildArtifacts(recipeRunner);
       await this.removeDeclaredObjcopyOutput(recipeRunner, elfTarget);
+      this.reportProgress('objcopy', 93, 'Generating firmware');
       await this.runRecipePhase(
         recipeRunner,
         'recipe.hooks.objcopy.preobjcopy',
@@ -227,6 +283,8 @@ export class NinjaCompilationPipeline {
           await this.runRecipeGroup(recipeRunner, 'recipe.objcopy', 'Objcopy');
         }
       );
+      this.reportProgress('objcopy', 98, 'Generating firmware');
+      this.reportProgress('finalizing', 99, 'Finalizing build');
       await this.runRecipeGroup(recipeRunner, 'recipe.hooks.postbuild', 'Postbuild');
 
       const cacheableArchiveDependencies = dependencies.filter(dependency =>
@@ -239,9 +297,12 @@ export class NinjaCompilationPipeline {
         archiveCacheHits
       );
 
+      const outFilePath = await this.getExistingOutputFilePath(recipeRunner, artifactSnapshot);
+      this.reportProgress('complete', 100, 'Build complete', 'complete');
+
       return {
         success: true,
-        outFilePath: await this.getExistingOutputFilePath(recipeRunner, artifactSnapshot),
+        outFilePath,
         buildTime: Date.now() - startTime,
         warnings: warnings.length > 0 ? warnings : undefined
       };
@@ -286,14 +347,73 @@ export class NinjaCompilationPipeline {
   private async runNinjaStage(
     ninjaFilePath: string,
     target: string,
-    warnings: string[]
+    warnings: string[],
+    progressRange: NinjaStageProgressRange
   ): Promise<boolean> {
+    this.reportProgress(progressRange.stage, progressRange.start, progressRange.message);
     this.logger.info(`Starting ninja stage: ${target}`);
-    const result = await this.executeNinjaBuild(ninjaFilePath, [target]);
+    const result = await this.executeNinjaBuild(ninjaFilePath, [target], progressRange);
     if (result.warnings) {
       warnings.push(...result.warnings);
     }
+    if (result.success) {
+      this.reportProgress(progressRange.stage, progressRange.end, progressRange.message);
+    }
     return result.success;
+  }
+
+  private reportProgress(
+    stage: AilyBuilderProgressStage,
+    percent: number,
+    message: string,
+    status: AilyBuilderProgressStatus = 'running'
+  ): void {
+    const normalizedPercent = Math.max(
+      this.lastReportedProgress,
+      Math.max(0, Math.min(100, Math.round(percent)))
+    );
+    if (
+      normalizedPercent === this.lastReportedProgress
+      && stage === this.lastReportedStage
+      && status === this.lastReportedStatus
+    ) {
+      return;
+    }
+
+    this.lastReportedProgress = normalizedPercent;
+    this.lastReportedStage = stage;
+    this.lastReportedStatus = status;
+    this.logger.progress({
+      stage,
+      percent: normalizedPercent,
+      status,
+      message
+    });
+  }
+
+  private reportNinjaProgress(
+    progressLine: string,
+    progressRange: NinjaStageProgressRange | undefined
+  ): void {
+    if (!progressRange) {
+      return;
+    }
+
+    const match = progressLine.match(/\[(\d+)\/(\d+)\]/);
+    if (!match) {
+      return;
+    }
+
+    const current = Number.parseInt(match[1], 10);
+    const total = Number.parseInt(match[2], 10);
+    if (!Number.isFinite(current) || !Number.isFinite(total) || total <= 0) {
+      return;
+    }
+
+    const localRatio = Math.max(0, Math.min(1, current / total));
+    const globalPercent = progressRange.start
+      + localRatio * (progressRange.end - progressRange.start);
+    this.reportProgress(progressRange.stage, globalPercent, progressRange.message);
   }
 
   private async runNinjaPhase(
@@ -723,7 +843,11 @@ export class NinjaCompilationPipeline {
     return failedKeys;
   }
 
-  private async executeNinjaBuild(ninjaFilePath: string, targets: string[] = []): Promise<{ success: boolean; warnings?: string[] }> {
+  private async executeNinjaBuild(
+    ninjaFilePath: string,
+    targets: string[] = [],
+    progressRange?: NinjaStageProgressRange
+  ): Promise<{ success: boolean; warnings?: string[] }> {
     return new Promise((resolve, reject) => {
       const ninjaPath = this.getNinjaExecutablePath();
       const buildDir = sanitizeNonAsciiPaths(path.dirname(ninjaFilePath));
@@ -776,6 +900,7 @@ export class NinjaCompilationPipeline {
               // 这是ninja的进度信息，重置失败模式
               isInFailureMode = false;
               this.logger.info(line.trim());
+              this.reportNinjaProgress(line.trim(), progressRange);
               // 检查是否是编译完成的消息，立即存储到缓存
               this.handleCompilationProgress(line.trim(), buildDir);
             } else if (line.startsWith('FAILED:')) {
