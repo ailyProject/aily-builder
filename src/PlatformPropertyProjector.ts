@@ -39,6 +39,11 @@ function isCurrentBuildRoot(key: string): boolean {
     || key.startsWith('build.')
     // Tool package identities are discovered from these paths dynamically.
     || key.startsWith('runtime.tools.')
+    // Saved preprocess results are also the upload contract consumed by
+    // aily-blockly. Keep the complete Arduino tool namespace so the selected
+    // board's upload/program/debug patterns and vendor-defined helper values
+    // remain available after preprocessing.
+    || key.startsWith('tools.')
     // Recipes are the executable build contract of a platform. Preserve the
     // complete namespace so vendor-defined phases and future Arduino recipe
     // types do not require another projector whitelist update.
@@ -75,11 +80,11 @@ function collectReferenceClosure(
 
 /**
  * Project the fully resolved platform property bag to the properties consumed
- * by preprocessing and compilation.
+ * by preprocessing, compilation and downstream upload tooling.
  *
  * This deliberately runs after platform/board/local/OS expansion. It removes
- * menu definitions, inactive host variants, upload/debug metadata and helper
- * properties whose resolved values have already been embedded in live recipes.
+ * menu definitions, inactive host variants and unrelated helper properties
+ * whose resolved values have already been embedded in live recipes.
  */
 export function projectPlatformBuildProperties(
   properties: PlatformProperties
