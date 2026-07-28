@@ -4,6 +4,7 @@ import { Logger } from './utils/Logger';
 import { Dependency } from './DependencyAnalyzer';
 import { CompileConfigManager } from './CompileConfigManager';
 import { ArchiveCacheHit, getArchiveDependencyKey } from './ArchiveCloudCacheManager';
+import { commandHasIncludePath, dedupeCompileIncludePaths } from './utils/CompileIncludePaths';
 
 export interface NinjaRule {
   name: string;
@@ -131,7 +132,8 @@ export class NinjaGenerator {
       ld: this.compileConfig.compiler.ld,
       objcopy: this.compileConfig.compiler.objcopy,
       build_path: this.buildPath.replace(/\\/g, '/'),
-      sketch_name: process.env['SKETCH_NAME'] || 'sketch'
+      sketch_name: process.env['SKETCH_NAME'] || 'sketch',
+      sketch_dir_path: (process.env['SKETCH_DIR_PATH'] || '').replace(/\\/g, '/')
     };
 
     // 添加 RP2040 平台变量（从 Arduino 配置中获取）
@@ -822,12 +824,32 @@ export class NinjaGenerator {
 
     // 替换include路径
     if (command.includes('%INCLUDE_PATHS%')) {
-      const includeArgs = this.dependencies
-        .map(dep => {
-          const varName = `${dep.name.replace(/[^a-zA-Z0-9]/g, '_')}_path`;
-          // 使用引号包围变量以处理包含特殊字符的路径
-          return `"-I$${varName}"`;
-        })
+      const sketchDirPath = process.env['SKETCH_DIR_PATH'];
+      const includeEntries: Array<{ path: string; argument: string }> = [];
+
+      // Some platforms inject build.source.path themselves (for example
+      // ESP32), while others rely entirely on {includes} (for example SAMD).
+      if (sketchDirPath && !commandHasIncludePath(command, sketchDirPath)) {
+        includeEntries.push({
+          path: sketchDirPath,
+          argument: '"-I$sketch_dir_path"'
+        });
+      }
+
+      for (const dep of this.dependencies) {
+        if (!dep.path || commandHasIncludePath(command, dep.path)) {
+          continue;
+        }
+
+        const varName = `${dep.name.replace(/[^a-zA-Z0-9]/g, '_')}_path`;
+        includeEntries.push({
+          path: dep.path,
+          argument: `"-I$${varName}"`
+        });
+      }
+
+      const includeArgs = dedupeCompileIncludePaths(includeEntries)
+        .map(entry => entry.argument)
         .join(' ');
       command = command.replace(/%INCLUDE_PATHS%/g, includeArgs);
     }
