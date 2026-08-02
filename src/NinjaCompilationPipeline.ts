@@ -11,6 +11,7 @@ import {
 import { Dependency } from './DependencyAnalyzer';
 import { CacheManager, CacheKey } from './CacheManager';
 import { NinjaGenerator, NinjaOptions } from './NinjaGenerator';
+import { commandHasIncludePath, dedupeCompileIncludePaths } from './utils/CompileIncludePaths';
 import { ArchiveCacheFetchResult, ArchiveCacheHit, ArchiveCloudCacheManager, getArchiveDependencyKey } from './ArchiveCloudCacheManager';
 import { sanitizeNonAsciiPaths } from './utils/ShortPath';
 import { isMacOSHost, isWindowsHost, toHostPathKey } from './utils/HostPlatform';
@@ -1205,43 +1206,6 @@ export class NinjaCompilationPipeline {
     const buildPath = process.env['BUILD_PATH'] || '';
     const hash = createHash('sha256');
     const files = new Set<string>();
-    const configNames = new Set(['file_opts', 'sdkconfig']);
-    const configExtensions = new Set([
-      '.h', '.hh', '.hpp', '.inc', '.opt', '.cfg', '.json', '.csv', '.rsp', '.ld', '.lds'
-    ]);
-    const derivedExtensions = new Set([
-      '.o', '.a', '.elf', '.bin', '.hex', '.eep', '.uf2', '.zip', '.map', '.d'
-    ]);
-    const sourceExtensions = new Set(['.c', '.cc', '.cpp', '.cxx', '.s']);
-    const platform = this.compileConfig?.arduino?.platform || {};
-    const hasInputGeneratingHooks = Object.keys(platform).some(key =>
-      key.startsWith('recipe.hooks.prebuild')
-      || key.startsWith('recipe.hooks.sketch.prebuild')
-    );
-    const ignoredNames = new Set([
-      'build.ninja', '.ninja_deps', '.ninja_log', '.aily-build-context-v1'
-    ]);
-
-    if (buildPath && await fs.pathExists(buildPath)) {
-      const candidates = await glob('**/*', {
-        cwd: buildPath,
-        absolute: true,
-        nodir: true,
-        follow: false
-      });
-      for (const candidate of candidates) {
-        const name = path.basename(candidate);
-        const extension = path.extname(candidate).toLowerCase();
-        const isKnownConfig = configNames.has(name) || configExtensions.has(extension);
-        const isOpaqueHookOutput = hasInputGeneratingHooks
-          && !ignoredNames.has(name)
-          && !derivedExtensions.has(extension)
-          && !sourceExtensions.has(extension);
-        if (isKnownConfig || isOpaqueHookOutput) {
-          files.add(path.resolve(candidate));
-        }
-      }
-    }
 
     for (const filePath of await this.collectReferencedBuildInputFiles()) {
       files.add(filePath);
@@ -1563,8 +1527,21 @@ export class NinjaCompilationPipeline {
 
     // 替换include路径
     if (args.includes('%INCLUDE_PATHS%')) {
-      const includeArgs = this.dependencies
-        .map(dep => `-I"${dep.path}"`)
+      const sketchDirPath = process.env['SKETCH_DIR_PATH'];
+      const includeEntries: Array<{ path: string }> = [];
+
+      if (sketchDirPath && !commandHasIncludePath(args, sketchDirPath)) {
+        includeEntries.push({ path: sketchDirPath });
+      }
+
+      for (const dep of this.dependencies) {
+        if (dep.path && !commandHasIncludePath(args, dep.path)) {
+          includeEntries.push({ path: dep.path });
+        }
+      }
+
+      const includeArgs = dedupeCompileIncludePaths(includeEntries)
+        .map(entry => `-I"${entry.path}"`)
         .join(' ');
       args = args.replace(/%INCLUDE_PATHS%/g, includeArgs);
     }

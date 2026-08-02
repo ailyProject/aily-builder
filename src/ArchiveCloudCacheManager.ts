@@ -17,11 +17,12 @@ import { Dependency } from './DependencyAnalyzer';
 import { collectPackageIdentitiesFromPaths, extractPackageIdentityFromPath } from './utils/PackageIdentity';
 import { getAilyBuilderCacheDirectory } from './utils/CacheDirectory';
 
-const CACHE_SCHEMA = 'aily.archive-cache.v1';
-const INPUT_SCHEMA = 'aily.archive-build-inputs.v1';
-const FETCH_REQUEST_SCHEMA = 'aily.archive-fetch-request.v1';
-const KEY_VERSION = 'archive-cloud-cache-v1';
-const DEFAULT_REMOTE_BASE_URL = 'https://cache.aily.pro/v1';
+const CACHE_SCHEMA = 'aily.archive-cache.v2';
+const INPUT_SCHEMA = 'aily.archive-build-inputs.v2';
+const FETCH_REQUEST_SCHEMA = 'aily.archive-fetch-request.v2';
+const KEY_VERSION = 'archive-cloud-cache-v2';
+const CACHE_LAYOUT_VERSION = 'v2';
+const DEFAULT_REMOTE_BASE_URL = 'https://cache.aily.pro/v2';
 const DEFAULT_REMOTE_TIMEOUT_MS = 1500;
 const LIBRARY_ARCHIVE_CACHE_MIN_COMPILE_FILES = 20;
 const LIBRARY_ARCHIVE_CACHE_MIN_COMPILE_BYTES = 300 * 1024;
@@ -255,7 +256,7 @@ export class ArchiveCloudCacheManager {
   }
 
   getEntryDir(key: string): string {
-    return path.join(this.cacheDir, 'v1', key.substring(0, 2), key.substring(2, 4), key);
+    return path.join(this.cacheDir, CACHE_LAYOUT_VERSION, key.substring(0, 2), key.substring(2, 4), key);
   }
 
   getCacheDir(): string {
@@ -490,7 +491,7 @@ export class ArchiveCloudCacheManager {
     const platform = compileConfig?.arduino?.platform || {};
     const sourceFiles = await this.collectSourceFiles(target.dependency);
     const sourceRoot = target.dependency.path || '';
-    const projectConfigFiles = await this.collectProjectConfigFiles(compileConfig);
+    const projectConfigFiles = await this.collectProjectConfigFiles();
     const responseFiles = await this.collectResponseFiles(compileConfig);
     const compileArgs = this.createCompileSignature(dependencies, compileConfig);
 
@@ -621,7 +622,7 @@ export class ArchiveCloudCacheManager {
     return Array.from(files).sort((a, b) => this.normalizePath(a).localeCompare(this.normalizePath(b)));
   }
 
-  private async collectProjectConfigFiles(compileConfig: any): Promise<string[]> {
+  private async collectProjectConfigFiles(): Promise<string[]> {
     const names = [
       'lv_conf.h',
       'User_Setup.h',
@@ -632,7 +633,6 @@ export class ArchiveCloudCacheManager {
       'build.opt',
       'Updater_Signing.h'
     ];
-    const buildPath = process.env['BUILD_PATH'];
     const dirs = [
       process.env['SKETCH_DIR_PATH'],
       process.cwd()
@@ -644,43 +644,6 @@ export class ArchiveCloudCacheManager {
         const candidate = path.resolve(dir, name);
         if (await fs.pathExists(candidate)) {
           result.add(candidate);
-        }
-      }
-    }
-
-    if (buildPath && await fs.pathExists(buildPath)) {
-      const configNames = new Set(['file_opts', 'sdkconfig']);
-      const configExtensions = new Set([
-        '.h', '.hh', '.hpp', '.inc', '.opt', '.cfg', '.json', '.csv', '.rsp', '.ld', '.lds'
-      ]);
-      const derivedExtensions = new Set([
-        '.o', '.a', '.elf', '.bin', '.hex', '.eep', '.uf2', '.zip', '.map', '.d'
-      ]);
-      const sourceExtensions = new Set(['.c', '.cc', '.cpp', '.cxx', '.s']);
-      const platform = compileConfig?.arduino?.platform || {};
-      const hasInputGeneratingHooks = Object.keys(platform).some(key =>
-        key.startsWith('recipe.hooks.prebuild')
-        || key.startsWith('recipe.hooks.sketch.prebuild')
-      );
-      const ignoredNames = new Set([
-        'build.ninja', '.ninja_deps', '.ninja_log', '.aily-build-context-v1'
-      ]);
-      const generatedConfigs = await glob('**/*', {
-        cwd: buildPath,
-        absolute: true,
-        nodir: true,
-        follow: false
-      });
-      for (const candidate of generatedConfigs) {
-        const name = path.basename(candidate);
-        const extension = path.extname(candidate).toLowerCase();
-        const isKnownConfig = configNames.has(name) || configExtensions.has(extension);
-        const isOpaqueHookOutput = hasInputGeneratingHooks
-          && !ignoredNames.has(name)
-          && !derivedExtensions.has(extension)
-          && !sourceExtensions.has(extension);
-        if (isKnownConfig || isOpaqueHookOutput) {
-          result.add(path.resolve(candidate));
         }
       }
     }
