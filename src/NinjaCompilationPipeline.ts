@@ -1206,43 +1206,6 @@ export class NinjaCompilationPipeline {
     const buildPath = process.env['BUILD_PATH'] || '';
     const hash = createHash('sha256');
     const files = new Set<string>();
-    const configNames = new Set(['file_opts', 'sdkconfig']);
-    const configExtensions = new Set([
-      '.h', '.hh', '.hpp', '.inc', '.opt', '.cfg', '.json', '.csv', '.rsp', '.ld', '.lds'
-    ]);
-    const derivedExtensions = new Set([
-      '.o', '.a', '.elf', '.bin', '.hex', '.eep', '.uf2', '.zip', '.map', '.d'
-    ]);
-    const sourceExtensions = new Set(['.c', '.cc', '.cpp', '.cxx', '.s']);
-    const platform = this.compileConfig?.arduino?.platform || {};
-    const hasInputGeneratingHooks = Object.keys(platform).some(key =>
-      key.startsWith('recipe.hooks.prebuild')
-      || key.startsWith('recipe.hooks.sketch.prebuild')
-    );
-    const ignoredNames = new Set([
-      'build.ninja', '.ninja_deps', '.ninja_log', '.aily-build-context-v1'
-    ]);
-
-    if (buildPath && await fs.pathExists(buildPath)) {
-      const candidates = await glob('**/*', {
-        cwd: buildPath,
-        absolute: true,
-        nodir: true,
-        follow: false
-      });
-      for (const candidate of candidates) {
-        const name = path.basename(candidate);
-        const extension = path.extname(candidate).toLowerCase();
-        const isKnownConfig = configNames.has(name) || configExtensions.has(extension);
-        const isOpaqueHookOutput = hasInputGeneratingHooks
-          && !ignoredNames.has(name)
-          && !derivedExtensions.has(extension)
-          && !sourceExtensions.has(extension);
-        if (isKnownConfig || isOpaqueHookOutput) {
-          files.add(path.resolve(candidate));
-        }
-      }
-    }
 
     for (const filePath of await this.collectReferencedBuildInputFiles()) {
       files.add(filePath);
