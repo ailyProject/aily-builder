@@ -1295,15 +1295,36 @@ export class NinjaCompilationPipeline {
       return false;
     }
 
-    const derivedFiles = await glob([
-      '**/*.o', '**/*.o.d', '*.a', '*.elf'
-    ], {
-      cwd: buildPath,
-      absolute: true,
-      nodir: true,
-      follow: false
-    });
+    const derivedFiles: string[] = [];
+    for (const directoryName of ['sketch', 'library', 'core']) {
+      const directory = path.join(buildPath, directoryName);
+      if (!await fs.pathExists(directory)) {
+        continue;
+      }
+      derivedFiles.push(...await glob(['**/*.o', '**/*.o.d'], {
+        cwd: directory,
+        absolute: true,
+        nodir: true,
+        follow: false
+      }));
+    }
+
+    const managedRootOutputs = new Set<string>([
+      path.join(buildPath, 'core.a'),
+      path.join(buildPath, `${path.basename(process.env['SKETCH_NAME'] || 'sketch')}.elf`)
+    ]);
+    for (const dependency of this.dependencies) {
+      if (dependency.type !== 'library') {
+        continue;
+      }
+      const archivePath = path.resolve(buildPath, `${dependency.name}.a`);
+      if (this.isPathWithin(buildPath, archivePath) && archivePath !== buildPath) {
+        managedRootOutputs.add(archivePath);
+      }
+    }
+
     derivedFiles.push(
+      ...managedRootOutputs,
       path.join(buildPath, '.ninja_deps'),
       path.join(buildPath, '.ninja_log')
     );
