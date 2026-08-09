@@ -227,7 +227,7 @@ aily-builder cache clear --all
 ```
 
 - `protocolVersion`：协议版本，当前为 `1`。
-- `stage`：`preparing`、`sketch`、`libraries`、`core`、`linking`、`objcopy`、`finalizing` 或 `complete`。
+- `stage`：`preparing`、`sketch`、`libraries`、`core`、`linking`、`objcopy`、`resources`、`finalizing` 或 `complete`。
 - `percent`：整次编译的全局进度，范围为 `0`–`100`，保证单调不回退。
 - `status`：`running` 或 `complete`；只有最终成功完成时才发送 `complete` 和 `100`。
 - `message`：适合直接显示的英文阶段说明，客户端可以按 `stage` 本地化。

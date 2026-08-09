@@ -42,6 +42,14 @@ interface NinjaStageProgressRange {
   message: string;
 }
 
+export function isPlatformRecipeProgressEnabled(
+  platform: Readonly<Record<string, unknown>> | undefined
+): boolean {
+  return String(platform?.['build.aily_builder_progress'] ?? '')
+    .trim()
+    .toLowerCase() === 'true';
+}
+
 export class NinjaCompilationPipeline {
   private logger: Logger;
   private dependencies: Dependency[];
@@ -77,10 +85,24 @@ export class NinjaCompilationPipeline {
       const startTime = Date.now();
       const warnings: string[] = [];
       const buildPath = process.env['BUILD_PATH'] || '';
+      const platformProgressEnabled = isPlatformRecipeProgressEnabled(
+        compileConfig?.arduino?.platform
+      );
       const recipeRunner = compileConfig?.arduino?.platform
         ? new RecipeRunner(compileConfig.arduino.platform, {
           cwd: buildPath,
-          env: process.env,
+          env: platformProgressEnabled
+            ? {
+              ...process.env,
+              AILY_BUILDER_PROGRESS: '1'
+            }
+            : process.env,
+          // Preserve the existing buffered recipe behavior unless a platform
+          // explicitly opts in. CI13XX uses this path for its long-running
+          // resource generator; unrelated boards keep their previous output.
+          ...(platformProgressEnabled
+            ? { stdout: process.stdout, stderr: process.stderr }
+            : {}),
           windowsHide: true
         })
         : undefined;

@@ -11,6 +11,7 @@ export type AilyBuilderProgressStage =
   | 'core'
   | 'linking'
   | 'objcopy'
+  | 'resources'
   | 'finalizing'
   | 'complete';
 
