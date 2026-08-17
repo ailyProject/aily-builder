@@ -37,6 +37,17 @@ assert.deepEqual(
   },
 );
 assert.deepEqual(
+  capabilities.capabilities.sceneGraphProvenance,
+  {
+    schemaVersion: 1,
+    cliOption: '--graph-semantic-revision',
+    sourceDocumentSchemaOption: '--scene-document-schema-version',
+    gpioDirectionsOption: '--scene-gpio-directions',
+    gpioPullsOption: '--scene-gpio-pulls',
+    manifestField: 'build.graph',
+  },
+);
+assert.deepEqual(
   capabilities.capabilities.blockSourceMap,
   {
     schemaVersion: 1,
@@ -51,6 +62,19 @@ assert.deepEqual(
     outputFileName: 'aily-debug-source.txt',
     artifactRole: 'debug-source',
     maxSizeBytes: 2 * 1024 * 1024,
+  },
+);
+assert.deepEqual(
+  capabilities.capabilities.debugInstrumentation,
+  {
+    schemaVersion: 1,
+    detection: 'linked-symbol',
+    outputFileName: 'aily-debug-instrumentation.json',
+    artifactRole: 'debug-instrumentation',
+    supportedAbis: [{
+      name: 'aily.freertos-object-registry',
+      version: 1,
+    }],
   },
 );
 assert.deepEqual(

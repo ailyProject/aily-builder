@@ -8,11 +8,13 @@ export type ArtifactFileRole =
   | 'merged-flash'
   | 'bootloader'
   | 'partitions'
+  | 'ota-data-initializer'
   | 'elf'
   | 'map'
   | 'source-map'
   | 'debug-source'
   | 'memory-map'
+  | 'debug-instrumentation'
   | 'hex'
   | 'uf2'
   | 'archive';
@@ -22,6 +24,81 @@ export interface ArtifactFile {
   path: string;
   sizeBytes: number;
   sha256: string;
+}
+
+export type Esp32FlashSegmentRole =
+  | 'bootloader'
+  | 'partition-table'
+  | 'ota-data-initializer'
+  | 'application';
+
+export interface Esp32FlashLayout {
+  schemaVersion: 1;
+  kind: 'aily-esp32-flash-layout';
+  target: {
+    architecture: 'esp32';
+    boardId: string;
+    mcu: string;
+  };
+  device: {
+    sizeBytes: number;
+    mode: 'dio' | 'qio' | 'dout' | 'qout';
+    bootMode: 'dio' | 'qio' | 'dout' | 'qout';
+    frequencyHz: number;
+    source: 'resolved-board-properties';
+  };
+  segments: Array<{
+    role: Esp32FlashSegmentRole;
+    offsetBytes: number;
+    path: string;
+    sizeBytes: number;
+    sha256: string;
+  }>;
+}
+
+export interface Esp32BuildEnvironment {
+  schemaVersion: 1;
+  arduinoCore: {
+    name: 'arduino-esp32';
+    version: string;
+    source: 'platform.version';
+  };
+  espIdf: {
+    name: 'esp-idf';
+    version: string;
+    source: 'esp32-arduino-libs/esp_idf_version.h';
+  };
+  toolchain: {
+    name: 'esp-x32' | 'esp-rv32';
+    version: string;
+    source: 'toolVersions.esp-x32' | 'toolVersions.esp-rv32';
+  };
+}
+
+export interface ArtifactGraphProvenance {
+  schemaVersion: 1;
+  kind: 'aily-scene-graph-provenance';
+  graphSemanticRevision: string;
+  sourceDocumentSchemaVersion?: 1 | 2;
+  gpioDirections?: Record<string, 'input' | 'output'>;
+  gpioPulls?: Record<string, 'up' | 'down'>;
+}
+
+export interface DebugInstrumentationManifest {
+  schemaVersion: 1;
+  kind: 'aily-debug-instrumentation';
+  abi: {
+    name: 'aily.freertos-object-registry';
+    version: 1;
+    symbol: 'ailyFreeRtosDebugObjectRegistryV1';
+    capabilities: ['freertos.objects'];
+  };
+  compatibility: {
+    architecture: string;
+    mcu?: string;
+    framework: 'arduino';
+    rtos: 'freertos';
+  };
 }
 
 export interface SimulationArtifactManifest {
@@ -42,6 +119,8 @@ export interface SimulationArtifactManifest {
       sha256: string;
     };
     toolVersions: Record<string, string>;
+    environment?: Esp32BuildEnvironment;
+    graph?: ArtifactGraphProvenance;
   };
   files: ArtifactFile[];
   primaryFile: string;
@@ -50,6 +129,7 @@ export interface SimulationArtifactManifest {
     imagePath: string;
     imageSizeBytes: number;
     sdkConfiguredSizeBytes?: number;
+    layout?: Esp32FlashLayout;
   };
   debug?: {
     elfPath?: string;
@@ -57,6 +137,7 @@ export interface SimulationArtifactManifest {
     sourceMapPath?: string;
     sourceSnapshotPath?: string;
     memoryMapPath?: string;
+    instrumentationPath?: string;
   };
 }
 
@@ -83,8 +164,16 @@ export interface EmitArtifactManifestOptions {
   buildPath: string;
   sketchPath: string;
   board: string;
+  /** Resolved physical board variant when the FQBN uses a menu-selected board family. */
+  boardId?: string;
   mcu?: string;
   toolVersions?: Record<string, string>;
+  platformProperties?: Record<string, string>;
+  sdkPath?: string;
+  graphSemanticRevision?: string;
+  sourceDocumentSchemaVersion?: 1 | 2;
+  gpioDirections?: Record<string, 'input' | 'output'>;
+  gpioPulls?: Record<string, 'up' | 'down'>;
   primaryOutputPath?: string;
   manifestPath: string;
 }
@@ -93,6 +182,8 @@ const ARTIFACT_FILE_NAMES = [
   /^aily-block-source-map\.json$/i,
   /^aily-debug-source\.txt$/i,
   /^aily-debug-memory-map\.json$/i,
+  /^aily-debug-instrumentation\.json$/i,
+  /^aily-boot-app0\.bin$/i,
   /\.elf$/i,
   /\.map$/i,
   /\.hex$/i,
@@ -128,6 +219,10 @@ function classifyArtifact(fileName: string): ArtifactFileRole | null {
   if (lowerName === 'aily-block-source-map.json') return 'source-map';
   if (lowerName === 'aily-debug-source.txt') return 'debug-source';
   if (lowerName === 'aily-debug-memory-map.json') return 'memory-map';
+  if (lowerName === 'aily-debug-instrumentation.json') {
+    return 'debug-instrumentation';
+  }
+  if (lowerName === 'aily-boot-app0.bin') return 'ota-data-initializer';
   if (lowerName.endsWith('.merged.bin')) return 'merged-flash';
   if (lowerName.endsWith('.bootloader.bin') || lowerName === 'bootloader.bin') return 'bootloader';
   if (lowerName.endsWith('.partitions.bin') || lowerName === 'partitions.bin') return 'partitions';
@@ -465,11 +560,16 @@ async function collectArtifactFiles(buildRoot: string): Promise<ArtifactFile[]> 
   );
 }
 
-function parseTarget(board: string, mcu?: string): SimulationArtifactManifest['target'] {
-  const [packageName = '', architecture = '', boardId = ''] = board.split(':');
-  if (!packageName || !architecture || !boardId) {
+function parseTarget(
+  board: string,
+  mcu?: string,
+  resolvedBoardId?: string,
+): SimulationArtifactManifest['target'] {
+  const [packageName = '', architecture = '', fqbnBoardId = ''] = board.split(':');
+  if (!packageName || !architecture || !fqbnBoardId) {
     throw new Error(`Invalid board FQBN for artifact manifest: ${board}`);
   }
+  const boardId = resolvedBoardId?.trim() || fqbnBoardId;
   return {
     fqbn: board,
     architecture,
@@ -516,7 +616,9 @@ function createArtifactId(
   target: SimulationArtifactManifest['target'],
   sourceSha256: string,
   files: ArtifactFile[],
-  sdkConfiguredFlashSizeBytes?: number,
+  flashLayout?: Esp32FlashLayout,
+  buildEnvironment?: Esp32BuildEnvironment,
+  graphProvenance?: ArtifactGraphProvenance,
 ): string {
   const hash = createHash('sha256');
   hash.update(target.fqbn);
@@ -530,28 +632,339 @@ function createArtifactId(
     hash.update('\0');
     hash.update(file.sha256);
   }
-  if (sdkConfiguredFlashSizeBytes !== undefined) {
-    hash.update('\0sdk-configured-flash-size\0');
-    hash.update(String(sdkConfiguredFlashSizeBytes));
+  if (flashLayout) {
+    hash.update('\0esp32-flash-layout\0');
+    hash.update(JSON.stringify(flashLayout));
+  }
+  if (buildEnvironment) {
+    hash.update('\0esp32-build-environment\0');
+    hash.update(JSON.stringify(buildEnvironment));
+  }
+  if (graphProvenance) {
+    hash.update('\0scene-graph-provenance\0');
+    hash.update(JSON.stringify(graphProvenance));
   }
   return hash.digest('hex');
 }
 
-async function readSdkConfiguredFlashSize(
-  buildRoot: string,
-): Promise<number | undefined> {
-  const sdkconfigPath = path.join(buildRoot, 'sdkconfig');
-  const sdkconfig = await fs.readFile(sdkconfigPath, 'utf8').catch(() => null);
-  if (sdkconfig === null) return undefined;
+function parseStorageSize(value: string | undefined, label: string): number {
+  const match = value?.trim().match(/^([1-9]\d*)(KB|MB)$/i);
+  if (!match) throw new Error(`${label} must use an integer KB or MB value.`);
+  const amount = Number(match[1]);
+  const multiplier = match[2].toUpperCase() === 'MB' ? 1024 * 1024 : 1024;
+  const sizeBytes = amount * multiplier;
+  if (!Number.isSafeInteger(sizeBytes) || sizeBytes <= 0) {
+    throw new Error(`${label} exceeds the supported integer range.`);
+  }
+  return sizeBytes;
+}
 
-  const match = sdkconfig.match(
-    /^CONFIG_ESPTOOLPY_FLASHSIZE="([1-9]\d*)(KB|MB)"$/m,
+function parseFrequencyHz(value: string | undefined, label: string): number {
+  const match = value?.trim().match(/^([1-9]\d*)(k|m)?(?:hz)?$/i);
+  if (!match) throw new Error(`${label} must be an integer Hz, kHz, or MHz value.`);
+  const amount = Number(match[1]);
+  const suffix = match[2]?.toLowerCase();
+  const multiplier = suffix === 'm' ? 1_000_000 : suffix === 'k' ? 1_000 : 1;
+  const frequencyHz = amount * multiplier;
+  if (!Number.isSafeInteger(frequencyHz) || frequencyHz <= 0) {
+    throw new Error(`${label} exceeds the supported integer range.`);
+  }
+  return frequencyHz;
+}
+
+function parseOffset(value: string, label: string): number {
+  if (!/^(?:0x[a-f0-9]+|[0-9]+)$/i.test(value)) {
+    throw new Error(`${label} is not an integer flash offset.`);
+  }
+  const offset = Number(value);
+  if (!Number.isSafeInteger(offset) || offset < 0) {
+    throw new Error(`${label} exceeds the supported integer range.`);
+  }
+  return offset;
+}
+
+function classifyEsp32MergeInput(filePath: string): Esp32FlashSegmentRole | null {
+  const normalized = filePath.replace(/\\/g, '/').toLowerCase();
+  if (normalized.endsWith('.bootloader.bin')) return 'bootloader';
+  if (normalized.endsWith('.partitions.bin')) return 'partition-table';
+  if (
+    normalized === 'boot_app0.bin'
+    || normalized.endsWith('/boot_app0.bin')
+  ) {
+    return 'ota-data-initializer';
+  }
+  if (normalized.endsWith('.bin')) return 'application';
+  return null;
+}
+
+function parseEsp32MergeOffsets(
+  platformProperties: Record<string, string>,
+): Map<Esp32FlashSegmentRole, number> {
+  const mergeCommand = platformProperties[
+    'recipe.hooks.objcopy.postobjcopy.3.pattern_args'
+  ] || platformProperties['recipe.hooks.objcopy.postobjcopy.3.pattern'];
+  if (!mergeCommand || !/\bmerge(?:-|_)bin\b/i.test(mergeCommand)) {
+    throw new Error(
+      'ESP32 Artifact requires the resolved esptool merge-bin/merge_bin recipe.',
+    );
+  }
+  const offsets = new Map<Esp32FlashSegmentRole, number>();
+  const pairs = mergeCommand.matchAll(
+    /(?:^|\s)(0x[a-f0-9]+|[0-9]+)\s+"([^"]+\.bin)"/gi,
   );
-  if (!match) return undefined;
-  const value = Number(match[1]);
-  const unit = match[2];
-  if (!Number.isSafeInteger(value)) return undefined;
-  return value * (unit === 'MB' ? 1024 * 1024 : 1024);
+  for (const pair of pairs) {
+    const role = classifyEsp32MergeInput(pair[2]);
+    if (!role) continue;
+    if (offsets.has(role)) {
+      throw new Error(`ESP32 merge recipe contains duplicate ${role} segments.`);
+    }
+    offsets.set(role, parseOffset(pair[1], `ESP32 ${role} offset`));
+  }
+  const required: Esp32FlashSegmentRole[] = [
+    'bootloader',
+    'partition-table',
+    'ota-data-initializer',
+    'application',
+  ];
+  for (const role of required) {
+    if (!offsets.has(role)) {
+      throw new Error(`ESP32 merge recipe is missing the ${role} segment.`);
+    }
+  }
+  return offsets;
+}
+
+async function copyEsp32BootApp0(
+  buildRoot: string,
+  sdkPath: string | undefined,
+): Promise<void> {
+  if (!sdkPath) throw new Error('ESP32 Artifact requires the resolved Arduino SDK path.');
+  const sourcePath = path.resolve(sdkPath, 'tools', 'partitions', 'boot_app0.bin');
+  const sourceStat = await fs.stat(sourcePath).catch(() => null);
+  if (!sourceStat?.isFile()) {
+    throw new Error('ESP32 Artifact boot_app0.bin is missing from the Arduino SDK.');
+  }
+  await fs.copyFile(sourcePath, path.join(buildRoot, 'aily-boot-app0.bin'));
+}
+
+async function readEspIdfVersion(
+  platformProperties: Record<string, string>,
+  mcu: string,
+): Promise<string> {
+  const librariesPath = platformProperties['runtime.tools.esp32-arduino-libs.path'];
+  if (!librariesPath) {
+    throw new Error('ESP32 Artifact requires the resolved esp32-arduino-libs path.');
+  }
+  const headerPath = path.resolve(
+    librariesPath,
+    mcu,
+    'include',
+    'esp_common',
+    'include',
+    'esp_idf_version.h',
+  );
+  const header = await fs.readFile(headerPath, 'utf8').catch(() => null);
+  if (header === null) {
+    throw new Error('ESP32 Artifact cannot read esp_idf_version.h.');
+  }
+  const values = ['MAJOR', 'MINOR', 'PATCH'].map((part) => {
+    const match = header.match(
+      new RegExp(`^#define\\s+ESP_IDF_VERSION_${part}\\s+([0-9]+)\\s*$`, 'm'),
+    );
+    if (!match) throw new Error(`ESP32 Artifact cannot resolve ESP-IDF ${part}.`);
+    return match[1];
+  });
+  return values.join('.');
+}
+
+async function createEsp32BuildEnvironment(
+  target: SimulationArtifactManifest['target'],
+  platformProperties: Record<string, string>,
+  toolVersions: Record<string, string> = {},
+): Promise<Esp32BuildEnvironment> {
+  const arduinoCoreVersion = platformProperties['version']?.trim();
+  if (!arduinoCoreVersion) {
+    throw new Error('ESP32 Artifact requires platform.version for Arduino Core.');
+  }
+  if (!target.mcu) throw new Error('ESP32 Artifact requires a concrete MCU.');
+  const toolchains = (['esp-x32', 'esp-rv32'] as const)
+    .map((name) => ({ name, version: toolVersions[name]?.trim() }))
+    .filter((toolchain): toolchain is {
+      name: 'esp-x32' | 'esp-rv32';
+      version: string;
+    } => Boolean(toolchain.version));
+  if (toolchains.length !== 1) {
+    throw new Error(
+      'ESP32 Artifact requires exactly one compiler toolchain in toolVersions: esp-x32 or esp-rv32.',
+    );
+  }
+  const [toolchain] = toolchains;
+  return {
+    schemaVersion: 1,
+    arduinoCore: {
+      name: 'arduino-esp32',
+      version: arduinoCoreVersion,
+      source: 'platform.version',
+    },
+    espIdf: {
+      name: 'esp-idf',
+      version: await readEspIdfVersion(platformProperties, target.mcu),
+      source: 'esp32-arduino-libs/esp_idf_version.h',
+    },
+    toolchain: {
+      name: toolchain.name,
+      version: toolchain.version,
+      source: `toolVersions.${toolchain.name}`,
+    },
+  };
+}
+
+async function hashFileRange(
+  filePath: string,
+  offsetBytes: number,
+  sizeBytes: number,
+): Promise<string> {
+  const hash = createHash('sha256');
+  if (sizeBytes === 0) return hash.digest('hex');
+  await new Promise<void>((resolve, reject) => {
+    const stream = createReadStream(filePath, {
+      start: offsetBytes,
+      end: offsetBytes + sizeBytes - 1,
+    });
+    stream.on('data', (chunk) => hash.update(chunk));
+    stream.once('error', reject);
+    stream.once('end', resolve);
+  });
+  return hash.digest('hex');
+}
+
+async function createEsp32FlashLayout(
+  buildRoot: string,
+  target: SimulationArtifactManifest['target'],
+  files: ArtifactFile[],
+  platformProperties: Record<string, string>,
+  mergedFlash: ArtifactFile,
+): Promise<Esp32FlashLayout> {
+  if (!target.mcu) throw new Error('ESP32 flash layout requires a concrete MCU.');
+  const mode = platformProperties['build.flash_mode']?.trim().toLowerCase();
+  if (!['dio', 'qio', 'dout', 'qout'].includes(mode ?? '')) {
+    throw new Error('ESP32 Artifact has an unsupported build.flash_mode.');
+  }
+  const bootMode = (
+    platformProperties['build.boot'] || platformProperties['build.flash_mode']
+  )?.trim().toLowerCase();
+  if (!['dio', 'qio', 'dout', 'qout'].includes(bootMode ?? '')) {
+    throw new Error('ESP32 Artifact has an unsupported build.boot.');
+  }
+  const deviceSizeBytes = parseStorageSize(
+    platformProperties['build.flash_size'],
+    'ESP32 build.flash_size',
+  );
+  const frequencyHz = parseFrequencyHz(
+    platformProperties['build.img_freq'] || platformProperties['build.flash_freq'],
+    'ESP32 build flash frequency',
+  );
+  if (mergedFlash.sizeBytes > deviceSizeBytes) {
+    throw new Error('ESP32 merged image exceeds the resolved flash device size.');
+  }
+  const offsets = parseEsp32MergeOffsets(platformProperties);
+  const fileRoles: Record<Esp32FlashSegmentRole, ArtifactFileRole> = {
+    bootloader: 'bootloader',
+    'partition-table': 'partitions',
+    'ota-data-initializer': 'ota-data-initializer',
+    application: 'application',
+  };
+  const segments = [...offsets.entries()].map(([role, offsetBytes]) => {
+    const descriptor = files.find((file) => file.role === fileRoles[role]);
+    if (!descriptor) throw new Error(`ESP32 Artifact is missing the ${role} file.`);
+    return {
+      role,
+      offsetBytes,
+      path: descriptor.path,
+      sizeBytes: descriptor.sizeBytes,
+      sha256: descriptor.sha256,
+    };
+  }).sort((left, right) => left.offsetBytes - right.offsetBytes);
+
+  for (const [index, segment] of segments.entries()) {
+    const endOffset = segment.offsetBytes + segment.sizeBytes;
+    if (!Number.isSafeInteger(endOffset) || endOffset > deviceSizeBytes) {
+      throw new Error(`ESP32 ${segment.role} segment exceeds the flash device.`);
+    }
+    const next = segments[index + 1];
+    if (next && endOffset > next.offsetBytes) {
+      throw new Error(
+        `ESP32 ${segment.role} segment overlaps ${next.role}.`,
+      );
+    }
+    const mergedSegmentHash = await hashFileRange(
+      path.join(buildRoot, mergedFlash.path),
+      segment.offsetBytes,
+      segment.sizeBytes,
+    );
+    if (mergedSegmentHash !== segment.sha256) {
+      throw new Error(
+        `ESP32 merged image does not contain the declared ${segment.role} segment.`,
+      );
+    }
+  }
+  return {
+    schemaVersion: 1,
+    kind: 'aily-esp32-flash-layout',
+    target: {
+      architecture: 'esp32',
+      boardId: target.boardId,
+      mcu: target.mcu,
+    },
+    device: {
+      sizeBytes: deviceSizeBytes,
+      mode: mode as Esp32FlashLayout['device']['mode'],
+      bootMode: bootMode as Esp32FlashLayout['device']['bootMode'],
+      frequencyHz,
+      source: 'resolved-board-properties',
+    },
+    segments,
+  };
+}
+
+async function emitDebugInstrumentationManifest(
+  buildRoot: string,
+  target: SimulationArtifactManifest['target'],
+  linkerMap: ArtifactFile | undefined,
+): Promise<string | null> {
+  const outputName = 'aily-debug-instrumentation.json';
+  const outputPath = path.join(buildRoot, outputName);
+  await fs.remove(outputPath);
+  if (!linkerMap) return null;
+  const linkerMapPath = path.join(buildRoot, linkerMap.path);
+  const linkerMapStat = await fs.stat(linkerMapPath);
+  if (!linkerMapStat.isFile() || linkerMapStat.size > 64 * 1024 * 1024) {
+    throw new Error(
+      'Linker map is not a bounded regular file for debug instrumentation detection.',
+    );
+  }
+  const linkerMapText = await fs.readFile(linkerMapPath, 'utf8');
+  if (!/\bailyFreeRtosDebugObjectRegistryV1\b/.test(linkerMapText)) {
+    return null;
+  }
+  const manifest: DebugInstrumentationManifest = {
+    schemaVersion: 1,
+    kind: 'aily-debug-instrumentation',
+    abi: {
+      name: 'aily.freertos-object-registry',
+      version: 1,
+      symbol: 'ailyFreeRtosDebugObjectRegistryV1',
+      capabilities: ['freertos.objects'],
+    },
+    compatibility: {
+      architecture: target.architecture,
+      ...(target.mcu === undefined ? {} : { mcu: target.mcu }),
+      framework: 'arduino',
+      rtos: 'freertos',
+    },
+  };
+  await fs.writeJson(outputPath, manifest, { spaces: 2 });
+  return outputName;
 }
 
 export async function emitSimulationArtifactManifest(
@@ -560,7 +973,89 @@ export async function emitSimulationArtifactManifest(
   const buildRoot = await fs.realpath(options.buildPath);
   const manifestPath = path.resolve(options.manifestPath);
   assertInside(buildRoot, manifestPath, 'Artifact manifest');
-  const target = parseTarget(options.board, options.mcu);
+  const target = parseTarget(options.board, options.mcu, options.boardId);
+  if (
+    options.graphSemanticRevision !== undefined
+    && !/^[a-f0-9]{64}$/.test(options.graphSemanticRevision)
+  ) {
+    throw new Error('Graph semantic revision must be a lowercase SHA-256 value.');
+  }
+  if (
+    options.sourceDocumentSchemaVersion !== undefined
+    && options.sourceDocumentSchemaVersion !== 1
+    && options.sourceDocumentSchemaVersion !== 2
+  ) {
+    throw new Error('Scene document schema version must be 1 or 2.');
+  }
+  if (
+    options.sourceDocumentSchemaVersion !== undefined
+    && options.graphSemanticRevision === undefined
+  ) {
+    throw new Error(
+      'Scene document schema version requires a graph semantic revision.',
+    );
+  }
+  if (options.gpioDirections !== undefined && options.graphSemanticRevision === undefined) {
+    throw new Error('GPIO directions require a graph semantic revision.');
+  }
+  if (options.gpioPulls !== undefined && options.graphSemanticRevision === undefined) {
+    throw new Error('GPIO pulls require a graph semantic revision.');
+  }
+  const gpioDirectionEntries = options.gpioDirections === undefined
+    ? []
+    : Object.entries(options.gpioDirections);
+  if (gpioDirectionEntries.length > 256) {
+    throw new Error('GPIO directions exceed 256 entries.');
+  }
+  for (const [endpoint, direction] of gpioDirectionEntries) {
+    if (
+      !/^[A-Za-z0-9][A-Za-z0-9._:-]{0,255}$/.test(endpoint)
+      || (direction !== 'input' && direction !== 'output')
+    ) {
+      throw new Error(`GPIO direction ${endpoint} is invalid.`);
+    }
+  }
+  const gpioPullEntries = options.gpioPulls === undefined
+    ? []
+    : Object.entries(options.gpioPulls);
+  if (gpioPullEntries.length > 256) {
+    throw new Error('GPIO pulls exceed 256 entries.');
+  }
+  for (const [endpoint, pull] of gpioPullEntries) {
+    if (
+      !/^[A-Za-z0-9][A-Za-z0-9._:-]{0,255}$/.test(endpoint)
+      || (pull !== 'up' && pull !== 'down')
+    ) {
+      throw new Error(`GPIO pull ${endpoint} is invalid.`);
+    }
+  }
+  const graphProvenance = options.graphSemanticRevision === undefined
+    ? undefined
+    : {
+        schemaVersion: 1 as const,
+        kind: 'aily-scene-graph-provenance' as const,
+        graphSemanticRevision: options.graphSemanticRevision,
+        ...(options.sourceDocumentSchemaVersion === undefined
+          ? {}
+          : {
+              sourceDocumentSchemaVersion:
+                options.sourceDocumentSchemaVersion,
+            }),
+        ...(gpioDirectionEntries.length === 0
+          ? {}
+          : {
+              gpioDirections: Object.fromEntries(
+                gpioDirectionEntries.sort(([left], [right]) => left.localeCompare(right)),
+              ),
+            }),
+        ...(gpioPullEntries.length === 0
+          ? {}
+          : {
+              gpioPulls: Object.fromEntries(
+                gpioPullEntries.sort(([left], [right]) => left.localeCompare(right)),
+              ),
+            }),
+      };
 
   const sketchPath = await fs.realpath(options.sketchPath);
   const sketchStat = await fs.stat(sketchPath);
@@ -576,6 +1071,11 @@ export async function emitSimulationArtifactManifest(
     buildRoot,
     'aily-debug-source.txt',
   );
+  const instrumentationManifestPath = path.join(
+    buildRoot,
+    'aily-debug-instrumentation.json',
+  );
+  const bootApp0ArtifactPath = path.join(buildRoot, 'aily-boot-app0.bin');
   if (sketchStat.size > 2 * 1024 * 1024) {
     throw new Error('Debug source snapshot exceeds the 2 MiB build limit.');
   }
@@ -583,8 +1083,13 @@ export async function emitSimulationArtifactManifest(
   await Promise.all([
     fs.remove(generatedMemoryMapPath),
     fs.remove(sourceSnapshotPath),
+    fs.remove(instrumentationManifestPath),
+    fs.remove(bootApp0ArtifactPath),
   ]);
   await fs.copyFile(sketchPath, sourceSnapshotPath);
+  if (target.architecture === 'esp32') {
+    await copyEsp32BootApp0(buildRoot, options.sdkPath);
+  }
   let files = await collectArtifactFiles(buildRoot);
   if (files.length === 0) {
     throw new Error(`No firmware artifacts found in build directory: ${buildRoot}`);
@@ -622,15 +1127,44 @@ export async function emitSimulationArtifactManifest(
       initialElf,
       initialLinkerMap,
     );
-    if (memoryMapPath) files = await collectArtifactFiles(buildRoot);
+  }
+  const instrumentationPath = await emitDebugInstrumentationManifest(
+    buildRoot,
+    target,
+    initialLinkerMap,
+  );
+  if (memoryMapPath || instrumentationPath) {
+    files = await collectArtifactFiles(buildRoot);
   }
 
   const primaryFile = choosePrimaryFile(buildRoot, files, options.primaryOutputPath);
-  const sdkConfiguredFlashSizeBytes = await readSdkConfiguredFlashSize(buildRoot);
   const mergedFlash = files.find((file) => file.role === 'merged-flash');
+  if (target.architecture === 'esp32' && !mergedFlash) {
+    throw new Error('ESP32 Artifact requires a merged flash image.');
+  }
+  const platformProperties = options.platformProperties ?? {};
+  const flashLayout = target.architecture === 'esp32' && mergedFlash
+    ? await createEsp32FlashLayout(
+        buildRoot,
+        target,
+        files,
+        platformProperties,
+        mergedFlash,
+      )
+    : undefined;
+  const buildEnvironment = target.architecture === 'esp32'
+    ? await createEsp32BuildEnvironment(
+        target,
+        platformProperties,
+        options.toolVersions,
+      )
+    : undefined;
   const elf = files.find((file) => file.role === 'elf');
   const linkerMap = files.find((file) => file.role === 'map');
   const memoryMap = files.find((file) => file.role === 'memory-map');
+  const instrumentation = files.find(
+    (file) => file.role === 'debug-instrumentation',
+  );
   if (memoryMapPath && memoryMap?.path !== memoryMapPath) {
     throw new Error('Generated debug memory map was not collected as an Artifact file.');
   }
@@ -642,7 +1176,9 @@ export async function emitSimulationArtifactManifest(
       target,
       sourceSha256,
       files,
-      sdkConfiguredFlashSizeBytes,
+      flashLayout,
+      buildEnvironment,
+      graphProvenance,
     ),
     target,
     build: {
@@ -653,6 +1189,8 @@ export async function emitSimulationArtifactManifest(
         sha256: sourceSha256,
       },
       toolVersions: stableToolVersions(options.toolVersions),
+      ...(buildEnvironment ? { environment: buildEnvironment } : {}),
+      ...(graphProvenance ? { graph: graphProvenance } : {}),
     },
     files,
     primaryFile,
@@ -662,13 +1200,17 @@ export async function emitSimulationArtifactManifest(
           format: 'merged' as const,
           imagePath: mergedFlash.path,
           imageSizeBytes: mergedFlash.sizeBytes,
-          ...(sdkConfiguredFlashSizeBytes !== undefined
-            ? { sdkConfiguredSizeBytes: sdkConfiguredFlashSizeBytes }
+          ...(flashLayout
+            ? {
+                sdkConfiguredSizeBytes: flashLayout.device.sizeBytes,
+                layout: flashLayout,
+              }
             : {}),
         },
       }
       : {}),
     ...(elf || linkerMap || sourceMap || sourceSnapshot || memoryMap
+      || instrumentation
       ? {
         debug: {
           ...(elf ? { elfPath: elf.path } : {}),
@@ -678,6 +1220,9 @@ export async function emitSimulationArtifactManifest(
             ? { sourceSnapshotPath: sourceSnapshot.path }
             : {}),
           ...(memoryMap ? { memoryMapPath: memoryMap.path } : {}),
+          ...(instrumentation
+            ? { instrumentationPath: instrumentation.path }
+            : {}),
         },
       }
       : {}),

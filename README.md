@@ -53,6 +53,35 @@ aily-builder compile sketch.ino --libraries-path "C:\Arduino\libraries"
 aily-builder compile sketch.ino --verbose
 ```
 
+### Simulation Artifact
+
+Use `--emit-artifact-manifest` to emit a versioned simulation Artifact in the
+build directory:
+
+```bash
+aily-builder compile sketch.ino \
+  --board esp32:esp32:XIAO_ESP32S3 \
+  --build-path .build \
+  --emit-artifact-manifest
+```
+
+The output includes `aily-artifact-manifest.json` and
+`aily-debug-source.txt`. The latter is a read-only snapshot of the exact
+compile input. It uses the `debug-source` role and is bound to `build.source`
+by size and SHA-256, with a default 2 MiB limit. It lets a trusted local host
+construct bounded source context; it does not grant a browser or remote iframe
+access to arbitrary local files.
+
+When the build also emits
+an ELF and a linker map containing GNU `Memory Configuration`, the builder
+creates `aily-debug-memory-map.json`. The memory map binds the exact ELF/map
+paths, sizes, and SHA-256 hashes and exports only bounded readable 32-bit
+linker regions. It describes read-only debugger capabilities; `rw/rwx`
+linker attributes do not enable writes.
+
+Use `aily-builder capabilities --json` to detect the `debugSourceSnapshot`
+and `debugMemoryMap` capabilities.
+
 ### Preprocess and Compile Separation
 
 The tool supports separating preprocessing from compilation, which is useful for:

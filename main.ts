@@ -24,6 +24,92 @@ function isTruthyEnv(name: string): boolean {
   return value === '1' || value?.toLowerCase() === 'true';
 }
 
+async function readSceneGpioDirectionsFile(
+  inputPath: string,
+  expectedGraphSemanticRevision: string,
+): Promise<Record<string, 'input' | 'output'>> {
+  const resolvedPath = path.resolve(inputPath);
+  const pathStat = await fs.lstat(resolvedPath);
+  if (!pathStat.isFile() || pathStat.isSymbolicLink() || pathStat.size > 64 * 1024) {
+    throw new Error('Scene GPIO directions must be a regular JSON file of at most 64 KiB.');
+  }
+  const value: unknown = await fs.readJson(resolvedPath);
+  if (!value || typeof value !== 'object' || Array.isArray(value)) {
+    throw new Error('Scene GPIO directions file must contain an object.');
+  }
+  const envelope = value as Record<string, unknown>;
+  if (
+    Object.keys(envelope).sort().join('\0')
+      !== ['directions', 'graphSemanticRevision', 'kind', 'schemaVersion'].sort().join('\0')
+    || envelope.schemaVersion !== 1
+    || envelope.kind !== 'aily-scene-gpio-directions'
+    || envelope.graphSemanticRevision !== expectedGraphSemanticRevision
+    || !envelope.directions
+    || typeof envelope.directions !== 'object'
+    || Array.isArray(envelope.directions)
+  ) {
+    throw new Error('Scene GPIO directions file identity or graph revision is invalid.');
+  }
+  const entries = Object.entries(envelope.directions as Record<string, unknown>);
+  if (entries.length > 256) {
+    throw new Error('Scene GPIO directions file exceeds 256 entries.');
+  }
+  const directions: Record<string, 'input' | 'output'> = {};
+  for (const [endpoint, direction] of entries.sort(([left], [right]) => left.localeCompare(right))) {
+    if (
+      !/^[A-Za-z0-9][A-Za-z0-9._:-]{0,255}$/.test(endpoint)
+      || (direction !== 'input' && direction !== 'output')
+    ) {
+      throw new Error(`Scene GPIO direction ${endpoint} is invalid.`);
+    }
+    directions[endpoint] = direction;
+  }
+  return directions;
+}
+
+async function readSceneGpioPullsFile(
+  inputPath: string,
+  expectedGraphSemanticRevision: string,
+): Promise<Record<string, 'up' | 'down'>> {
+  const resolvedPath = path.resolve(inputPath);
+  const pathStat = await fs.lstat(resolvedPath);
+  if (!pathStat.isFile() || pathStat.isSymbolicLink() || pathStat.size > 64 * 1024) {
+    throw new Error('Scene GPIO pulls must be a regular JSON file of at most 64 KiB.');
+  }
+  const value: unknown = await fs.readJson(resolvedPath);
+  if (!value || typeof value !== 'object' || Array.isArray(value)) {
+    throw new Error('Scene GPIO pulls file must contain an object.');
+  }
+  const envelope = value as Record<string, unknown>;
+  if (
+    Object.keys(envelope).sort().join('\0')
+      !== ['graphSemanticRevision', 'kind', 'pulls', 'schemaVersion'].sort().join('\0')
+    || envelope.schemaVersion !== 1
+    || envelope.kind !== 'aily-scene-gpio-pulls'
+    || envelope.graphSemanticRevision !== expectedGraphSemanticRevision
+    || !envelope.pulls
+    || typeof envelope.pulls !== 'object'
+    || Array.isArray(envelope.pulls)
+  ) {
+    throw new Error('Scene GPIO pulls file identity or graph revision is invalid.');
+  }
+  const entries = Object.entries(envelope.pulls as Record<string, unknown>);
+  if (entries.length > 256) {
+    throw new Error('Scene GPIO pulls file exceeds 256 entries.');
+  }
+  const pulls: Record<string, 'up' | 'down'> = {};
+  for (const [endpoint, pull] of entries.sort(([left], [right]) => left.localeCompare(right))) {
+    if (
+      !/^[A-Za-z0-9][A-Za-z0-9._:-]{0,255}$/.test(endpoint)
+      || (pull !== 'up' && pull !== 'down')
+    ) {
+      throw new Error(`Scene GPIO pull ${endpoint} is invalid.`);
+    }
+    pulls[endpoint] = pull;
+  }
+  return pulls;
+}
+
 function resolveCacheClearMode(options: any): CacheClearMode {
   const selected: CacheClearMode[] = [];
 
@@ -97,6 +183,14 @@ program
           cliOption: '--emit-artifact-manifest',
           defaultFileName: 'aily-artifact-manifest.json',
         },
+        sceneGraphProvenance: {
+          schemaVersion: 1,
+          cliOption: '--graph-semantic-revision',
+          sourceDocumentSchemaOption: '--scene-document-schema-version',
+          gpioDirectionsOption: '--scene-gpio-directions',
+          gpioPullsOption: '--scene-gpio-pulls',
+          manifestField: 'build.graph',
+        },
         blockSourceMap: {
           schemaVersion: 1,
           inputFileName: 'aily-block-source-map.json',
@@ -107,6 +201,16 @@ program
           outputFileName: 'aily-debug-source.txt',
           artifactRole: 'debug-source',
           maxSizeBytes: 2 * 1024 * 1024,
+        },
+        debugInstrumentation: {
+          schemaVersion: 1,
+          detection: 'linked-symbol',
+          outputFileName: 'aily-debug-instrumentation.json',
+          artifactRole: 'debug-instrumentation',
+          supportedAbis: [{
+            name: 'aily.freertos-object-registry',
+            version: 1,
+          }],
         },
         debugMemoryMap: {
           schemaVersion: 1,
@@ -160,6 +264,22 @@ program
   .option(
     '--emit-artifact-manifest [path]',
     'Emit a portable simulation artifact manifest (default: <build-path>/aily-artifact-manifest.json)'
+  )
+  .option(
+    '--graph-semantic-revision <sha256>',
+    'Bind the simulation Artifact to an exact Scene graph semantic revision'
+  )
+  .option(
+    '--scene-document-schema-version <1|2>',
+    'Record the Scene document schema compiled into the Artifact graph provenance'
+  )
+  .option(
+    '--scene-gpio-directions <path>',
+    'Read versioned firmware GPIO directions locked to the same Scene graph revision'
+  )
+  .option(
+    '--scene-gpio-pulls <path>',
+    'Read versioned firmware GPIO internal pulls locked to the same Scene graph revision'
   )
   .action(async (sketch, options) => {
     // console.log('options:', options);
@@ -235,6 +355,80 @@ program
           : path.join(buildPath, 'aily-artifact-manifest.json')
       )
       : undefined;
+    if (options.graphSemanticRevision && !artifactManifestPath) {
+      logger.error('--graph-semantic-revision requires --emit-artifact-manifest.');
+      process.exit(1);
+    }
+    if (
+      options.graphSemanticRevision
+      && !/^[a-f0-9]{64}$/.test(options.graphSemanticRevision)
+    ) {
+      logger.error('--graph-semantic-revision must be a lowercase SHA-256 value.');
+      process.exit(1);
+    }
+    const parsedSourceDocumentSchemaVersion =
+      options.sceneDocumentSchemaVersion === undefined
+        ? undefined
+        : Number(options.sceneDocumentSchemaVersion);
+    if (
+      parsedSourceDocumentSchemaVersion !== undefined
+      && parsedSourceDocumentSchemaVersion !== 1
+      && parsedSourceDocumentSchemaVersion !== 2
+    ) {
+      logger.error('--scene-document-schema-version must be 1 or 2.');
+      process.exit(1);
+    }
+    if (
+      parsedSourceDocumentSchemaVersion !== undefined
+      && !options.graphSemanticRevision
+    ) {
+      logger.error(
+        '--scene-document-schema-version requires --graph-semantic-revision.',
+      );
+      process.exit(1);
+    }
+    const sourceDocumentSchemaVersion: 1 | 2 | undefined =
+      parsedSourceDocumentSchemaVersion === 1
+        ? 1
+        : parsedSourceDocumentSchemaVersion === 2
+          ? 2
+          : undefined;
+    let gpioDirections: Record<string, 'input' | 'output'> | undefined;
+    if (options.sceneGpioDirections !== undefined) {
+      if (!artifactManifestPath || !options.graphSemanticRevision) {
+        logger.error(
+          '--scene-gpio-directions requires --emit-artifact-manifest and --graph-semantic-revision.',
+        );
+        process.exit(1);
+      }
+      try {
+        gpioDirections = await readSceneGpioDirectionsFile(
+          options.sceneGpioDirections,
+          options.graphSemanticRevision,
+        );
+      } catch (error) {
+        logger.error(error instanceof Error ? error.message : String(error));
+        process.exit(1);
+      }
+    }
+    let gpioPulls: Record<string, 'up' | 'down'> | undefined;
+    if (options.sceneGpioPulls !== undefined) {
+      if (!artifactManifestPath || !options.graphSemanticRevision) {
+        logger.error(
+          '--scene-gpio-pulls requires --emit-artifact-manifest and --graph-semantic-revision.',
+        );
+        process.exit(1);
+      }
+      try {
+        gpioPulls = await readSceneGpioPullsFile(
+          options.sceneGpioPulls,
+          options.graphSemanticRevision,
+        );
+      } catch (error) {
+        logger.error(error instanceof Error ? error.message : String(error));
+        process.exit(1);
+      }
+    }
 
     // 如果启用了日志文件功能，设置日志文件路径
     if (options.logFile) {
@@ -324,7 +518,11 @@ program
       jobs: parseInt(options.jobs),
       verbose: options.verbose,
       preprocessResult: preprocessResult,
-      artifactManifestPath
+      artifactManifestPath,
+      graphSemanticRevision: options.graphSemanticRevision,
+      sourceDocumentSchemaVersion,
+      gpioDirections,
+      gpioPulls,
     };
 
     logger.info(`Starting compilation of ${sketch}`);

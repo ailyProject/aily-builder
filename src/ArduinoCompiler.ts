@@ -47,6 +47,7 @@ export interface PreprocessResult {
   dependencies?: any[];
   error?: string;
   cacheIdentity?: ArchiveCacheIdentity;
+  toolVersions?: Record<string, string>;
   // 保存编译所需的环境变量
   envVars?: Record<string, string>;
 }
@@ -66,6 +67,41 @@ export interface CompileOptions {
   buildMacros?: string[];
   preprocessResult?: PreprocessResult;
   artifactManifestPath?: string;
+  graphSemanticRevision?: string;
+  sourceDocumentSchemaVersion?: 1 | 2;
+  gpioDirections?: Record<string, 'input' | 'output'>;
+  gpioPulls?: Record<string, 'up' | 'down'>;
+}
+
+export function resolveCompileToolVersions(
+  explicitToolVersions: Record<string, string> = {},
+  preprocessResult?: PreprocessResult,
+): Record<string, string> {
+  return {
+    ...(preprocessResult?.compileConfig?.cacheIdentity?.requestedToolVersions || {}),
+    ...(preprocessResult?.cacheIdentity?.requestedToolVersions || {}),
+    ...(preprocessResult?.toolVersions || {}),
+    ...explicitToolVersions,
+  };
+}
+
+export function resolveArtifactTargetMarkers(
+  board: string,
+  boardProperties: Record<string, string> = {},
+): Readonly<{ boardId?: string; mcu?: string }> {
+  const architecture = board.split(':')[1]?.trim().toLowerCase();
+  if (architecture === 'stm32') {
+    const boardId = boardProperties['build.board']?.trim();
+    const mcu = boardProperties['build.product_line']?.trim();
+    if (!boardId || !mcu) {
+      throw new Error(
+        'STM32 simulation Artifact requires resolved build.board and build.product_line markers.',
+      );
+    }
+    return { boardId, mcu };
+  }
+  const mcu = boardProperties['build.mcu']?.trim();
+  return mcu ? { mcu } : {};
 }
 
 export class ArduinoCompiler {
@@ -193,6 +229,7 @@ export class ArduinoCompiler {
         compileConfig,
         dependencies,
         cacheIdentity,
+        toolVersions: { ...(options.toolVersions || {}) },
         envVars
       };
     } catch (error) {
@@ -213,6 +250,10 @@ export class ArduinoCompiler {
    */
   async compile(options: CompileOptions): Promise<CompileResult> {
     const startTime = Date.now();
+    const toolVersions = resolveCompileToolVersions(
+      options.toolVersions,
+      options.preprocessResult,
+    );
 
     this.logger.info(`Starting compilation process...`);
 
@@ -360,12 +401,22 @@ export class ArduinoCompiler {
     let artifactManifest: SimulationArtifactManifest | undefined;
     if (options.artifactManifestPath) {
       this.logger.info('Generating simulation artifact manifest...');
+      const artifactTarget = resolveArtifactTargetMarkers(
+        options.board,
+        arduinoConfig.board,
+      );
       artifactManifest = await emitSimulationArtifactManifest({
         buildPath: options.buildPath,
         sketchPath: options.sketchPath,
         board: options.board,
-        mcu: arduinoConfig.board?.['build.mcu'],
-        toolVersions: options.toolVersions,
+        ...artifactTarget,
+        toolVersions,
+        platformProperties: arduinoConfig.platform,
+        sdkPath: arduinoConfig.platform?.['runtime.platform.path'],
+        graphSemanticRevision: options.graphSemanticRevision,
+        sourceDocumentSchemaVersion: options.sourceDocumentSchemaVersion,
+        gpioDirections: options.gpioDirections,
+        gpioPulls: options.gpioPulls,
         primaryOutputPath: finalOutputPath,
         manifestPath: options.artifactManifestPath,
       });

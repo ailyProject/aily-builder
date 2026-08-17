@@ -9,6 +9,10 @@
 /build
 /examples/build
 /.test
+examples/
+logs/
+outputs/
+test/
 
 # Node
 /node_modules

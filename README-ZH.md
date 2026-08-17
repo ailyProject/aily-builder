@@ -50,6 +50,31 @@ aily-builder compile sketch.ino --libraries-path "C:\Arduino\libraries"
 aily-builder compile sketch.ino --verbose
 ```
 
+### 仿真 Artifact
+
+使用 `--emit-artifact-manifest` 可在构建目录生成版本化仿真 Artifact：
+
+```bash
+aily-builder compile sketch.ino \
+  --board esp32:esp32:XIAO_ESP32S3 \
+  --build-path .build \
+  --emit-artifact-manifest
+```
+
+输出包含 `aily-artifact-manifest.json` 和 `aily-debug-source.txt`。后者是本次
+实际编译输入的只读快照，使用 `debug-source` role，并以大小和 SHA-256 与
+`build.source` 精确绑定；默认上限为 2 MiB。它供受信任的本地宿主构造有限源码上下文，
+不表示浏览器或远程 iframe 可以读取任意本地文件。
+
+当本次构建同时产生 ELF 和带 GNU
+`Memory Configuration` 的 linker map 时，还会生成
+`aily-debug-memory-map.json`。memory-map 记录精确 ELF/map 的路径、大小和
+SHA-256，并只导出 linker 声明为可读的非空 32 位区域；它用于调试器只读内存
+能力，不表示允许写入 `rw/rwx` 区域。
+
+可通过 `aily-builder capabilities --json` 检查当前版本是否声明
+`debugSourceSnapshot` 和 `debugMemoryMap` 能力。
+
 ### 预处理与编译分离
 
 该工具支持将预处理与编译分离，适用于以下场景：
