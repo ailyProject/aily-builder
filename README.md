@@ -219,6 +219,16 @@ Build output is stored by default in:
 - **Windows**: `%LOCALAPPDATA%\aily-builder\project\<sketchname>_<hash>`
 - **macOS**: `~/Library/aily-builder/project/<sketchname>_<hash>`
 
+## Build progress protocol
+
+Starting with 1.2.11, the `compile` command emits a single-line, machine-readable global progress event on stdout:
+
+```text
+[aily-builder:progress] {"protocolVersion":1,"stage":"core","percent":63,"status":"running","message":"Compiling core"}
+```
+
+`percent` is monotonic across the complete build, and only the final successful event uses `status: "complete"` with `percent: 100`. Consumers should handle this line as protocol data rather than displaying it as a regular build log. Clients can continue parsing the legacy Ninja progress format for builder 1.2.10 and earlier.
+
 ## Contributing
 Issues and Pull Requests are welcome!
 

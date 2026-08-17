@@ -1,85 +1,53 @@
-import fs from 'fs-extra';
 import path from 'path';
-import os from 'os';
-import { glob } from 'glob';
 import { escapeDefineForShell } from './utils/escapeQuotes';
+import { getArduinoHostOs } from './utils/HostPlatform';
+import { projectPlatformBuildProperties } from './PlatformPropertyProjector';
+import {
+    ArduinoProperties,
+    loadArduinoProperties
+} from './ArduinoPropertyFile';
+import {
+    applyBoardBuildProperties,
+    formatEffectiveFqbn,
+    resolveBoardMenus,
+    selectBoardProperties
+} from './BoardConfigResolver';
+import {
+    resolveArduinoPlatformProperties
+} from './ArduinoPropertyResolver';
+import {
+    findArduinoToolPath,
+    getDefaultArduino15BasePath,
+    resolveArduinoToolPaths
+} from './ArduinoToolResolver';
+import {
+    createRuntimePlatformProperties,
+    publishLegacyArduinoEnvironment,
+    resolveArduinoPlatformFiles,
+    resolveArduinoSdkLayout
+} from './ArduinoBuildContext';
 
-interface FQBNObject {
+export interface FQBNObject {
     package: string;
     platform: string;
     boardId: string;
 }
 
-interface ToolConfig {
-    [key: string]: any;
-}
-
-interface CompilerConfig {
-    [key: string]: any;
-}
-
-interface RecipeConfig {
-    [key: string]: any;
-}
-
-interface DebugConfig {
-    [key: string]: any;
-}
-
-interface BoardUploadConfig {
-    [key: string]: any;
-}
-
-interface BoardBootloaderConfig {
-    [key: string]: any;
-}
-
-interface BoardMenuConfig {
-    [key: string]: any;
-}
-
-interface BoardConfig {
-    id: string;
-    name: string;
-    build: { [key: string]: any };
-    upload: BoardUploadConfig;
-    bootloader: BoardBootloaderConfig;
-    menu: BoardMenuConfig;
-}
-
-interface MenuConfig {
-    [key: string]: any;
-}
-
-interface BoardParseResult {
+export interface BoardParseResult {
     fqbn: string;
     fqbnParsed: FQBNObject;
-    platform: { [key: string]: string };
-    board: { [key: string]: string };
-    buildProperties?: { [key: string]: any };
+    platform: ArduinoProperties;
+    board: ArduinoProperties;
 }
 
 /**
- * Arduino 配置文件解析器
- * 解析 boards.txt 和 platform.txt 文件，输出为 JSON 格式
+ * 将 FQBN、boards.txt、platform.txt 和已安装工具编排为编译所需配置。
+ * 具体的文件、菜单、属性和工具规则由独立的纯函数模块负责。
  */
 export class ArduinoConfigParser {
-    private runtimeProperties: Map<string, string>;
-    private globalProperties: Map<string, string>;
-    private selectedMenuOptions: Map<string, string>;
-
-    constructor() {
-        this.runtimeProperties = new Map<string, string>();
-        this.globalProperties = new Map<string, string>();
-        this.selectedMenuOptions = new Map<string, string>();
-    }
-
     /**
-     * 解析 FQBN (Fully Qualified Board Name)
-     * 格式: package:platform:boardid
-     * 示例: esp32:esp32:esp32c3
-     * @param {string} fqbn FQBN 字符串
-     * @returns {Object} 解析后的 FQBN 对象
+     * 解析 `package:platform:boardId` 格式的 Arduino FQBN。
+     * 输入格式无效时抛出错误，不读取文件或修改环境变量。
      */
     parseFQBN(fqbn: string): FQBNObject {
         if (!fqbn || typeof fqbn !== 'string') {
@@ -91,920 +59,232 @@ export class ArduinoConfigParser {
             throw new Error('无效的 FQBN 格式，必须是 package:platform:boardid');
         }
 
-        const result: FQBNObject = {
+        return {
             package: parts[0],
             platform: parts[1],
             boardId: parts[2]
         };
-
-        return result;
     }
 
     /**
-     * 解析 platform.txt 文件
-     * @param {string} platformPath platform.txt 文件路径
-     * @param {Object} fqbnObj 解析后的FQBN对象
-     * @param {Object} boardConfig 板子配置，用于变量解析
-     * @param {Object} moreConfig 额外配置
-     * @returns {Object} 解析结果
+     * 加载并解析 platform.txt 及可选的 platform.local.txt。
+     * `_fqbnObj` 为兼容原公开签名保留；返回新对象，不修改输入属性。
      */
-    parsePlatformTxt(platformPath: string, fqbnObj: FQBNObject, boardConfig: any = {}, moreConfig: any = {}): any {
-        const platform = fqbnObj.platform;
-        // console.log(`  解析平台 ${platform} 的配置...`);
-        // console.log(boardConfig);
-
-
+    parsePlatformTxt(
+        platformPath: string,
+        _fqbnObj: FQBNObject,
+        boardProperties: ArduinoProperties = {},
+        generatedProperties: ArduinoProperties = {}
+    ): ArduinoProperties {
         try {
-            let content = fs.readFileSync(platformPath, 'utf8');
-            // 替换compiler.libraries.ldflags為%LD_FLAGS%
-            content = content.replace('compiler.libraries.ldflags=', 'compiler.libraries.ldflags=%LD_FLAGS%');
-
-            const lines = content.split('\n');
-            const variables: { [key: string]: string } = {};
-
-            // 第一遍：收集所有变量定义，构建变量名字典
-            const variableNames = new Set<string>();
-            lines.forEach(line => {
-                const trimmed = line.trim();
-                if (trimmed && !trimmed.startsWith('#')) {
-                    const equalIndex = trimmed.indexOf('=');
-                    if (equalIndex !== -1) {
-                        const key = trimmed.substring(0, equalIndex).trim();
-                        const value = trimmed.substring(equalIndex + 1).trim();
-
-                        if (key) {
-                            // 将变量名添加到字典中
-                            variableNames.add(key);
-                            // 如果有键但值为空，则设置为空字符串
-                            variables[key] = value || "";
-                        }
-                    }
-                }
+            return resolveArduinoPlatformProperties({
+                platformProperties: loadArduinoProperties(platformPath),
+                boardProperties,
+                generatedProperties,
+                onWarning: message => console.warn(`⚠️  ${message}`)
             });
-
-            // 将boardConfig加入到字典中
-            Object.keys(boardConfig).forEach(key => {
-                if (!variables[key]) {
-                    variableNames.add(key);
-                    variables[key] = boardConfig[key];
-                }
-            });
-
-            // 将moreConfig加入到字典中
-            Object.keys(moreConfig).forEach(key => {
-                if (!variables[key]) {
-                    variableNames.add(key);
-                    variables[key] = moreConfig[key];
-                }
-            });
-
-            // 检测并处理 platform 与 boardConfig 中的重复键
-            // 当存在相同 key 时，使用 boardConfig 的值覆盖 platform 的值
-            this.applyBoardConfigOverrides(variables, boardConfig);
-
-            // 处理 Windows 特定配置覆盖（在变量展开前进行）
-            this.applyWindowsOverrides(variables);
-
-            // 第二遍：解析变量引用，使用优化的替换策略
-            let changed = true;
-            let iterations = 0;
-            const maxIterations = 10;
-            const circularDetected = new Set<string>();
-
-            // console.log(`开始优化变量解析，共有 ${Object.keys(variables).length} 个变量...`);
-
-            while (changed && iterations < maxIterations) {
-                changed = false;
-                iterations++;
-                for (const key in variables) {
-                    // 跳过已检测到循环引用的变量
-                    if (circularDetected.has(key)) {
-                        continue;
-                    }
-
-                    const original = variables[key];
-                    if (!original) { continue; }
-
-                    // 检查是否包含对自己的引用（直接循环引用）
-                    if (original && original.includes(`{${key}}`)) {
-                        console.warn(`⚠️  检测到直接循环引用: ${key}`);
-                        circularDetected.add(key);
-                        continue;
-                    }
-
-                    // 使用优化的变量替换策略
-                    const expanded = this.expandVariablesOptimized(original, variables, variableNames);
-
-                    // 检测间接循环引用：如果扩展后的字符串变得过长
-                    if (expanded.length > 500000) { // 增加阈值，从2000增加到5000
-                        console.warn(`⚠️  检测到可能的间接循环引用: ${key}`);
-                        // console.log(`   变量值: ${original}`);
-                        // console.log(`   扩展后: ${expanded}`);
-                        circularDetected.add(key);
-                        continue;
-                    }
-
-                    if (expanded !== original) {
-                        variables[key] = expanded;
-                        changed = true;
-                    }
-                }
-            }
-            if (iterations >= maxIterations) {
-                console.warn(`⚠️  变量解析达到最大迭代次数 ${maxIterations}，可能存在复杂的循环引用`);
-            }
-            // this.showUnresolvedPlatformVariables(variables);
-            return variables;
         } catch (error) {
             throw new Error(`解析文件失败 ${platformPath}: ${error}`);
         }
     }
 
     /**
-     * 应用 Windows 特定的配置覆盖
-     * 当某个 key 有 .windows 版本时，仅在 Windows 系统下使用 Windows 版本覆盖普通版本
-     * @param {Object} variables 变量映射
+     * 解析指定 FQBN 的板卡和平台编译配置。
+     * SDK/工具路径从当前构建环境读取；返回前统一发布兼容环境变量。
      */
-    private applyWindowsOverrides(variables: { [key: string]: string }): void {
-        // 只在 Windows 系统下应用 Windows 覆盖
-        if (os.platform() !== 'win32') {
+    async parseByFQBN(
+        fqbn: string,
+        buildProperties: ArduinoProperties = {},
+        toolVersions: ArduinoProperties = {},
+        buildMacros: string[] = []
+    ): Promise<BoardParseResult> {
+        const fqbnObj = this.parseFQBN(fqbn);
+        const platformFiles = await resolveArduinoPlatformFiles({
+            packageName: fqbnObj.package,
+            platformName: fqbnObj.platform,
+            sdkPath: process.env['SDK_PATH'],
+            arduino15BasePath: getDefaultArduino15BasePath()
+        });
+
+        let esp32ArduinoLibrariesPath: string | null | undefined;
+        let esptoolPath: string | null | undefined;
+        if (fqbnObj.platform === 'esp32') {
+            [esp32ArduinoLibrariesPath, esptoolPath] = await Promise.all([
+                this.findToolPath(
+                    'esp32-arduino-libs',
+                    toolVersions['esp32-arduino-libs'] || '',
+                    fqbnObj.package
+                ),
+                this.findToolPath(
+                    'esptool_py',
+                    toolVersions.esptool_py || '',
+                    fqbnObj.package
+                )
+            ]);
+        }
+
+        const parsedBoardProperties = this.parseBoardsTxt(
+            platformFiles.boardsTxtPath,
+            fqbnObj,
+            buildProperties
+        );
+        const menuResolution = resolveBoardMenus(parsedBoardProperties, buildProperties);
+        const boardProperties = applyBoardBuildProperties(
+            menuResolution.boardProperties,
+            buildProperties
+        );
+
+        if (!boardProperties['build.arch']) {
+            boardProperties['build.arch'] = fqbnObj.platform.toUpperCase();
+        }
+        boardProperties['build.fqbn'] = formatEffectiveFqbn(
+            fqbn,
+            menuResolution.selectedMenus
+        );
+        this.ensureBuildMcu(boardProperties);
+
+        let toolchainPackage = 'pqt-gcc';
+        let pqtGccPath: string | null | undefined;
+        if (fqbnObj.package === 'rp2040') {
+            toolchainPackage = boardProperties['build.toolchainpkg'] || 'pqt-gcc';
+            pqtGccPath = await this.findToolPath(
+                toolchainPackage,
+                '',
+                fqbnObj.package
+            );
+        }
+
+        const runtimeIdeVersion = process.env['RUNTIME_IDE_VERSION'] || '10607';
+        const runtimeIdePath = process.env['RUNTIME_IDE_PATH']
+            || (process.argv[1]
+                ? path.dirname(path.resolve(process.argv[1]))
+                : path.dirname(process.execPath));
+        const runtimeHardwarePath = process.env['RUNTIME_HARDWARE_PATH']
+            || path.dirname(platformFiles.sdkPath);
+        const sketchFolderPath = process.env['SKETCH_DIR_PATH']
+            || (process.env['SKETCH_PATH']
+                ? path.dirname(process.env['SKETCH_PATH'])
+                : process.cwd());
+        const sdkLayout = resolveArduinoSdkLayout(
+            platformFiles.sdkPath,
+            boardProperties['build.core'],
+            boardProperties['build.variant']
+        );
+        const generatedProperties = createRuntimePlatformProperties({
+            runtimeOs: getArduinoHostOs(),
+            runtimeIdePath,
+            runtimeIdeVersion,
+            runtimeHardwarePath,
+            boardId: fqbnObj.boardId,
+            effectiveFqbn: boardProperties['build.fqbn'],
+            sdkLayout,
+            toolchainPackage,
+            toolchain: boardProperties['build.toolchain']
+                || (fqbnObj.package === 'rp2040' ? 'arm-none-eabi' : ''),
+            flashTotal: boardProperties['build.flash_total'] || '2097152',
+            projectName: process.env['SKETCH_NAME'] as string,
+            sketchFolderPath,
+            buildPath: process.env['BUILD_PATH']
+        });
+
+        const rawPlatformProperties = loadArduinoProperties(platformFiles.platformTxtPath);
+        Object.assign(generatedProperties, await resolveArduinoToolPaths({
+            platformProperties: rawPlatformProperties,
+            boardProperties,
+            toolVersions,
+            toolsPath: process.env['TOOLS_PATH'],
+            packageName: fqbnObj.package,
+            arduino15BasePath: getDefaultArduino15BasePath(),
+            onWarning: message => console.warn(message)
+        }));
+
+        const platformProperties = resolveArduinoPlatformProperties({
+            platformProperties: rawPlatformProperties,
+            boardProperties,
+            generatedProperties,
+            onWarning: message => console.warn(`⚠️  ${message}`)
+        });
+        if (buildMacros.length > 0) {
+            platformProperties['build.macros'] = buildMacros
+                .map(escapeDefineForShell)
+                .join(' ');
+        }
+
+        publishLegacyArduinoEnvironment({
+            packageName: fqbnObj.package,
+            platformName: fqbnObj.platform,
+            sdkLayout,
+            boardProperties,
+            platformProperties,
+            esp32ArduinoLibrariesPath,
+            esptoolPath,
+            pqtGccPath
+        });
+
+        return {
+            fqbn,
+            fqbnParsed: fqbnObj,
+            platform: projectPlatformBuildProperties(platformProperties),
+            board: boardProperties
+        };
+    }
+
+    /**
+     * Ensure the standard build.mcu property is present when a platform only
+     * exposes a menu-qualified MCU property. The first property in source
+     * order wins, preserving the parser's existing fallback rule.
+     */
+    private ensureBuildMcu(boardProperties: ArduinoProperties): void {
+        if (boardProperties['build.mcu']) {
             return;
         }
 
-        // 查找所有以 .windows 结尾的键
-        const windowsKeys = Object.keys(variables).filter(key => key.endsWith('.windows'));
-
-        windowsKeys.forEach(windowsKey => {
-            // 获取对应的普通键名（去掉 .windows 后缀）
-            const baseKey = windowsKey.slice(0, -8); // 移除 '.windows'
-
-            // 如果普通键存在，则用 Windows 版本覆盖它
-            if (variables.hasOwnProperty(baseKey)) {
-                const windowsValue = variables[windowsKey];
-                // console.log(`  应用 Windows 覆盖: ${baseKey} = ${windowsValue}`);
-                variables[baseKey] = windowsValue;
+        for (const [key, value] of Object.entries(boardProperties)) {
+            if (key !== 'build.mcu' && key.includes('build.mcu')) {
+                boardProperties['build.mcu'] = value;
+                return;
             }
-        });
-    }
-
-    /**
-     * 应用 boardConfig 的配置覆盖
-     * 当 platform 配置和 boardConfig 中有相同的 key 时，使用 boardConfig 的值覆盖 platform 的值
-     * 如果原值是 {} 包裹的变量形式，则不进行覆盖
-     * @param {Object} variables 变量映射（包含 platform 配置）
-     * @param {Object} boardConfig 板子配置
-     */
-    private applyBoardConfigOverrides(variables: { [key: string]: string }, boardConfig: any): void {
-        Object.keys(boardConfig).forEach(key => {
-            // 检查 platform 配置中是否已存在相同的 key
-            if (variables.hasOwnProperty(key) && variables[key] !== boardConfig[key]) {
-                variables[key] = boardConfig[key];
-            }
-        });
-    }
-
-    /**
-     * 应用额外的构建属性，并处理分区方案的智能匹配
-     * 当设置 build.partitions 时，自动应用对应的相关参数（如 upload.maximum_size）
-     * 支持菜单选项，如 flash=4194304_3145728
-     * @param {Object} boardConfig 板子配置对象
-     * @param {Object} buildProperties 要应用的构建属性
-     */
-    private applyBuildProperties(boardConfig: { [key: string]: string }, buildProperties: { [key: string]: string }): void {
-        // 动态检测 boardConfig 中所有可用的菜单选项
-        const availableMenuOptions = this.detectAvailableMenuOptions(boardConfig);
-
-        // 应用用户指定的菜单选项（大部分过滤工作已在 parseBoardsTxt 中完成）
-        availableMenuOptions.forEach(menuType => {
-            if (buildProperties[menuType]) {
-                this.applyMenuSettings(boardConfig, menuType, buildProperties[menuType]);
-            }
-        });
-
-        // 处理分区方案的智能匹配（特殊处理，因为它使用 build.partitions 键）
-        if (buildProperties['build.partitions']) {
-            this.applyPartitionSchemeSettings(boardConfig, buildProperties['build.partitions']);
-        }
-
-        // 最后应用其他非菜单相关的构建属性，但要避免覆盖菜单已设置的关键属性
-        Object.keys(buildProperties).forEach(key => {
-            // 跳过菜单选项本身（如 flash、uploadmethod 等）
-            if (!availableMenuOptions.includes(key) && key !== 'build.partitions') {
-                // console.log(`  应用额外构建属性: ${key} = ${buildProperties[key]}`);
-                boardConfig[key] = buildProperties[key];
-            }
-        });
-    }
-
-    /**
-     * 根据分区方案自动应用相关的配置参数
-     * @param {Object} boardConfig 板子配置对象
-     * @param {string} partitionValue 分区方案值
-     */
-    private applyPartitionSchemeSettings(boardConfig: { [key: string]: string }, partitionValue: string): void {
-        // console.log(`  检测到分区方案设置: ${partitionValue}`);
-
-        // 查找匹配的分区方案配置
-        const matchingScheme = this.findPartitionScheme(boardConfig, partitionValue);
-
-        if (matchingScheme) {
-            // console.log(`  找到匹配的分区方案: ${matchingScheme.schemeName}`);
-
-            // 应用相关的参数
-            if (matchingScheme.uploadMaxSize) {
-                boardConfig['upload.maximum_size'] = matchingScheme.uploadMaxSize;
-                // console.log(`    自动设置 upload.maximum_size = ${matchingScheme.uploadMaxSize}`);
-            }
-
-            if (matchingScheme.uploadExtraFlags) {
-                boardConfig['upload.extra_flags'] = matchingScheme.uploadExtraFlags;
-                // console.log(`    自动设置 upload.extra_flags = ${matchingScheme.uploadExtraFlags}`);
-            }
-        } else {
-            // console.log(`  ⚠️  未找到匹配的分区方案配置: ${partitionValue}`);
         }
     }
 
     /**
-     * 在 boardConfig 中查找与指定分区值匹配的分区方案
-     * @param {Object} boardConfig 板子配置对象
-     * @param {string} partitionValue 要查找的分区值
-     * @returns {Object|null} 匹配的分区方案信息或 null
+     * 加载 boards.txt 层并返回指定 FQBN 板卡的属性。
+     * 显式菜单选项在读取阶段过滤，源文件顺序保持不变。
      */
-    private findPartitionScheme(boardConfig: { [key: string]: string }, partitionValue: string): any {
-        // 遍历所有以 menu.PartitionScheme. 开头的配置项
-        for (const key in boardConfig) {
-            if (key.startsWith('menu.PartitionScheme.') && key.endsWith('.build.partitions')) {
-                const schemeValue = boardConfig[key];
-
-                if (schemeValue === partitionValue) {
-                    // 提取方案名称（去掉前缀和后缀）
-                    const schemeName = key.replace('menu.PartitionScheme.', '').replace('.build.partitions', '');
-
-                    // 查找相关的配置项
-                    const uploadMaxSizeKey = `menu.PartitionScheme.${schemeName}.upload.maximum_size`;
-                    const uploadExtraFlagsKey = `menu.PartitionScheme.${schemeName}.upload.extra_flags`;
-
-                    return {
-                        schemeName: schemeName,
-                        partitionValue: schemeValue,
-                        uploadMaxSize: boardConfig[uploadMaxSizeKey],
-                        uploadExtraFlags: boardConfig[uploadExtraFlagsKey]
-                    };
-                }
-            }
-        }
-
-        return null;
-    }
-
-    /**
-     * 根据菜单选项自动应用相关的配置参数
-     * 例如：flash=4194304_3145728 会查找并应用 menu.flash.4194304_3145728.* 相关配置
-     * 例如：uploadmethod=default 会查找并应用 menu.uploadmethod.default.* 相关配置
-     * @param {Object} boardConfig 板子配置对象
-     * @param {string} menuType 菜单类型 (如 'flash', 'uploadmethod')
-     * @param {string} menuValue 菜单选项值
-     */
-    private applyMenuSettings(boardConfig: { [key: string]: string }, menuType: string, menuValue: string): void {
-        // console.log(`  检测到 ${menuType} 菜单设置: ${menuValue}`);
-
-        // 查找匹配的菜单配置
-        const menuPrefix = `menu.${menuType}.${menuValue}.`;
-        const appliedSettings: string[] = [];
-
-        for (const key in boardConfig) {
-            if (key.startsWith(menuPrefix)) {
-                // 提取配置属性名（去掉前缀）
-                const configKey = key.replace(menuPrefix, '');
-                const configValue = boardConfig[key];
-
-                // 应用配置到 boardConfig
-                boardConfig[configKey] = configValue;
-                appliedSettings.push(`${configKey} = ${configValue}`);
-                // console.log(`    应用 ${menuType} 配置: ${configKey} = ${configValue}`);
-            }
-        }
-
-        // if (appliedSettings.length === 0) {
-        //     console.warn(`  ⚠️  未找到匹配的 ${menuType} 配置: ${menuValue}`);
-        // } else {
-        //     console.log(`  ✅ 成功应用 ${appliedSettings.length} 个 ${menuType} 配置项`);
-        // }
-    }
-
-    /**
-     * 根据 flash 菜单选项自动应用相关的配置参数
-     * @param {Object} boardConfig 板子配置对象
-     * @param {string} flashValue flash 菜单选项值
-     */
-    private applyFlashMenuSettings(boardConfig: { [key: string]: string }, flashValue: string): void {
-        this.applyMenuSettings(boardConfig, 'flash', flashValue);
-    }
-
-    /**
-     * 根据 uploadmethod 菜单选项自动应用相关的配置参数
-     * @param {Object} boardConfig 板子配置对象
-     * @param {string} uploadMethodValue uploadmethod 菜单选项值
-     */
-    private applyUploadMethodMenuSettings(boardConfig: { [key: string]: string }, uploadMethodValue: string): void {
-        this.applyMenuSettings(boardConfig, 'uploadmethod', uploadMethodValue);
-    }
-
-    /**
-     * 从 boardConfig 中动态检测所有可用的菜单选项类型
-     * 解析 menu.{menuType}.{optionValue}.{configKey} 格式的键
-     * @param {Object} boardConfig 板子配置
-     * @returns {string[]} 可用的菜单类型列表
-     */
-    private detectAvailableMenuOptions(boardConfig: { [key: string]: string }): string[] {
-        const menuTypes = new Set<string>();
-
-        for (const key in boardConfig) {
-            // 查找所有以 menu. 开头的配置项
-            if (key.startsWith('menu.')) {
-                // 提取菜单类型 (menu.flash.2097152_0.build.flash_total -> flash)
-                const parts = key.split('.');
-                if (parts.length >= 3) {
-                    const menuType = parts[1]; // menu.{menuType}.{option}.{config}
-                    menuTypes.add(menuType);
-                }
-            }
-        }
-
-        const result = Array.from(menuTypes); // 保持原始顺序
-        // console.log(`检测到可用的菜单选项: ${result.join(', ')}`);
-        return result;
-    }
-
-    /**
-     * 获取指定菜单的所有可用选项
-     * @param {Object} boardConfig 板子配置
-     * @param {string} menuName 菜单名称 (如 'flash', 'uploadmethod')
-     * @returns {string[]} 可用选项列表
-     */
-    private getAvailableMenuOptions(boardConfig: { [key: string]: string }, menuName: string): string[] {
-        const options: string[] = [];
-        const menuPrefix = `menu.${menuName}.`;
-
-        // 使用Object.keys()来保持插入顺序（即文件中的原始顺序）
-        Object.keys(boardConfig).forEach(key => {
-            if (key.startsWith(menuPrefix)) {
-                // 提取选项名 (如 menu.flash.2097152_0.build.flash_total -> 2097152_0)
-                const parts = key.replace(menuPrefix, '').split('.');
-                if (parts.length > 0 && !options.includes(parts[0])) {
-                    options.push(parts[0]);
-                }
-            }
-        });
-
-        return options; // 保持文件中的原始顺序
-    }
-
-    /**
-     * 直接在 boardConfig 中应用默认菜单选项，确保关键配置存在
-     * 这样即使不调用 fillDefaultMenuOptions，boardConfig 也会有必要的菜单配置
-     * @param {Object} boardConfig 板子配置对象
-     * @param {Object} buildProperties 构建属性，用于指定特定菜单选项
-     */
-    private applyDefaultMenuOptionsToBoard(boardConfig: { [key: string]: string }, buildProperties: { [key: string]: string } = {}): void {
-        // 清空之前的菜单选择记录
-        this.selectedMenuOptions.clear();
-
-        // 动态检测所有可用的菜单选项
-        const availableMenuOptions = this.detectAvailableMenuOptions(boardConfig);
-
-        // 为所有检测到的菜单选项应用默认值或用户指定值（直接设置到 boardConfig）
-        availableMenuOptions.forEach(menuType => {
-            const options = this.getAvailableMenuOptions(boardConfig, menuType);
-            if (options.length > 0) {
-                let selectedValue: string;
-
-                // 检查用户是否在 buildProperties 中指定了这个菜单类型的值
-                if (buildProperties[menuType] && options.includes(buildProperties[menuType])) {
-                    selectedValue = buildProperties[menuType];
-                } else {
-                    // 选择第一个选项作为默认值（按照在boards.txt中出现的顺序）
-                    selectedValue = options[0];
-                }
-
-                // 记录选择的菜单选项
-                this.selectedMenuOptions.set(menuType, selectedValue);
-
-                // 直接应用菜单设置到 boardConfig
-                this.applyMenuSettings(boardConfig, menuType, selectedValue);
-            }
-        });
-    }
-
-    /**
-     * 优化的变量扩展方法
-     * 支持嵌套变量展开，如 {tools.{build.tarch}-esp-elf-gdb.path}
-     * 先展开内层变量，再展开外层变量
-     * @param {string} value 要扩展的值
-     * @param {Object} variables 变量映射
-     * @param {Set} variableNames 所有变量名的集合
-     * @returns {string} 扩展后的值
-     */
-    expandVariablesOptimized(value: string, variables: { [key: string]: string }, variableNames: Set<string>): string {
-        let result = value;
-        let maxIterations = 10; // 防止无限递归
-        let iteration = 0;
-
-        while (iteration < maxIterations) {
-            const originalResult = result;
-
-            // 处理嵌套变量：从最内层开始展开
-
-            result = this.expandNestedVariables(result, variables, variableNames);
-
-            // 如果没有变化，说明展开完成
-            if (result === originalResult) {
-                break;
-            }
-
-            iteration++;
-        }
-
-        if (iteration >= maxIterations) {
-            console.warn(`⚠️  变量展开达到最大迭代次数，可能存在循环引用: ${value}`);
-        }
-
-        return result;
-    }
-
-    /**
-     * 展开嵌套变量，从最内层开始
-     * @param {string} value 要展开的值
-     * @param {Object} variables 变量映射
-     * @param {Set} variableNames 所有变量名的集合
-     * @returns {string} 展开后的值
-     */
-    private expandNestedVariables(value: string, variables: { [key: string]: string }, variableNames: Set<string>): string {
-        // 使用递归正则表达式来找到最内层的变量
-        // 这个正则会匹配不包含其他大括号的变量引用
-        return value.replace(/\{([^{}]+)\}/g, (match, varName) => {
-            // 首先检查变量名是否存在于字典中
-            if (variableNames.has(varName)) {
-                const replacement = variables[varName];
-                // 如果找到替换值且不为 undefined，则替换
-                if (replacement !== undefined) {
-                    return replacement;
-                }
-            }
-
-            // 如果变量不存在于字典中，保持原样
-            return match;
-        });
-    }
-
-
-    /**
-     * 查找并显示未解析的平台变量
-     * @param {Object} variables 变量映射
-     * @param {Set} circularDetected 循环引用的变量集合
-     * @returns {Object} 分析结果
-     */
-    showUnresolvedPlatformVariables(variables: { [key: string]: string }): any {
-        const unresolvedVars = new Set<string>();
-        const unresolvedEntries: Array<{ key: string; value: string }> = [];
-
-        // 遍历所有变量，查找仍包含 {variable} 格式的未解析变量
-        for (let key in variables) {
-            const value = variables[key];
-
-            const matches = value.match(/\{([^}]+)\}/g);
-
-            if (matches) {
-                // 记录包含未解析变量的条目
-                unresolvedEntries.push({ key, value });
-
-                // 提取未解析的变量名
-                matches.forEach(match => {
-                    const varName = match.slice(1, -1); // 移除 { 和 }
-                    unresolvedVars.add(varName);
-                });
-            }
-        }
-
-        return {
-            unresolvedVariables: Array.from(unresolvedVars),
-            unresolvedEntries: unresolvedEntries
-        };
-    }
-
-    /**
-     * 根据 FQBN 解析特定板子的配置
-     * @param {string} platformDir 平台目录路径
-     * @param {string} fqbn FQBN 字符串
-     * @param {Object} buildProperties 额外的构建属性
-     * @param {Object} toolVersions 工具版本
-     * @param {string[]} buildMacros 用户自定义宏定义数组
-     * @returns {Object} 特定板子的完整配置
-     */
-    async parseByFQBN(fqbn: string, buildProperties: { [key: string]: string }, toolVersions: { [key: string]: string } = undefined, buildMacros: string[] = []): Promise<BoardParseResult> {
-        // 解析 FQBN
-        const fqbnObj = this.parseFQBN(fqbn);
-        // console.log(`解析 FQBN: ${fqbn}`);
-        // console.log(`  包: ${fqbnObj.package}`);
-        // console.log(`  平台: ${fqbnObj.platform}`);
-        // console.log(`  板子ID: ${fqbnObj.boardId}`);
-        process.env['package'] = fqbnObj.package;
-        process.env['platform'] = fqbnObj.platform;
-
-        let platformTxtPath, boardsTxtPath;
-
-
-        if (process.env['SDK_PATH']) {
-            // 自定义SDK路径
-            platformTxtPath = path.join(process.env['SDK_PATH'], 'platform.txt');
-            boardsTxtPath = path.join(process.env['SDK_PATH'], 'boards.txt');
-        } else {
-            // 根据操作系统选择Arduino15目录的正确路径
-            const arduino15BasePath = os.platform() === 'win32'
-                ? path.join(os.homedir(), 'AppData', 'Local', 'Arduino15')
-                : path.join(os.homedir(), 'Library', 'Arduino15');
-            let ARDUINO15_PACKAGE_PATH = path.join(arduino15BasePath, 'packages', fqbnObj.package);
-            let ARDUINO15_PACKAGE_HARDWARE_PATH = path.join(ARDUINO15_PACKAGE_PATH, 'hardware', fqbnObj.platform);
-            const platformTxtPattern = path.join(ARDUINO15_PACKAGE_HARDWARE_PATH, '**/platform.txt').replace(/\\/g, '/');
-            const boardsTxtPattern = path.join(ARDUINO15_PACKAGE_HARDWARE_PATH, '**/boards.txt').replace(/\\/g, '/');
-            const [platformTxtFiles, boardsTxtFiles] = await Promise.all([
-                glob(platformTxtPattern, {
-                    absolute: true,
-                }),
-                glob(boardsTxtPattern, {
-                    absolute: true,
-                })
-            ]);
-            platformTxtPath = platformTxtFiles[0];
-            boardsTxtPath = boardsTxtFiles[0];
-        }
-        process.env['SDK_PATH'] = path.dirname(platformTxtPath);
-
-
-        if (fqbnObj.platform == 'esp32') {
-            const [ESP32_ARDUINO_LIBS_PATH, ESPTOOL_PY_PATH] = await Promise.all([
-                this.findToolPath('esp32-arduino-libs', toolVersions?.['esp32-arduino-libs'] || ''),
-                this.findToolPath('esptool_py', toolVersions?.['esptool_py'] || ''),
-            ]);
-            process.env['ESP32_ARDUINO_LIBS_PATH'] = ESP32_ARDUINO_LIBS_PATH;
-            process.env['ESPTOOL_PY_PATH'] = ESPTOOL_PY_PATH;
-        }
-
-        let boardConfig: { [key: string]: string } = this.parseBoardsTxt(boardsTxtPath, fqbnObj, buildProperties);
-
-        // 确保 boardConfig 中有基本的默认菜单选项，同时考虑用户指定的构建属性
-        this.applyDefaultMenuOptionsToBoard(boardConfig, buildProperties);
-
-        // 替换/添加额外的构建属性
-        this.applyBuildProperties(boardConfig, buildProperties);
-
-        if (!boardConfig['build.arch']) {
-            boardConfig['build.arch'] = fqbnObj.platform.toUpperCase();
-        }
-
-        if (fqbnObj.platform == 'esp32') {
-            // 专注于菜单项 非菜单项不考虑
-            // // 获取基本参数（不是菜单选项）
-            // const cpuFreq = boardConfig['build.f_cpu'] ? boardConfig['build.f_cpu'].replace('000000L', '') : '240';
-            // const flashSize = boardConfig['build.flash_size'] ? boardConfig['build.flash_size'].replace(/MB$/i, 'M') : '4M';
-            // const uploadSpeed = boardConfig['upload.speed'] || '921600';
-            // const psram = boardConfig['build.psram'] || 'disabled';
-            // const PartitionScheme = boardConfig['build.partitions'] || 'default';
-            // const eraseFlash = boardConfig['build.erase_cmd'] || 'none';
-
-            // 动态构建 FQBN 参数列表
-            const fqbnParams: string[] = [];
-
-            // 添加固定参数
-            // fqbnParams.push(`UploadSpeed=${uploadSpeed}`);
-            // fqbnParams.push(`CPUFreq=${cpuFreq}`);
-            // fqbnParams.push(`FlashSize=${flashSize}`);
-            // fqbnParams.push(`PartitionScheme=${PartitionScheme}`);
-            // fqbnParams.push(`PSRAM=${psram}`);
-            // fqbnParams.push(`EraseFlash=${eraseFlash}`);
-
-            // 动态添加菜单选项参数
-            this.selectedMenuOptions.forEach((selectedValue, menuType) => {
-                fqbnParams.push(`${menuType}=${selectedValue}`);
-            });
-
-            // 生成最终的 FQBN
-            boardConfig['build.fqbn'] = fqbn + ':' + fqbnParams.join(',');
-        }
-
-        if (!boardConfig['build.mcu']) {
-            // 搜索包含 'build.mcu' 的 key
-            for (const key in boardConfig) {
-                if (key.includes('build.mcu') && key !== 'build.mcu') {
-                    boardConfig['build.mcu'] = boardConfig[key];
-                    // console.log(`  从 ${key} 设置 build.mcu = ${boardConfig[key]}`);
-                    break;
-                }
-            }
-        }
-
-        let toolchainPkg = 'pqt-gcc'; // 默认值
-        if (fqbnObj.package == 'rp2040') {
-            // 为RP2040设置工具链路径
-            toolchainPkg = boardConfig['build.toolchainpkg'] || 'pqt-gcc';
-            const PQT_GCC_PATH = await this.findToolPath(toolchainPkg);
-            process.env['PQT_GCC_PATH'] = PQT_GCC_PATH;
-        }
-
-        process.env['BUILD_MCU'] = boardConfig['build.mcu'];
-
-        let moreConfig = {
-            'runtime.os': os.platform() === 'win32' ? 'windows' : 'unknown',
-            'runtime.ide.version': '10607',
-            // 'runtime.tools.avr-gcc.path': await this.findToolPath('avr-gcc', toolVersions?.['avr-gcc'] || ''),
-            // 'runtime.tools.esp-x32.path': await this.findToolPath('esp-x32', toolVersions?.['esp-x32'] || ''),
-            // 'runtime.tools.esp-rv32.path': await this.findToolPath('esp-rv32', toolVersions?.['esp-rv32'] || ''),
-            // 'runtime.tools.xtensa-esp32s3-elf-gcc.path': await this.findToolPath('xtensa-esp32s3-elf-gcc', toolVersions?.['xtensa-esp32s3-elf-gcc'] || ''),
-            // 'runtime.tools.riscv32-esp-elf-gcc.path': await this.findToolPath('riscv32-esp-elf-gcc', toolVersions?.['riscv32-esp-elf-gcc'] || ''),
-            // 'runtime.tools.arm-none-eabi-gcc.path': await this.findToolPath('arm-none-eabi-gcc', toolVersions?.['arm-none-eabi-gcc'] || ''),
-            // 'runtime.tools.xpack-arm-none-eabi-gcc.path': await this.findToolPath('xpack-arm-none-eabi-gcc', toolVersions?.['xpack-arm-none-eabi-gcc'] || ''),
-            // 'runtime.tools.arm-none-eabi-gcc-7-2017q4.path': await this.findToolPath('arm-none-eabi-gcc', toolVersions?.['arm-none-eabi-gcc'] || ''),
-            // 'runtime.tools.esp32-arduino-libs.path': process.env['ESP32_ARDUINO_LIBS_PATH'] || '%ESP32_ARDUINO_LIBS_PATH%',
-            // 'runtime.tools.esptool_py.path': process.env['ESPTOOL_PY_PATH'],
-            // 'runtime.tools.pqt-gcc.path': process.env['PQT_GCC_PATH'] || await this.findToolPath('pqt-gcc'),
-            // 'runtime.tools.pqt-python3.path': await this.findToolPath('pqt-python3'),
-            // 'runtime.tools.pqt-picotool.path': await this.findToolPath('pqt-picotool'),
-            // // 'runtime.tools.xpack-arm-none-eabi-gcc-14.2.1-1.1.path': await this.findToolPath('xpack-arm-none-eabi-gcc'),
-            // 'runtime.tools.STM32Tools.path': await this.findToolPath('STM32Tools'),
-            // 'runtime.tools.CMSIS.path': await this.findToolPath('CMSIS', toolVersions?.['CMSIS'] || ''),
-            // 'runtime.tools.STM32_SVD.path': await this.findToolPath('STM32_SVD'),
-            // 'runtime.tools.arm-none-eabi-gcc-4.8.3-2014q1.path': await this.findToolPath('arm-none-eabi-gcc', toolVersions?.['arm-none-eabi-gcc'] || ''),
-            // 'runtime.tools.gcc-arm-none-eabi-5_2-2015q4.path': await this.findToolPath('arm-none-eabi-gcc', toolVersions?.['arm-none-eabi-gcc'] || ''),
-            // 'runtime.tools.CMSIS-5.7.0.path': await this.findToolPath('CMSIS', toolVersions?.['CMSIS'] || ''),
-            'build.system.path': path.join(process.env['SDK_PATH'], 'system'),
-            'build.toolchainpkg': toolchainPkg,
-            'build.toolchain': boardConfig['build.toolchain'] || (fqbnObj.package === 'rp2040' ? 'arm-none-eabi' : ''),
-            'build.flash_total': boardConfig['build.flash_total'] || '2097152', // 使用菜单配置或默认值
-            'build.project_name': process.env['SKETCH_NAME'],
-            'includes': '%INCLUDE_PATHS%',
-            'source_file': '%SOURCE_FILE_PATH%',
-            'build.source.path': process.env['SKETCH_DIR_PATH'],
-            'build.variant.path': path.join(process.env['SDK_PATH'], 'variants', boardConfig['build.variant']),
-            'runtime.platform.path': process.env['SDK_PATH'],
-            'object_file': '%OBJECT_FILE_PATH%',
-            'object_files': '%OBJECT_FILE_PATHS%',
-            'build.path': process.env['BUILD_PATH'] || '%OUTPUT_PATH%',
-            'archive_file': 'core.a',
-            'archive_file_path': process.env['BUILD_PATH'] + '/core.a',
-            'build.core.path': path.join(process.env['SDK_PATH'], 'cores', boardConfig['build.core']),
-        }
-
-        // 自动扫描 platform.txt 中带版本号的 runtime.tools.*.path 变量，
-        // 去掉版本号后使用 findToolPath 解析其真实路径
-        const versionedToolPaths = await this.resolveVersionedToolPaths(platformTxtPath, toolVersions, boardConfig);
-        Object.assign(moreConfig, versionedToolPaths);
-
-        // console.log('moreConfig:', moreConfig);
-        let platformConfig: { [key: string]: string } = this.parsePlatformTxt(platformTxtPath, fqbnObj, boardConfig, moreConfig);
-
-        // 处理用户自定义宏定义,添加到 build.macros
-        if (buildMacros && buildMacros.length > 0) {
-            const macroFlags = buildMacros.map(macro => {
-                // 使用 escapeDefineForShell 正确处理 shell 特殊字符（如括号）
-                return escapeDefineForShell(macro);
-            }).join(' ');
-
-            platformConfig['build.macros'] = macroFlags;
-        }
-
-        // 设置编译器路径
-        process.env['COMPILER_PATH'] =
-            process.env['COMPILER_PATH'] ||
-            platformConfig['compiler.path'] ||
-            platformConfig['runtime.tools.avr-gcc.path'];
-
-        process.env['COMPILER_GPP_PATH'] = platformConfig['compiler.path'] + platformConfig['compiler.cpp.cmd'];
-        // console.log(`process.env['COMPILER_PATH']:`, process.env['COMPILER_PATH'], platformConfig);
-
-        // 设置 SDK_CORE_PATH
-        process.env['SDK_CORE_PATH'] = path.join(process.env['SDK_PATH'], 'cores', boardConfig['build.core']);
-        // 设置SDK_VARIANT_PATH
-        process.env['SDK_VARIANT_PATH'] = path.join(process.env['SDK_PATH'], 'variants', boardConfig['build.variant']);
-        // 设置 SDK_CORE_LIBRARIES_PATH
-        process.env['SDK_CORE_LIBRARIES_PATH'] = path.join(process.env['SDK_PATH'], 'libraries');
-
-        if (platformConfig['compiler.sdk.path']) {
-            process.env['COMPILER_SDK_PATH'] = platformConfig['compiler.sdk.path']
-        }
-
-        // 构建最终配置
-        const result: BoardParseResult = {
-            fqbn: fqbn,
-            fqbnParsed: fqbnObj,
-            platform: platformConfig,
-            board: boardConfig,
-        };
-
-        // console.log("Result: ", result);
-
-        return result;
-
-    }
-
-    /**
-     * 解析 boards.txt 文件中指定板子的配置
-     * @param {string} boardsPath boards.txt 文件路径
-     * @param {string} boardId 目标板子ID
-     * @returns {Object} 解析结果，只包含指定板子的配置
-     */
-    parseBoardsTxt(boardsPath: string, fqbnObj: FQBNObject, buildProperties: { [key: string]: string } = {}) {
+    parseBoardsTxt(
+        boardsPath: string,
+        fqbnObj: FQBNObject,
+        buildProperties: ArduinoProperties = {}
+    ): ArduinoProperties {
         const boardId = fqbnObj.boardId;
-        // console.log(`  解析开发板 ${boardId} 的配置...`);
-        // console.log(boardsPath);
 
         try {
-            const content = fs.readFileSync(boardsPath, 'utf8');
-            const lines = content.split('\n');
-
-            // 查找以指定板卡名称开头的配置行
             const boardPrefix = `${boardId}.`;
-            const boardLines = lines.filter(line => {
-                const trimmedLine = line.trim();
-                return trimmedLine.startsWith(boardPrefix) && !trimmedLine.startsWith('#');
-            });
-
-            // 将配置行解析为对象，同时根据 buildProperties 过滤菜单选项
-            const boardConfig: { [key: string]: string } = {};
-
-            boardLines.forEach(line => {
-                const trimmedLine = line.trim();
-                const equalIndex = trimmedLine.indexOf('=');
-
-                if (equalIndex > 0) {
-                    const key = trimmedLine.substring(0, equalIndex);
-                    const value = trimmedLine.substring(equalIndex + 1);
-
-                    // 移除板卡名称前缀，只保留配置项名称
-                    const configKey = key.substring(boardPrefix.length);
-
-                    // 检查是否为菜单项配置（格式：menu.menuType.option.xxx）
-                    if (configKey.startsWith('menu.')) {
-                        const menuMatch = configKey.match(/^menu\.([^.]+)\.([^.]+)/);
-                        if (menuMatch) {
-                            const menuType = menuMatch[1];
-                            const menuOption = menuMatch[2];
-
-                            // 如果用户指定了这个菜单类型的值，只保留用户选择的选项
-                            if (buildProperties[menuType]) {
-                                if (menuOption === buildProperties[menuType]) {
-                                    // 保留用户选择的菜单选项
-                                    boardConfig[configKey] = value;
-                                }
-                                // 忽略其他菜单选项
-                            } else {
-                                // 用户未指定，保留所有选项（后续会应用默认值）
-                                boardConfig[configKey] = value;
-                            }
-                        } else {
-                            // 不是标准菜单项格式，直接保留
-                            boardConfig[configKey] = value;
-                        }
-                    } else {
-                        // 非菜单项配置，直接保留
-                        boardConfig[configKey] = value;
-                    }
-                }
-            });
-
-            return boardConfig;
+            const boardProperties = loadArduinoProperties(
+                boardsPath,
+                key => key.startsWith(boardPrefix)
+            );
+            return selectBoardProperties(boardProperties, boardId, buildProperties);
         } catch (error) {
             throw new Error(`解析文件失败 ${boardsPath}: ${error}`);
         }
     }
 
     /**
-     * 去掉工具名中的版本号后缀
-     * 识别以数字开头的段作为版本号起点，例如：
-     *   arm-none-eabi-gcc-7-2017q4     -> arm-none-eabi-gcc
-     *   xpack-arm-none-eabi-gcc-14.2.1 -> xpack-arm-none-eabi-gcc
-     *   gcc-arm-none-eabi-5_2-2015q4   -> gcc-arm-none-eabi
-     *   CMSIS-5.7.0                    -> CMSIS
-     * @param toolId 可能带版本号的工具标识
-     * @returns 去掉版本号后的基础工具名
+     * 查找已安装的 Arduino 工具。自定义 TOOLS_PATH 优先，否则使用
+     * Arduino15 包目录；未找到时返回 null，不修改环境变量。
      */
-    private stripToolVersion(toolId: string): string {
-        const parts = toolId.split('-');
-        for (let i = 1; i < parts.length; i++) {
-            if (/^\d/.test(parts[i])) {
-                return parts.slice(0, i).join('-');
-            }
-        }
-        return toolId;
-    }
-
-    /**
-     * 扫描 platform.txt 中所有 runtime.tools.*.path 键，
-     * 自动去掉版本号后使用 findToolPath 解析其真实路径。
-     * @param platformPath platform.txt 路径
-     * @param toolVersions 工具版本映射
-     * @returns runtime.tools.<toolId>.path 到实际路径的映射
-     */
-    private async resolveVersionedToolPaths(
-        platformPath: string,
-        toolVersions: { [key: string]: string } = {},
-        boardConfig: { [key: string]: string } = {}
-    ): Promise<{ [key: string]: string }> {
-        const result: { [key: string]: string } = {};
-        try {
-            const content = fs.readFileSync(platformPath, 'utf8');
-            const regex = /runtime\.tools\.([^\s=]+?)\.path/g;
-            const seen = new Set<string>();
-            const templateVariables = { ...boardConfig };
-            if (!templateVariables['build.chip_variant'] && templateVariables['build.mcu']) {
-                templateVariables['build.chip_variant'] = templateVariables['build.mcu'];
-            }
-            const templateNames = new Set(Object.keys(templateVariables));
-            let match: RegExpExecArray | null;
-            while ((match = regex.exec(content)) !== null) {
-                const rawToolId = match[1];
-                const toolId = this.expandVariablesOptimized(rawToolId, templateVariables, templateNames);
-                if (!toolId || toolId.includes('{')) { continue; }
-
-                const fullKey = `runtime.tools.${toolId}.path`;
-                if (seen.has(fullKey)) { continue; }
-                seen.add(fullKey);
-
-                const baseName = this.stripToolVersion(toolId);
-                const toolPath = await this.findToolPath(baseName, toolVersions?.[baseName] || '');
-                if (toolPath) {
-                    result[fullKey] = toolPath;
-                }
-            }
-        } catch (e) {
-            console.warn(`解析工具路径失败: ${e}`);
-        }
-        return result;
-    }
-
-    async findToolPath(toolName, version = '') {
-        let toolsBasePath: string;
-
-        if (process.env['TOOLS_PATH']) {
-            // 使用自定义工具路径
-            toolsBasePath = process.env['TOOLS_PATH'];
-            // console.log(`使用自定义工具路径: ${toolsBasePath}`);
-        } else {
-            // 使用默认 Arduino15 路径，根据操作系统选择正确的基础路径
-            const arduino15BasePath = os.platform() === 'win32'
-                ? path.join(os.homedir(), 'AppData', 'Local', 'Arduino15')
-                : path.join(os.homedir(), 'Library', 'Arduino15');
-            let ARDUINO15_PACKAGE_PATH = path.join(arduino15BasePath, 'packages', process.env['package']);
-            toolsBasePath = path.join(ARDUINO15_PACKAGE_PATH, 'tools');
-            // console.log(`使用默认工具路径: ${toolsBasePath}`);
-        }
-
-        // 支持两种匹配模式：
-        // 1. toolName/* (传统 Arduino 路径结构)
-        // 2. toolName@* (aily-project 工具路径结构)
-        const patterns = [
-            path.join(toolsBasePath, `${toolName}@*`).replace(/\\/g, '/'),
-            path.join(toolsBasePath, toolName, '*').replace(/\\/g, '/')
-        ];
-
-        for (const pattern of patterns) {
-            const result = await glob(pattern, { absolute: true });
-            if (result && result.length > 0) {
-                if (result.length > 1 && version) {
-                    // 如果指定了版本号，尝试匹配
-                    for (const p of result) {
-                        const pVersion = path.basename(p).split('@')[1];
-                        if (pVersion === version) {
-                            return p;
-                        }
-                    }
-                }
-                return result[0];
-            }
-        }
-
-        // 精确匹配未找到时，尝试包含匹配（如 arm-none-eabi-gcc -> xpack-arm-none-eabi-gcc）
-        const fuzzyPatterns = [
-            path.join(toolsBasePath, `*${toolName}@*`).replace(/\\/g, '/'),
-            path.join(toolsBasePath, `*${toolName}*`, '*').replace(/\\/g, '/')
-        ];
-
-        for (const pattern of fuzzyPatterns) {
-            const result = await glob(pattern, { absolute: true });
-            if (result && result.length > 0) {
-                if (result.length > 1 && version) {
-                    for (const p of result) {
-                        const pVersion = path.basename(p).split('@')[1];
-                        if (pVersion === version) {
-                            return p;
-                        }
-                    }
-                }
-                return result[0];
-            }
-        }
-
-        // console.warn(`未找到工具: ${toolName} 在路径: ${toolsBasePath}`);
-        return null;
+    async findToolPath(
+        toolName: string,
+        version = '',
+        packageName = process.env['package'] || ''
+    ): Promise<string | null> {
+        return findArduinoToolPath({
+            toolName,
+            version,
+            toolsPath: process.env['TOOLS_PATH'],
+            packageName,
+            arduino15BasePath: getDefaultArduino15BasePath()
+        });
     }
 }

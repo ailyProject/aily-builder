@@ -7,6 +7,7 @@ import { CacheManager } from './src/CacheManager';
 import { CacheClearMode, CacheRegistry, CacheStatsReport, CacheClearReport } from './src/CacheRegistry';
 import { calculateMD5 } from './src/utils/md5';
 import { initShortPath, sanitizeNonAsciiPaths } from './src/utils/ShortPath';
+import { getPathListDelimiter, isWindowsHost } from './src/utils/HostPlatform';
 import path from 'path';
 import os from 'os';
 import fs from 'fs-extra';
@@ -22,6 +23,33 @@ function getSourceBaseName(sourcePath: string): string {
 function isTruthyEnv(name: string): boolean {
   const value = process.env[name];
   return value === '1' || value?.toLowerCase() === 'true';
+}
+
+/**
+ * 生成同名 sketch 不冲突的默认构建目录。
+ * 路径布局保持现有 CLI 约定，项目路径哈希用于区分不同目录下的同名文件。
+ */
+function getDefaultBuildPath(sketchPath: string, sketchName: string): string {
+  const projectPathHash = calculateMD5(sketchPath).substring(0, 8);
+  const uniqueSketchName = `${sketchName}_${projectPathHash}`;
+  const userDataPath = isWindowsHost()
+    ? path.join(os.homedir(), 'AppData', 'Local')
+    : path.join(os.homedir(), 'Library');
+
+  return path.join(userDataPath, 'aily-builder', 'project', uniqueSketchName);
+}
+
+/**
+ * 将命令行提供的库目录写入 LIBRARIES_PATH。
+ * 每个目录先转换为绝对路径，再使用当前主机的路径列表分隔符连接。
+ */
+function setLibrariesPathEnvironment(libraryPaths?: readonly string[]): void {
+  if (!libraryPaths || libraryPaths.length === 0) {
+    return;
+  }
+
+  const resolvedPaths = libraryPaths.map(libraryPath => path.resolve(libraryPath));
+  process.env['LIBRARIES_PATH'] = resolvedPaths.join(getPathListDelimiter());
 }
 
 function resolveCacheClearMode(options: any): CacheClearMode {
@@ -215,17 +243,7 @@ program
     const sketchName = getSourceBaseName(sketchPath);
 
     // 为了避免不同项目的同名sketch冲突，使用项目路径的MD5哈希值
-    const projectPathMD5 = calculateMD5(sketchPath).substring(0, 8); // 只取前8位MD5值
-    const uniqueSketchName = `${sketchName}_${projectPathMD5}`;
-    // 修复默认构建路径，使其在不同操作系统上都能正常工作
-    const defaultBuildPath = path.join(
-      os.platform() === 'win32'
-        ? path.join(os.homedir(), 'AppData', 'Local')
-        : path.join(os.homedir(), 'Library'),
-      'aily-builder',
-      'project',
-      uniqueSketchName
-    );
+    const defaultBuildPath = getDefaultBuildPath(sketchPath, sketchName);
 
     const buildPath = options.buildPath ? path.resolve(options.buildPath) : defaultBuildPath;
     const artifactManifestPath = options.emitArtifactManifest
@@ -264,7 +282,7 @@ program
           }
 
           // 在 Windows 上，将含非 ASCII 字符的路径替换为 junction 别名
-          if (os.platform() === 'win32') {
+          if (isWindowsHost()) {
             initShortPath();
             for (const key of Object.keys(process.env)) {
               if (process.env[key]) {
@@ -298,14 +316,7 @@ program
       process.env['TOOLS_PATH'] = options.toolsPath;
     }
     
-    // 修复 libraries path 处理
-    if (options.librariesPath && options.librariesPath.length > 0) {
-      // console.log('Setting LIBRARIES_PATH to:', options.librariesPath);
-      // 将多个路径用分号分隔（Windows）或冒号分隔（Unix）
-      const pathSeparator = os.platform() === 'win32' ? ';' : ':';
-      const resolvedPaths = options.librariesPath.map((libPath: string) => path.resolve(libPath));
-      process.env['LIBRARIES_PATH'] = resolvedPaths.join(pathSeparator);
-    }
+    setLibrariesPathEnvironment(options.librariesPath);
 
     const buildOptions = {
       sketchPath,
@@ -465,16 +476,7 @@ Note: This command only performs preprocessing without actual compilation.
     const sketchDirPath = path.dirname(sketchPath);
     const sketchName = getSourceBaseName(sketchPath);
 
-    const projectPathMD5 = calculateMD5(sketchPath).substring(0, 8);
-    const uniqueSketchName = `${sketchName}_${projectPathMD5}`;
-    const defaultBuildPath = path.join(
-      os.platform() === 'win32'
-        ? path.join(os.homedir(), 'AppData', 'Local')
-        : path.join(os.homedir(), 'Library'),
-      'aily-builder',
-      'project',
-      uniqueSketchName
-    );
+    const defaultBuildPath = getDefaultBuildPath(sketchPath, sketchName);
 
     const buildPath = options.buildPath ? path.resolve(options.buildPath) : defaultBuildPath;
 
@@ -499,11 +501,7 @@ Note: This command only performs preprocessing without actual compilation.
       process.env['TOOLS_PATH'] = options.toolsPath;
     }
 
-    if (options.librariesPath && options.librariesPath.length > 0) {
-      const pathSeparator = os.platform() === 'win32' ? ';' : ':';
-      const resolvedPaths = options.librariesPath.map((libPath: string) => path.resolve(libPath));
-      process.env['LIBRARIES_PATH'] = resolvedPaths.join(pathSeparator);
-    }
+    setLibrariesPathEnvironment(options.librariesPath);
 
     const preprocessOptions = {
       sketchPath,

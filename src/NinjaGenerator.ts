@@ -4,6 +4,7 @@ import { Logger } from './utils/Logger';
 import { Dependency } from './DependencyAnalyzer';
 import { CompileConfigManager } from './CompileConfigManager';
 import { ArchiveCacheHit, getArchiveDependencyKey } from './ArchiveCloudCacheManager';
+import { commandHasIncludePath, dedupeCompileIncludePaths } from './utils/CompileIncludePaths';
 
 export interface NinjaRule {
   name: string;
@@ -36,7 +37,6 @@ export interface NinjaOptions {
   compileConfig: any;
   buildPath: string;
   jobs: number;
-  skipExistingObjects?: boolean; // 新增：是否跳过已存在的对象文件
   archiveCacheHits?: Map<string, ArchiveCacheHit>;
 }
 
@@ -48,9 +48,14 @@ export class NinjaGenerator {
   private ninjaFile: NinjaFile;
   private objectFiles: string[] = [];
   private prelinkInputs: string[] = [];
-  private skipExistingObjects: boolean = false;
+  private sketchStageInputs: string[] = [];
+  private libraryStageInputs: string[] = [];
+  private coreStageInputs: string[] = [];
   private archiveCacheHits: Map<string, ArchiveCacheHit> = new Map();
   private readonly arduinoCoreBuildFlag = '-DARDUINO_CORE_BUILD';
+  static readonly SKETCH_TARGET = '__aily_sketch_ready';
+  static readonly LIBRARIES_TARGET = '__aily_libraries_ready';
+  static readonly CORE_TARGET = '__aily_core_ready';
   static readonly PRELINK_TARGET = '__aily_prelink_ready';
   private compileConfigManager: CompileConfigManager; // 新增：编译配置管理器
 
@@ -70,10 +75,12 @@ export class NinjaGenerator {
       this.dependencies = options.dependencies;
       this.compileConfig = options.compileConfig;
       this.buildPath = options.buildPath;
-      this.skipExistingObjects = options.skipExistingObjects || false;
       this.archiveCacheHits = options.archiveCacheHits || new Map();
       this.objectFiles = [];
       this.prelinkInputs = [];
+      this.sketchStageInputs = [];
+      this.libraryStageInputs = [];
+      this.coreStageInputs = [];
       this.ninjaFile = {
         rules: [],
         builds: [],
@@ -125,7 +132,8 @@ export class NinjaGenerator {
       ld: this.compileConfig.compiler.ld,
       objcopy: this.compileConfig.compiler.objcopy,
       build_path: this.buildPath.replace(/\\/g, '/'),
-      sketch_name: process.env['SKETCH_NAME'] || 'sketch'
+      sketch_name: process.env['SKETCH_NAME'] || 'sketch',
+      sketch_dir_path: (process.env['SKETCH_DIR_PATH'] || '').replace(/\\/g, '/')
     };
 
     // 添加 RP2040 平台变量（从 Arduino 配置中获取）
@@ -197,11 +205,11 @@ export class NinjaGenerator {
     // C++编译规则
     this.ninjaFile.rules.push({
       name: 'cpp_compile',
-      command: this.formatCommand(cppArgs, {
+      command: this.withNinjaDepfile(this.formatCommand(cppArgs, {
         compiler: '$cpp_compiler',
         input: '$in',
         output: '$out'
-      }),
+      })),
       description: 'Compiling C++ $in',
       deps: 'gcc',
       depfile: '$out.d'
@@ -210,11 +218,11 @@ export class NinjaGenerator {
     // C编译规则
     this.ninjaFile.rules.push({
       name: 'c_compile',
-      command: this.formatCommand(cArgs, {
+      command: this.withNinjaDepfile(this.formatCommand(cArgs, {
         compiler: '$c_compiler',
         input: '$in',
         output: '$out'
-      }),
+      })),
       description: 'Compiling C $in',
       deps: 'gcc',
       depfile: '$out.d'
@@ -223,11 +231,11 @@ export class NinjaGenerator {
     // Core and variant sources need a separate rule for platform core hooks.
     this.ninjaFile.rules.push({
       name: 'core_cpp_compile',
-      command: this.formatCommand(coreCppArgs, {
+      command: this.withNinjaDepfile(this.formatCommand(coreCppArgs, {
         compiler: '$cpp_compiler',
         input: '$in',
         output: '$out'
-      }),
+      })),
       description: 'Compiling core C++ $in',
       deps: 'gcc',
       depfile: '$out.d'
@@ -235,11 +243,11 @@ export class NinjaGenerator {
 
     this.ninjaFile.rules.push({
       name: 'core_c_compile',
-      command: this.formatCommand(coreCArgs, {
+      command: this.withNinjaDepfile(this.formatCommand(coreCArgs, {
         compiler: '$c_compiler',
         input: '$in',
         output: '$out'
-      }),
+      })),
       description: 'Compiling core C $in',
       deps: 'gcc',
       depfile: '$out.d'
@@ -247,11 +255,11 @@ export class NinjaGenerator {
 
     this.ninjaFile.rules.push({
       name: 's_compile',
-      command: this.formatCommand(assemblerArgs, {
+      command: this.withNinjaDepfile(this.formatCommand(assemblerArgs, {
         compiler: '$c_compiler',
         input: '$in',
         output: '$out'
-      }),
+      })),
       description: 'Assembling $in',
       deps: 'gcc',
       depfile: '$out.d'
@@ -260,11 +268,11 @@ export class NinjaGenerator {
     // Assembly compile rule
     this.ninjaFile.rules.push({
       name: 'core_s_compile',
-      command: this.formatCommand(coreAssemblerArgs, {
+      command: this.withNinjaDepfile(this.formatCommand(coreAssemblerArgs, {
         compiler: '$c_compiler',
         input: '$in',
         output: '$out'
-      }),
+      })),
       description: 'Assembling core $in',
       deps: 'gcc',
       depfile: '$out.d'
@@ -349,6 +357,7 @@ export class NinjaGenerator {
       sketchObjectFile = sketchBuild.outputs[0];
       this.objectFiles.push(sketchObjectFile);
       this.prelinkInputs.push(sketchObjectFile);
+      this.sketchStageInputs.push(sketchObjectFile);
     } else {
       // 即使跳过编译，也要将对象文件添加到列表中（用于链接）
       const sketchFileName = path.basename(process.env['SKETCH_PATH']!);
@@ -356,6 +365,7 @@ export class NinjaGenerator {
       sketchObjectFile = objectFile;
       this.objectFiles.push(objectFile);
       this.prelinkInputs.push(objectFile);
+      this.sketchStageInputs.push(objectFile);
     }
 
     // 2. 创建 phony 目标，让其他所有编译任务依赖于 sketch 编译完成
@@ -379,6 +389,9 @@ export class NinjaGenerator {
       if (archiveHit) {
         if (dependency.type === 'library') {
           this.objectFiles.push(archiveHit.archiveName);
+          this.libraryStageInputs.push(archiveHit.archiveName);
+        } else if (dependency.type === 'core') {
+          this.coreStageInputs.push(archiveHit.archiveName);
         }
         this.logger.debug(`generateBuilds: archive cache hit '${dependency.name}', using ${archiveHit.archiveName}`);
         continue;
@@ -417,11 +430,18 @@ export class NinjaGenerator {
           // 将变体对象文件直接添加到最终链接的对象文件列表中
           this.objectFiles.push(...groupObjects);
           this.prelinkInputs.push(...groupObjects);
+          this.coreStageInputs.push(...groupObjects);
         } else {
           // console.log(`[DEBUG] Processing ${dependency.type} dependency: ${dependency.name}, objects count: ${groupObjects.length}`);
           // 其他类型（core、library）创建归档文件
           archiveGroups.set(dependency.name, { objects: groupObjects, needsRebuild: groupNeedsRebuild });
         }
+      } else if (dependency.type === 'sketch' && groupObjects.length > 0) {
+        // Sources emitted by platform prebuild hooks are sketch translation
+        // units. Link their objects directly, just like the primary sketch.
+        this.objectFiles.push(...groupObjects);
+        this.prelinkInputs.push(...groupObjects);
+        this.sketchStageInputs.push(...groupObjects);
       }
     }
 
@@ -439,38 +459,14 @@ export class NinjaGenerator {
         this.objectFiles.push(archivePath);
       }
       this.prelinkInputs.push(archivePath);
+      if (dependency.type === 'core' || dependencyName === 'core') {
+        this.coreStageInputs.push(archivePath);
+      } else {
+        this.libraryStageInputs.push(archivePath);
+      }
 
       // 检查归档文件是否需要重新生成
-      let needsRebuild = archiveGroup.needsRebuild;
-      if (this.skipExistingObjects) {
-        const fullArchivePath = path.join(this.buildPath, archivePath);
-        if (!needsRebuild && await fs.pathExists(fullArchivePath)) {
-          try {
-            const archiveStat = await fs.stat(fullArchivePath);
-            // 检查所有对象文件是否都存在且比归档文件旧
-            const objectChecks = await Promise.all(objects.map(async (obj) => {
-              const fullObjPath = path.join(this.buildPath, obj);
-              if (await fs.pathExists(fullObjPath)) {
-                const objStat = await fs.stat(fullObjPath);
-                return objStat.mtime <= archiveStat.mtime;
-              }
-              return false;
-            }));
-
-            if (objectChecks.every(check => check)) {
-              needsRebuild = false;
-              this.logger.debug(`Skipping archive ${archivePath}: up to date`);
-            } else {
-              needsRebuild = true;
-            }
-          } catch (error) {
-            this.logger.debug(`Cannot check archive timestamps for ${archivePath}, will rebuild`);
-            needsRebuild = true;
-          }
-        } else if (!needsRebuild) {
-          needsRebuild = true;
-        }
-      }
+      const needsRebuild = archiveGroup.needsRebuild;
 
       if (needsRebuild) {
         const archiveBuild: NinjaBuild = {
@@ -483,14 +479,32 @@ export class NinjaGenerator {
       }
     }
 
-    this.addPrelinkReadyTarget();
+    this.addPhaseTargets();
   }
 
-  private addPrelinkReadyTarget(): void {
+  private addPhaseTargets(): void {
+    this.ninjaFile.builds.push({
+      outputs: [NinjaGenerator.SKETCH_TARGET],
+      rule: 'phony',
+      inputs: Array.from(new Set(this.sketchStageInputs))
+    });
+    this.ninjaFile.builds.push({
+      outputs: [NinjaGenerator.LIBRARIES_TARGET],
+      rule: 'phony',
+      inputs: Array.from(new Set(this.libraryStageInputs)),
+      orderOnly: [NinjaGenerator.SKETCH_TARGET]
+    });
+    this.ninjaFile.builds.push({
+      outputs: [NinjaGenerator.CORE_TARGET],
+      rule: 'phony',
+      inputs: Array.from(new Set(this.coreStageInputs)),
+      orderOnly: [NinjaGenerator.LIBRARIES_TARGET]
+    });
     this.ninjaFile.builds.push({
       outputs: [NinjaGenerator.PRELINK_TARGET],
       rule: 'phony',
-      inputs: Array.from(new Set(this.prelinkInputs))
+      inputs: Array.from(new Set(this.prelinkInputs)),
+      orderOnly: [NinjaGenerator.CORE_TARGET]
     });
   }
 
@@ -516,6 +530,18 @@ export class NinjaGenerator {
     } else if (type === 'variant') {
       // 变体文件编译到 core 目录下，与 Arduino CLI 行为一致
       return path.join('core', `${fileName}.o`);
+    } else if (type === 'sketch') {
+      const dependency = this.dependencies.find(dep => {
+        return dep.type === 'sketch'
+          && dep.name === dependencyName
+          && this.isPathWithin(dep.path, sourceFile);
+      });
+      if (dependency) {
+        const relativePath = path.relative(dependency.path, sourceFile);
+        const prefixedFileName = relativePath.replace(/[\\/]/g, '_');
+        return path.join('sketch', `${prefixedFileName}.o`);
+      }
+      return path.join('sketch', `${fileName}.o`);
     } else {
       return path.join(type, `${fileName}.o`);
     }
@@ -531,33 +557,14 @@ export class NinjaGenerator {
 
     const objectFile = this.calculateObjectFilePath(sourceFile, type, dependencyName);
     let rule: string;
-    const isAssemblySource = ext === '.s' || ext === '.S';
-    if (this.skipExistingObjects) {
-      const fullObjectPath = path.join(this.buildPath, objectFile);
-      if (!isAssemblySource && await fs.pathExists(fullObjectPath)) {
-        // 检查对象文件是否比源文件新
-        try {
-          const [sourceStat, objectStat] = await Promise.all([
-            fs.stat(sourceFile),
-            fs.stat(fullObjectPath)
-          ]);
-
-          if (objectStat.mtime >= sourceStat.mtime) {
-            this.logger.debug(`Skipping ${objectFile}: object file is up to date`);
-            return null; // 跳过这个构建目标
-          }
-        } catch (error) {
-          // 如果无法获取文件状态，继续构建
-          this.logger.debug(`Cannot check file timestamps for ${objectFile}, will rebuild`);
-        }
-      }
-    }
 
     // 确定编译规则
     const isCoreBuildSource = type === 'core' || type === 'variant';
     switch (ext) {
       case '.ino':
+      case '.cc':
       case '.cpp':
+      case '.cxx':
         rule = isCoreBuildSource ? 'core_cpp_compile' : 'cpp_compile';
         break;
       case '.c':
@@ -572,7 +579,7 @@ export class NinjaGenerator {
     }
 
     // 将源文件路径转换为相对于build目录的路径或使用变量
-    const dep = this.dependencies.find(d => sourceFile.startsWith(d.path));
+    const dep = this.dependencies.find(d => this.isPathWithin(d.path, sourceFile));
     let sourcePathForNinja: string;
     if (dep) {
       const varName = `${dep.name.replace(/[^a-zA-Z0-9]/g, '_')}_path`;
@@ -590,6 +597,18 @@ export class NinjaGenerator {
         pool: 'compile_pool'
       }
     };
+  }
+
+  private isPathWithin(parentPath: string, candidatePath: string): boolean {
+    if (!parentPath || !candidatePath) {
+      return false;
+    }
+
+    const relativePath = path.relative(path.resolve(parentPath), path.resolve(candidatePath));
+    return relativePath === ''
+      || (relativePath !== '..'
+        && !relativePath.startsWith(`..${path.sep}`)
+        && !path.isAbsolute(relativePath));
   }
 
   private generateLinkTargets(): void {
@@ -651,6 +670,21 @@ export class NinjaGenerator {
         inputs: [elfFile]
       });
     }
+  }
+
+  private withNinjaDepfile(command: string): string {
+    let result = command;
+    if (!/(?:^|\s)-M(?:MD|D)(?=\s|$)/.test(result)) {
+      result += ' -MMD';
+    }
+    if (!/(?:^|\s)-MF(?:\s|$)/.test(result)) {
+      // Arduino recipes commonly enable -MMD but let GCC choose `foo.cpp.d`,
+      // while the historical Ninja rule expected `foo.cpp.o.d`. Make the
+      // compiler and Ninja agree explicitly so header dependencies and true
+      // incremental builds are both reliable.
+      result += ' -MF "$out.d"';
+    }
+    return result;
   }
 
   private ensureAssemblerTargetFlags(argsTemplate: string): string {
@@ -790,12 +824,32 @@ export class NinjaGenerator {
 
     // 替换include路径
     if (command.includes('%INCLUDE_PATHS%')) {
-      const includeArgs = this.dependencies
-        .map(dep => {
-          const varName = `${dep.name.replace(/[^a-zA-Z0-9]/g, '_')}_path`;
-          // 使用引号包围变量以处理包含特殊字符的路径
-          return `"-I$${varName}"`;
-        })
+      const sketchDirPath = process.env['SKETCH_DIR_PATH'];
+      const includeEntries: Array<{ path: string; argument: string }> = [];
+
+      // Some platforms inject build.source.path themselves (for example
+      // ESP32), while others rely entirely on {includes} (for example SAMD).
+      if (sketchDirPath && !commandHasIncludePath(command, sketchDirPath)) {
+        includeEntries.push({
+          path: sketchDirPath,
+          argument: '"-I$sketch_dir_path"'
+        });
+      }
+
+      for (const dep of this.dependencies) {
+        if (!dep.path || commandHasIncludePath(command, dep.path)) {
+          continue;
+        }
+
+        const varName = `${dep.name.replace(/[^a-zA-Z0-9]/g, '_')}_path`;
+        includeEntries.push({
+          path: dep.path,
+          argument: `"-I$${varName}"`
+        });
+      }
+
+      const includeArgs = dedupeCompileIncludePaths(includeEntries)
+        .map(entry => entry.argument)
         .join(' ');
       command = command.replace(/%INCLUDE_PATHS%/g, includeArgs);
     }

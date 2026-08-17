@@ -15,12 +15,14 @@ import type { Dirent } from 'fs';
 import { Logger } from './utils/Logger';
 import { Dependency } from './DependencyAnalyzer';
 import { collectPackageIdentitiesFromPaths, extractPackageIdentityFromPath } from './utils/PackageIdentity';
+import { getAilyBuilderCacheDirectory } from './utils/CacheDirectory';
 
-const CACHE_SCHEMA = 'aily.archive-cache.v1';
-const INPUT_SCHEMA = 'aily.archive-build-inputs.v1';
-const FETCH_REQUEST_SCHEMA = 'aily.archive-fetch-request.v1';
-const KEY_VERSION = 'archive-cloud-cache-v1';
-const DEFAULT_REMOTE_BASE_URL = 'https://cache.aily.pro/v1';
+const CACHE_SCHEMA = 'aily.archive-cache.v2';
+const INPUT_SCHEMA = 'aily.archive-build-inputs.v2';
+const FETCH_REQUEST_SCHEMA = 'aily.archive-fetch-request.v2';
+const KEY_VERSION = 'archive-cloud-cache-v2';
+const CACHE_LAYOUT_VERSION = 'v2';
+const DEFAULT_REMOTE_BASE_URL = 'https://cache.aily.pro/v2';
 const DEFAULT_REMOTE_TIMEOUT_MS = 1500;
 const LIBRARY_ARCHIVE_CACHE_MIN_COMPILE_FILES = 20;
 const LIBRARY_ARCHIVE_CACHE_MIN_COMPILE_BYTES = 300 * 1024;
@@ -250,7 +252,7 @@ export class ArchiveCloudCacheManager {
   }
 
   getEntryDir(key: string): string {
-    return path.join(this.cacheDir, 'v1', key.substring(0, 2), key.substring(2, 4), key);
+    return path.join(this.cacheDir, CACHE_LAYOUT_VERSION, key.substring(0, 2), key.substring(2, 4), key);
   }
 
   getCacheDir(): string {
@@ -623,11 +625,12 @@ export class ArchiveCloudCacheManager {
       'config.h',
       'sdkconfig.h',
       'build_opt.h',
-      'file_opts'
+      'file_opts',
+      'build.opt',
+      'Updater_Signing.h'
     ];
     const dirs = [
       process.env['SKETCH_DIR_PATH'],
-      process.env['BUILD_PATH'],
       process.cwd()
     ].filter(Boolean) as string[];
 
@@ -652,11 +655,11 @@ export class ArchiveCloudCacheManager {
     ].filter(Boolean) as string[];
 
     const files = new Set<string>();
-    const responsePattern = /@(?:"([^"]+)"|'([^']+)'|([^\s]+))/g;
+    const responsePattern = /(?:"@([^"]+)"|'@([^']+)'|@"([^"]+)"|@'([^']+)'|@([^\s"']+))/g;
     for (const argString of args) {
       let match: RegExpExecArray | null;
       while ((match = responsePattern.exec(argString)) !== null) {
-        const rawPath = match[1] || match[2] || match[3];
+        const rawPath = match[1] || match[2] || match[3] || match[4] || match[5];
         const resolved = path.resolve(rawPath);
         if (await fs.pathExists(resolved)) {
           files.add(resolved);
@@ -1165,13 +1168,7 @@ export class ArchiveCloudCacheManager {
       return path.resolve(process.env['AILY_BUILDER_ARCHIVE_CLOUD_CACHE_DIR']);
     }
 
-    if (os.platform() === 'win32') {
-      return path.join(os.homedir(), 'AppData', 'Local', 'aily-builder', 'archive-cloud-cache');
-    }
-    if (os.platform() === 'darwin') {
-      return path.join(os.homedir(), 'Library', 'Caches', 'aily-builder', 'archive-cloud-cache');
-    }
-    return path.join(os.homedir(), '.cache', 'aily-builder', 'archive-cloud-cache');
+    return getAilyBuilderCacheDirectory('archive-cloud-cache');
   }
 
   private isLocalOnly(): boolean {

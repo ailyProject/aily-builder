@@ -1,18 +1,17 @@
 import fs from 'fs-extra';
 import path from 'path';
-import { execSync, spawn } from 'child_process';
 import { Logger } from './utils/Logger';
 import { NinjaCompilationPipeline } from './NinjaCompilationPipeline';
 import { CompileConfigManager } from './CompileConfigManager';
 import { ArduinoConfigParser } from './ArduinoConfigParser';
 import { DependencyAnalyzer } from './DependencyAnalyzer';
-import { escapeQuotedDefines } from './utils/escapeQuotes';
-import { sanitizeNonAsciiPaths, sanitizeObjectPaths } from './utils/ShortPath';
+import { sanitizeObjectPaths } from './utils/ShortPath';
 import { collectPackageIdentitiesFromPaths, extractPackageIdentityFromPath } from './utils/PackageIdentity';
 import {
   emitSimulationArtifactManifest,
   SimulationArtifactManifest,
 } from './ArtifactManifest';
+import { RecipeRunner, RecipeRunnerError } from './RecipeRunner';
 
 export interface ExecutableSectionSize {
   name: string;
@@ -109,17 +108,12 @@ export class ArduinoCompiler {
         options.buildMacros || []
       );
 
-      // 3. 确保构建目录存在（pre-build hooks 需要）
-      await fs.ensureDir(options.buildPath);
-      // 检测buildpath中是否有partitions.csv，如果有则删除
-      const partitionsPath = path.join(options.buildPath, 'partitions.csv');
-      if (await fs.pathExists(partitionsPath)) {
-        await fs.remove(partitionsPath);
-        // this.logger.debug(`Removed existing partitions.csv from build directory: ${partitionsPath}`);
-      }
+      // Global prebuild hooks may generate response files, headers and source
+      // files consumed by compile configuration and dependency analysis.
+      await this.runGlobalPrebuild(arduinoConfig, options.buildPath);
 
-
-      // 4. 并行执行：预处理钩子、构建编译配置、依赖分析
+      // Preserve the fast analyzer: only the read-only work remains parallel,
+      // after the mandatory prebuild barrier.
       this.logger.info('Starting parallel preprocessing tasks...');
       const [compileConfig, dependencies] = await Promise.all([
         // 构建编译配置
@@ -134,14 +128,6 @@ export class ArduinoCompiler {
           const deps = await this.analyzer.preprocess(arduinoConfig);
           this.logger.info(`Dependency analysis completed.`);
           return deps;
-        })(),
-
-        // 运行编译前钩子（ESP32需要）
-        (async () => {
-          if (arduinoConfig.platform['recipe.hooks.prebuild.1.pattern']) {
-            this.logger.info('Running prebuild hook scripts...');
-            await this.runPreBuildHooks(arduinoConfig);
-          }
         })()
       ]);
 
@@ -197,7 +183,7 @@ export class ArduinoCompiler {
       };
     } catch (error) {
       const preprocessTime = Date.now() - startTime;
-      const errorMessage = error instanceof Error ? error.message : String(error);
+      const errorMessage = this.formatRecipeError(error);
       this.logger.error(`Preprocessing failed: ${errorMessage}`);
       return {
         success: false,
@@ -214,12 +200,31 @@ export class ArduinoCompiler {
   async compile(options: CompileOptions): Promise<CompileResult> {
     const startTime = Date.now();
 
+    try {
+      return await this.compileInternal(options, startTime);
+    } catch (error) {
+      const errorMessage = this.formatRecipeError(error);
+      this.logger.error(`Compilation failed: ${errorMessage}`);
+      return {
+        success: false,
+        preprocessTime: 0,
+        buildTime: 0,
+        totalTime: Date.now() - startTime,
+        error: errorMessage,
+        warnings: [`Compilation error: ${errorMessage}`]
+      };
+    }
+  }
+
+  private async compileInternal(options: CompileOptions, startTime: number): Promise<CompileResult> {
+
     this.logger.info(`Starting compilation process...`);
 
     let preprocessTime: number;
     let arduinoConfig: any;
     let compileConfig: any;
     let dependencies: any[];
+    let reusedPreprocessResult = false;
 
     // 检查是否提供了预处理结果
     if (options.preprocessResult && options.preprocessResult.success) {
@@ -228,6 +233,7 @@ export class ArduinoCompiler {
       arduinoConfig = options.preprocessResult.arduinoConfig;
       compileConfig = options.preprocessResult.compileConfig;
       dependencies = options.preprocessResult.dependencies!;
+      reusedPreprocessResult = true;
       if (options.preprocessResult.cacheIdentity && compileConfig && !compileConfig.cacheIdentity) {
         compileConfig.cacheIdentity = options.preprocessResult.cacheIdentity;
       }
@@ -256,9 +262,20 @@ export class ArduinoCompiler {
 
     const buildStartTime = Date.now();
 
-    // 在 Windows 上，对 compileConfig 和 dependencies 中嵌入的所有路径做 sanitize
+    // 在 Windows 上，对配置和依赖中嵌入的所有路径做 sanitize
+    arduinoConfig = sanitizeObjectPaths(arduinoConfig);
     compileConfig = sanitizeObjectPaths(compileConfig);
     dependencies = sanitizeObjectPaths(dependencies);
+    // Preprocess results store the platform once, under arduinoConfig. Attach
+    // the runtime view only when the Ninja pipeline is about to consume it.
+    compileConfig.arduino = arduinoConfig;
+
+    // A preprocess result describes generated inputs but does not embed them.
+    // Replay global hooks so a cleaned/interrupted build directory is restored
+    // before Ninja consumes build.opt, partitions or generated sketch sources.
+    if (reusedPreprocessResult) {
+      await this.runGlobalPrebuild(arduinoConfig, options.buildPath);
+    }
 
     // 准备构建目录（将 sketch.ino 转换为 sketch.cpp）
     // 每次编译都需要执行，确保源文件变化能被检测到
@@ -276,80 +293,14 @@ export class ArduinoCompiler {
         preprocessTime,
         buildTime: 0,
         totalTime: Date.now() - startTime,
-        error: 'Compilation failed'
+        error: compileResult.error || 'Compilation failed',
+        warnings: compileResult.warnings
       };
     }
 
-    // 运行编译后钩子和输出文件生成
-    let finalOutputPath = compileResult.outFilePath;
-
-    /*
-    ESP32 配置 begin
-    */
-    // ESP32平台的后处理钩子
-    if (arduinoConfig.platform['recipe.objcopy.partitions.bin.pattern']) {
-      this.logger.info('Running ESP32 partition generation...');
-      const resolvedCommand = this.resolveVariables(arduinoConfig.platform['recipe.objcopy.partitions.bin.pattern']);
-      await this.runCommand(resolvedCommand);
-    }
-
-    if (arduinoConfig.platform['recipe.hooks.objcopy.postobjcopy.1.pattern']) {
-      this.logger.info('Running ESP32 post-build hook scripts...');
-      await this.runPostBuildHooks(arduinoConfig);
-      finalOutputPath = path.join(process.env['BUILD_PATH'], 'sketch.merged.bin');
-    }
-
-    /*
-    ESP32 配置 end
-    */
-
-    /*
-    RP2040 配置 begin
-    */
-    // RP2040平台的输出文件生成
-    if (arduinoConfig.platform['recipe.objcopy.uf2.pattern']) {
-      this.logger.info('Generating UF2 file...');
-      const resolvedCommand = this.resolveVariables(arduinoConfig.platform['recipe.objcopy.uf2.pattern']);
-      await this.runCommand(resolvedCommand);
-      finalOutputPath = path.join(process.env['BUILD_PATH'], `${process.env['SKETCH_NAME']}.uf2`);
-    }
-
-    // 生成BIN文件（如果配置了）
-    if (arduinoConfig.platform['recipe.objcopy.bin.1.pattern']) {
-      this.logger.info('Generating BIN file...');
-      const resolvedCommand = this.resolveVariables(arduinoConfig.platform['recipe.objcopy.bin.1.pattern']);
-      await this.runCommand(resolvedCommand);
-    }
-
-    // 签名BIN文件（如果配置了）
-    if (arduinoConfig.platform['recipe.objcopy.bin.2.pattern']) {
-      this.logger.info('Signing BIN file...');
-      const resolvedCommand = this.resolveVariables(arduinoConfig.platform['recipe.objcopy.bin.2.pattern']);
-      await this.runCommand(resolvedCommand);
-    }
-    /*
-    RP2040 配置 end
-    */
-
-    /*
-    NRF52 和其他平台的 ZIP 文件生成
-    */
-    // 生成ZIP文件（如果配置了，用于DFU上传等）
-    if (arduinoConfig.platform['recipe.objcopy.zip.pattern']) {
-      this.logger.info('Generating ZIP file for DFU upload...');
-      try {
-        const resolvedCommand = this.resolveVariables(arduinoConfig.platform['recipe.objcopy.zip.pattern']);
-        await this.runCommand(resolvedCommand);
-        finalOutputPath = path.join(process.env['BUILD_PATH'] || '', `${process.env['SKETCH_NAME']}.zip`);
-        this.logger.info(`ZIP file generated: ${finalOutputPath}`);
-      } catch (error) {
-        this.logger.warn(`Failed to generate ZIP file: ${error instanceof Error ? error.message : error}`);
-        // 不中断编译，继续返回HEX文件
-      }
-    }
-    /*
-    NRF52 ZIP 文件生成 end
-    */
+    // The pipeline now owns the complete hook/objcopy lifecycle and returns an
+    // output that actually exists instead of guessing from platform families.
+    const finalOutputPath = compileResult.outFilePath;
 
     const finishedAt = Date.now();
     const totalTime = finishedAt - startTime;
@@ -380,7 +331,8 @@ export class ArduinoCompiler {
       outFilePath: finalOutputPath,
       artifactManifestPath: options.artifactManifestPath,
       artifactManifest,
-      firmwareSize
+      firmwareSize,
+      warnings: compileResult.warnings
     }
   }
 
@@ -472,16 +424,6 @@ export class ArduinoCompiler {
       const isInoSource = sourceExt === '.ino';
       const isCppSource = sourceExt === '.cpp';
 
-      // 使用GCC预处理
-      // let command = `${process.env['COMPILER_GPP_PATH']} -o "${path.join(process.env['BUILD_PATH'], process.env['SKETCH_NAME'] + '.cpp')}" -x c++ -fpreprocessed -dD -E ${process.env['SKETCH_PATH']}`
-      // try {
-      //   const stdout = execSync(command, { encoding: 'utf8' });
-      //   process.env['SKETCH_PATH'] = path.join(process.env['BUILD_PATH'], process.env['SKETCH_NAME'] + '.cpp');
-      // } catch (error) {
-      //   console.error(error);
-      // }
-
-      // 准备构建目录中的 .cpp 文件
       const targetPath = path.join(process.env['BUILD_PATH']!, process.env['SKETCH_NAME'] + '.cpp');
 
       if (!isInoSource && !isCppSource) {
@@ -554,105 +496,93 @@ export class ArduinoCompiler {
     }
   }
 
-  async runPreBuildHooks(arduinoConfig: any) {
-    for (let i = 1; i <= 8; i++) {
-      const key = `recipe.hooks.prebuild.${i}.pattern`;
-      const script = arduinoConfig.platform[key];
-      if (script) {
-        this.logger.info(`Pre-build hook ${i}: ${script}`);
-        try {
-          // 解析变量并清理空的命令部分
-          let resolvedScript = this.resolveVariables(script);
-          resolvedScript = this.cleanEmptyCommands(resolvedScript);
+  private async runRecipeGroup(
+    arduinoConfig: any,
+    prefix: string,
+    label: string,
+    cwd = process.env['BUILD_PATH'] || process.cwd()
+  ): Promise<void> {
+    const runner = new RecipeRunner(arduinoConfig?.platform || {}, {
+      cwd,
+      env: process.env,
+      windowsHide: true
+    });
+    const recipeKeys = runner.findRecipes(prefix, '.pattern');
+    if (recipeKeys.length === 0) {
+      return;
+    }
 
-          this.logger.verbose(`Resolved pre-build hook ${i}: ${resolvedScript}`);
+    this.logger.info(`${label}: ${recipeKeys.length} recipe(s)`);
+    for (const recipeKey of recipeKeys) {
+      this.logger.verbose(`Running recipe: ${recipeKey}`);
+    }
 
-          const output = await this.runCommand(resolvedScript);
-          if (output.trim()) {
-            this.logger.verbose(`Pre-build hook ${i} output: ${output.trim()}`);
-          }
-          this.logger.verbose(`Pre-build hook ${i} executed successfully`);
-        } catch (error) {
-          this.logger.error(`Pre-build hook ${i} failed: ${error instanceof Error ? error.message : error}`);
-        }
+    const results = await runner.runRecipes(prefix, '.pattern');
+    for (const result of results) {
+      if (result.stdout.trim()) {
+        this.logger.verbose(`${result.recipeKey} stdout: ${result.stdout.trim()}`);
+      }
+      if (result.stderr.trim()) {
+        this.logger.verbose(`${result.recipeKey} stderr: ${result.stderr.trim()}`);
       }
     }
+  }
+
+  private formatRecipeError(error: unknown): string {
+    if (!(error instanceof RecipeRunnerError)) {
+      return error instanceof Error ? error.message : String(error);
+    }
+
+    const recipeKey = error.details.recipeKey || 'unknown recipe';
+    const stdout = error.details.stdout?.trim();
+    const stderr = error.details.stderr?.trim();
+    const expandedCommand = error.details.expandedCommand;
+    if (expandedCommand) {
+      this.logger.verbose(`Failed recipe command (${recipeKey}): ${expandedCommand}`);
+    }
+    if (stderr) {
+      this.logger.error(`${recipeKey} stderr: ${stderr}`);
+    }
+    if (stdout) {
+      this.logger.error(`${recipeKey} stdout: ${stdout}`);
+    }
+
+    return [
+      `${error.message} [${recipeKey}]`,
+      stderr ? `stderr: ${stderr.slice(0, 4000)}` : undefined,
+      stdout ? `stdout: ${stdout.slice(0, 4000)}` : undefined
+    ].filter(Boolean).join('\n');
+  }
+
+  private async runGlobalPrebuild(arduinoConfig: any, buildPath: string): Promise<void> {
+    await fs.ensureDir(buildPath);
+
+    // ESP32 selects partitions with "source > variant > platform" semantics.
+    // Reset the generated copy so replaying a saved preprocess result cannot
+    // accidentally retain a partitions.csv from an older source state.
+    const partitionsPath = path.join(buildPath, 'partitions.csv');
+    if (await fs.pathExists(partitionsPath)) {
+      await fs.remove(partitionsPath);
+    }
+
+    await this.runRecipeGroup(
+      arduinoConfig,
+      'recipe.hooks.prebuild',
+      'Global prebuild',
+      buildPath
+    );
+  }
+
+  async runPreBuildHooks(arduinoConfig: any) {
+    await this.runRecipeGroup(arduinoConfig, 'recipe.hooks.prebuild', 'Global prebuild');
   }
 
   async runPostBuildHooks(arduinoConfig) {
-    for (let i = 1; i <= 3; i++) {
-      // 根据操作系统选择相应的键
-      const isWindows = process.platform === 'win32';
-      const windowsKey = `recipe.hooks.objcopy.postobjcopy.${i}.pattern.windows`;
-      const defaultKey = `recipe.hooks.objcopy.postobjcopy.${i}.pattern`;
-
-      let script;
-      if (isWindows && arduinoConfig.platform[windowsKey]) {
-        script = arduinoConfig.platform[windowsKey];
-      } else {
-        script = arduinoConfig.platform[defaultKey];
-      }
-
-      if (script) {
-        this.logger.info(`Post-build hook ${i}: ${script}`);
-        try {
-          // 解析变量并清理空的命令部分
-          let resolvedScript = this.resolveVariables(script);
-          resolvedScript = this.cleanEmptyCommands(resolvedScript);
-
-          this.logger.verbose(`Resolved post-build hook ${i}: ${resolvedScript}`);
-
-          const output = await this.runCommand(resolvedScript);
-          if (output.trim()) {
-            this.logger.verbose(`Post-build hook ${i} output: ${output.trim()}`);
-          }
-          this.logger.verbose(`Post-build hook ${i} executed successfully`);
-        } catch (error) {
-          this.logger.error(`Post-build hook ${i} failed: ${error instanceof Error ? error.message : error}`);
-        }
-      }
-    }
-  }
-
-  private async runCommand(command: string): Promise<string> {
-    command = sanitizeNonAsciiPaths(command);
-    this.logger.info(`Executing command: ${command}`);
-    return new Promise((resolve, reject) => {
-      const child = spawn(command, [], {
-        shell: true,
-        stdio: 'pipe'
-      });
-
-      const stdoutBuffers: Buffer[] = [];
-      const stderrBuffers: Buffer[] = [];
-
-      child.stdout?.on('data', (data: Buffer) => {
-        stdoutBuffers.push(data);
-      });
-
-      child.stderr?.on('data', (data: Buffer) => {
-        stderrBuffers.push(data);
-      });
-
-      child.on('close', (code) => {
-        const stdoutBuffer = Buffer.concat(stdoutBuffers);
-        const stderrBuffer = Buffer.concat(stderrBuffers);
-
-        // 直接使用 UTF-8 解码
-        const stdout = stdoutBuffer.toString('utf8');
-        const stderr = stderrBuffer.toString('utf8');
-
-        if (code === 0) {
-          resolve(stdout);
-        } else {
-          reject(new Error(`Command failed with exit code ${code}: ${command}\nStderr: ${stderr}`));
-        }
-      });
-
-      child.on('error', (error) => {
-        reject(new Error(`Failed to execute command: ${error.message}`));
-      });
-    });
+    await this.runRecipeGroup(
+      arduinoConfig,
+      'recipe.hooks.objcopy.postobjcopy',
+      'Objcopy postbuild'
+    );
   }
 
   async calculateFirmwareSize(arduinoConfig: any): Promise<FirmwareSizeInfo> {
@@ -669,8 +599,20 @@ export class ArduinoCompiler {
       const maxTextSize = parseInt(maxTextSizeString);
       const maxDataSize = maxDataSizeString ? parseInt(maxDataSizeString) : -1;
 
-      // 执行size命令获取输出
-      const output = await this.runCommand(arduinoConfig.platform['recipe.size.pattern']);
+      // Size is a normal platform recipe and follows the same argv/property
+      // semantics as hooks and objcopy commands.
+      const runner = new RecipeRunner(arduinoConfig.platform, {
+        cwd: process.env['BUILD_PATH'] || process.cwd(),
+        env: process.env,
+        windowsHide: true
+      });
+      const sizeResults = await runner.runRecipes('recipe.size', '.pattern');
+      if (sizeResults.length === 0) {
+        return { sections: [] };
+      }
+      const output = sizeResults
+        .map(result => [result.stdout, result.stderr].filter(Boolean).join('\n'))
+        .join('\n');
 
       // 计算各部分大小
       const textSize = this.computeSize(arduinoConfig.platform['recipe.size.regex'], output);
@@ -772,54 +714,6 @@ export class ArduinoCompiler {
       this.logger.error(`Invalid size regexp: ${regex}, error: ${error instanceof Error ? error.message : error}`);
       return -1;
     }
-  }
-
-  /**
-   * 解析命令中的变量并转义引号
-   * @param command 包含变量的命令字符串
-   * @returns 解析后的命令字符串
-   */
-  private resolveVariables(command: string): string {
-    if (!command) return command;
-
-    // 首先替换环境变量（基础变量替换）
-    let resolvedCommand = command.replace(/\{([^}]+)\}/g, (match, variable) => {
-      // 从环境变量中获取值
-      const value = process.env[variable.toUpperCase()];
-      if (value !== undefined) {
-        return value;
-      }
-
-      // 如果环境变量不存在，保持原始格式
-      this.logger.warn(`Variable ${variable} not found in environment`);
-      return match;
-    });
-
-    // 然后应用引号转义
-    resolvedCommand = escapeQuotedDefines(resolvedCommand);
-
-    return resolvedCommand;
-  }
-
-  /**
-   * 清理命令中的空字符串部分，避免执行空命令
-   * @param command 待清理的命令字符串
-   * @returns 清理后的命令字符串
-   */
-  private cleanEmptyCommands(command: string): string {
-    if (!command) return command;
-
-    // 将命令按空格分割，移除空的引号对和空字符串
-    const parts = command.split(/\s+/);
-    const cleanedParts = parts.filter(part => {
-      // 移除空字符串
-      if (!part || part.trim() === '') return false;
-      // 移除空的引号对
-      if (part === '""' || part === "''") return false;
-      return true;
-    });
-
-    return cleanedParts.join(' ');
   }
 
   /**

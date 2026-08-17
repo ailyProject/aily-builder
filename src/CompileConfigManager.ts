@@ -94,11 +94,7 @@ export class CompileConfigManager {
       includes: [
         // process.env['SDK_CORE_PATH'], // core sdk
         process.env['SDK_VARIANT_PATH'], // variants
-      ],
-      // 保留平台配置用于 NinjaGenerator 的平台特定编译标志
-      arduino: {
-        platform: arduinoConfig.platform
-      }
+      ]
     }
 
     if (arduinoConfig.platform['build.macros']) {
