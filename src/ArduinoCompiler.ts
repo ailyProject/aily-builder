@@ -8,6 +8,7 @@ import { DependencyAnalyzer } from './DependencyAnalyzer';
 import { sanitizeObjectPaths } from './utils/ShortPath';
 import { collectPackageIdentitiesFromPaths, extractPackageIdentityFromPath } from './utils/PackageIdentity';
 import { RecipeRunner, RecipeRunnerError } from './RecipeRunner';
+import type { ArduinoUploadCommand } from './ArduinoUploadCommand';
 
 export interface ExecutableSectionSize {
   name: string;
@@ -36,6 +37,7 @@ export interface PreprocessResult {
   success: boolean;
   preprocessTime: number;
   arduinoConfig?: any;
+  upload?: ArduinoUploadCommand;
   compileConfig?: any;
   dependencies?: any[];
   error?: string;
@@ -94,12 +96,13 @@ export class ArduinoCompiler {
       options.buildMacros = [...(options.buildMacros || []), ...sketchMacros];
 
       // 2. 获取开发板、平台、编译配置(包含自定义宏定义)
-      const arduinoConfig = await this.arduinoConfigParser.parseByFQBN(
+      const parsedArduinoConfig = await this.arduinoConfigParser.parseByFQBN(
         options.board,
         options.buildProperties || {},
         options.toolVersions || {},
         options.buildMacros || []
       );
+      const { upload, ...arduinoConfig } = parsedArduinoConfig;
 
       // Global prebuild hooks may generate response files, headers and source
       // files consumed by compile configuration and dependency analysis.
@@ -169,6 +172,7 @@ export class ArduinoCompiler {
         success: true,
         preprocessTime,
         arduinoConfig,
+        upload,
         compileConfig,
         dependencies,
         cacheIdentity,
