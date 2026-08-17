@@ -26,6 +26,10 @@ import {
     resolveArduinoPlatformFiles,
     resolveArduinoSdkLayout
 } from './ArduinoBuildContext';
+import {
+    ArduinoUploadCommand,
+    resolveArduinoUploadCommand
+} from './ArduinoUploadCommand';
 
 export interface FQBNObject {
     package: string;
@@ -38,6 +42,7 @@ export interface BoardParseResult {
     fqbnParsed: FQBNObject;
     platform: ArduinoProperties;
     board: ArduinoProperties;
+    upload?: ArduinoUploadCommand;
 }
 
 /**
@@ -225,7 +230,11 @@ export class ArduinoConfigParser {
             fqbn,
             fqbnParsed: fqbnObj,
             platform: projectPlatformBuildProperties(platformProperties),
-            board: boardProperties
+            board: boardProperties,
+            upload: resolveArduinoUploadCommand({
+                board: boardProperties,
+                platform: platformProperties
+            })
         };
     }
 
