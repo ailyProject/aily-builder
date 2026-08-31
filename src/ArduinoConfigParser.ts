@@ -101,7 +101,8 @@ export class ArduinoConfigParser {
         fqbn: string,
         buildProperties: ArduinoProperties = {},
         toolVersions: ArduinoProperties = {},
-        buildMacros: string[] = []
+        buildMacros: string[] = [],
+        onUploadWarning?: (message: string) => void
     ): Promise<BoardParseResult> {
         const fqbnObj = this.parseFQBN(fqbn);
         const platformFiles = await resolveArduinoPlatformFiles({
@@ -234,6 +235,8 @@ export class ArduinoConfigParser {
             upload: resolveArduinoUploadCommand({
                 board: boardProperties,
                 platform: platformProperties
+            }, {
+                onWarning: onUploadWarning
             })
         };
     }
