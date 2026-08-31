@@ -14,6 +14,10 @@ export interface ArduinoUploadCommandSource {
   platform: Readonly<ArduinoProperties>;
 }
 
+export interface ArduinoUploadCommandResolveOptions {
+  onWarning?: (message: string) => void;
+}
+
 const SERIAL_PLACEHOLDERS: Readonly<Record<string, string>> = {
   'serial.port': '${serial}',
   'serial.port.file': '${serial}',
@@ -22,6 +26,16 @@ const SERIAL_PLACEHOLDERS: Readonly<Record<string, string>> = {
 
 function parseArduinoBoolean(value: unknown): boolean {
   return ['1', 'true', 'yes', 'on'].includes(String(value ?? '').trim().toLowerCase());
+}
+
+function reportUnavailableUploadCommand(
+  reason: string,
+  options: ArduinoUploadCommandResolveOptions
+): undefined {
+  options.onWarning?.(
+    `Upload command is unavailable: ${reason}. Preprocessing will continue without upload metadata.`
+  );
+  return undefined;
 }
 
 function resolveBundledRuntimeToolPath(
@@ -57,16 +71,22 @@ function resolveBundledRuntimeToolPath(
  * platform property resolver intentionally does not guess that scope, so the
  * upload recipe is finalized here while the selected board and tool are known.
  * Only serial-port placeholders survive because the port is selected later by
- * the application at upload time.
+ * the application at upload time. Callers that treat upload metadata as
+ * optional can provide `onWarning`; unresolved upload-only properties are then
+ * reported without interrupting preprocessing.
  */
 export function resolveArduinoUploadCommand(
-  arduinoConfig: ArduinoUploadCommandSource
+  arduinoConfig: ArduinoUploadCommandSource,
+  options: ArduinoUploadCommandResolveOptions = {}
 ): ArduinoUploadCommand | undefined {
   const board = arduinoConfig?.board || {};
   const platform = arduinoConfig?.platform || {};
   const configuredToolName = board['upload.tool.default'] || board['upload.tool'];
   if (!configuredToolName) {
-    return undefined;
+    return reportUnavailableUploadCommand(
+      'the board does not define upload.tool.default or upload.tool',
+      options
+    );
   }
   // Arduino permits package-qualified tool references such as
   // `sandeepmistry:openocd`; platform.txt still declares the recipe as
@@ -77,7 +97,10 @@ export function resolveArduinoUploadCommand(
   const patternKey = `${toolPrefix}upload.pattern`;
   const pattern = platform[patternKey];
   if (!pattern) {
-    return undefined;
+    return reportUnavailableUploadCommand(
+      `the platform does not define ${patternKey}`,
+      options
+    );
   }
 
   const specialValues: Readonly<Record<string, string>> = {
@@ -118,7 +141,10 @@ export function resolveArduinoUploadCommand(
 
   command = command.trim().replace(/;+$/, '').trim();
   if (!command) {
-    return undefined;
+    return reportUnavailableUploadCommand(
+      `${patternKey} resolves to an empty command`,
+      options
+    );
   }
 
   const unresolvedProperties = [...command.matchAll(/\{([^{}]+)\}/g)]
@@ -131,8 +157,15 @@ export function resolveArduinoUploadCommand(
     // `${serial}` is the only application-time placeholder in the contract.
     .filter(key => key !== 'serial');
   if (unresolvedProperties.length > 0) {
-    throw new Error(
-      `上传命令仍包含未解析属性: ${[...new Set(unresolvedProperties)].join(', ')}`
+    const uniqueUnresolvedProperties = [...new Set(unresolvedProperties)];
+    if (!options.onWarning) {
+      throw new Error(
+        `上传命令仍包含未解析属性: ${uniqueUnresolvedProperties.join(', ')}`
+      );
+    }
+    return reportUnavailableUploadCommand(
+      `${patternKey} contains unresolved properties: ${uniqueUnresolvedProperties.join(', ')}`,
+      options
     );
   }
 
