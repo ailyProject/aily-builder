@@ -8,6 +8,8 @@ export type PlatformProperties = Readonly<Record<string, string>>;
  * values are added automatically by collectReferenceClosure().
  */
 const DIRECT_BUILD_PROPERTY_KEYS = new Set([
+  // Artifact provenance consumes the SDK's version, not a guess from its path.
+  'version',
   'compiler.path',
   'compiler.c.cmd',
   'compiler.cpp.cmd',

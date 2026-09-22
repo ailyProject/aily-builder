@@ -16,6 +16,7 @@ import { ArchiveCacheFetchResult, ArchiveCacheHit, ArchiveCloudCacheManager, get
 import { sanitizeNonAsciiPaths } from './utils/ShortPath';
 import { isMacOSHost, isWindowsHost, toHostPathKey } from './utils/HostPlatform';
 import { RecipeExecutionResult, RecipeRunner, RecipeRunnerError } from './RecipeRunner';
+import type { BuildInputRecording, BuildInputPhase } from './BuildInputRecording';
 import {
   collectGeneratedSketchSources,
   GENERATED_SKETCH_DEPENDENCY_NAME,
@@ -25,6 +26,8 @@ import {
 export interface NinjaPipelineOptions {
   dependencies: Dependency[];
   compileConfig: any;
+  inputIdentity?: string;
+  inputRecording?: Pick<BuildInputRecording, 'beginPhase'>;
 }
 
 export interface NinjaCompilationResult {
@@ -54,6 +57,8 @@ export class NinjaCompilationPipeline {
   private logger: Logger;
   private dependencies: Dependency[];
   private compileConfig: any;
+  private recordingInputs = false;
+  private inputRecording?: Pick<BuildInputRecording, 'beginPhase'>;
   private cacheManager: CacheManager;
   private archiveCloudCacheManager: ArchiveCloudCacheManager;
   private ninjaGenerator: NinjaGenerator;
@@ -70,9 +75,11 @@ export class NinjaCompilationPipeline {
     this.ninjaGenerator = new NinjaGenerator(logger);
   }
 
-  async compile({ dependencies, compileConfig }: NinjaPipelineOptions): Promise<NinjaCompilationResult> {
+  async compile({ dependencies, compileConfig, inputIdentity, inputRecording }: NinjaPipelineOptions): Promise<NinjaCompilationResult> {
     this.dependencies = dependencies;
     this.compileConfig = compileConfig;
+    this.recordingInputs = !!inputIdentity;
+    this.inputRecording = inputRecording;
     let remoteFetches = new Map<string, Promise<ArchiveCacheFetchResult>>();
     let archiveCacheHits = new Map<string, ArchiveCacheHit>();
 
@@ -112,6 +119,7 @@ export class NinjaCompilationPipeline {
         compileConfig,
         buildPath,
         jobs: parseInt(process.env['BUILD_JOBS'] || '4'),
+        inputIdentity,
         archiveCacheHits
       };
 
@@ -149,17 +157,17 @@ export class NinjaCompilationPipeline {
           await this.invalidateLocalOutputsForChangedContext();
 
           this.logger.verbose('Checking archive cloud cache for compiled archives...');
-          archiveCacheHits = await this.archiveCloudCacheManager.restoreArchives(dependencies, compileConfig);
+          archiveCacheHits = inputIdentity ? new Map() : await this.archiveCloudCacheManager.restoreArchives(dependencies, compileConfig);
           this.dropUnsafePhaseArchiveHits(
             archiveCacheHits,
             dynamicLibrariesPrebuild,
             dynamicCorePrebuild
           );
           ninjaOptions.archiveCacheHits = archiveCacheHits;
-          remoteFetches = this.archiveCloudCacheManager.startRemoteFetches(archiveCacheHits);
+          remoteFetches = inputIdentity ? new Map() : this.archiveCloudCacheManager.startRemoteFetches(archiveCacheHits);
 
           this.logger.verbose('Checking cache for compiled objects...');
-          await this.restoreFromCache(dependencies, archiveCacheHits);
+          if (!inputIdentity) await this.restoreFromCache(dependencies, archiveCacheHits);
 
           ninjaFilePath = await this.ninjaGenerator.generateNinjaFile(ninjaOptions);
           this.logger.verbose(`Ninja file generated: ${ninjaFilePath}`);
@@ -314,7 +322,7 @@ export class NinjaCompilationPipeline {
         !(dynamicLibrariesPrebuild && dependency.type === 'library')
         && !(dynamicCorePrebuild && dependency.type === 'core')
       );
-      await this.archiveCloudCacheManager.storeArchives(
+      if (!inputIdentity) await this.archiveCloudCacheManager.storeArchives(
         cacheableArchiveDependencies,
         compileConfig,
         archiveCacheHits
@@ -465,7 +473,11 @@ export class NinjaCompilationPipeline {
     let primaryError: unknown;
     try {
       await this.runRecipeGroup(runner, prebuildPrefix, `${label} prebuild`);
-      return await action();
+      const checkpoint = await this.inputRecording?.beginPhase(label.toLowerCase());
+      if (checkpoint) await this.invalidateChangedPhaseInputs(checkpoint.phase, checkpoint.identity);
+      const result = await action();
+      if (checkpoint) await checkpoint.confirm();
+      return result;
     } catch (error) {
       primaryError = error;
       throw error;
@@ -523,6 +535,17 @@ export class NinjaCompilationPipeline {
 
   private hasRecipeGroup(runner: RecipeRunner | undefined, prefix: string): boolean {
     return (runner?.findRecipes(prefix, '.pattern').length || 0) > 0;
+  }
+
+  private async invalidateChangedPhaseInputs(phase: BuildInputPhase, identity: string): Promise<void> {
+    const buildPath = this.getValidatedBuildPath();
+    const marker = path.join(buildPath, `aily-input-${phase}.txt`);
+    const previous = await fs.readFile(marker, 'utf8').catch(error => { if (error.code !== 'ENOENT') throw error; return ''; });
+    if (previous === identity) return;
+    if (phase === 'sketch' || phase === 'libraries' || phase === 'core') await this.invalidatePhaseOutputs(phase);
+    else if (phase === 'link') await fs.remove(path.join(buildPath, `${path.basename(process.env.SKETCH_NAME || 'sketch')}.elf`));
+    // Objcopy recipes already execute on every build; no generic file deletion needed.
+    await fs.writeFile(marker, identity);
   }
 
   private isKnownArduinoCoreBuildHook(runner: RecipeRunner | undefined): boolean {
@@ -989,6 +1012,7 @@ export class NinjaCompilationPipeline {
    * 处理编译进度并立即存储缓存
    */
   private async handleCompilationProgress(progressLine: string, buildDir: string): Promise<void> {
+    if (this.recordingInputs) return; // A recorded build must not publish unconfirmed cache entries.
     // 解析ninja的进度信息，查找编译完成的文件
 
     let objectFileName: string | null = null; // 輸出的文件

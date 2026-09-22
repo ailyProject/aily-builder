@@ -5,10 +5,16 @@ import { NinjaCompilationPipeline } from './NinjaCompilationPipeline';
 import { CompileConfigManager } from './CompileConfigManager';
 import { ArduinoConfigParser } from './ArduinoConfigParser';
 import { DependencyAnalyzer } from './DependencyAnalyzer';
-import { sanitizeObjectPaths } from './utils/ShortPath';
+import { sanitizeNonAsciiPaths, sanitizeObjectPaths } from './utils/ShortPath';
+import { emitSimulationArtifactManifest, SimulationArtifactManifest } from './ArtifactManifest';
+import { INPUT_CONTEXT_FILE, publishBuildInputContext } from './BuildInputVerification';
+import { applySimulationDebugProfile } from './SimulationDebugProfile';
+import { BuildInputRecording } from './BuildInputRecording';
+import { selectPackageInputs } from './PackageBuildInputs';
 import { collectPackageIdentitiesFromPaths, extractPackageIdentityFromPath } from './utils/PackageIdentity';
 import { RecipeRunner, RecipeRunnerError } from './RecipeRunner';
 import type { ArduinoUploadCommand } from './ArduinoUploadCommand';
+import { withBuildWorkspace, cleanBuildWorkspace, assertBuildOutputPath, withBuildOutputPath } from './BuildWorkspace';
 
 export interface ExecutableSectionSize {
   name: string;
@@ -25,6 +31,8 @@ export interface FirmwareSizeInfo {
 export interface CompileResult {
   success: boolean;
   outFilePath?: string,
+  artifactManifestPath?: string;
+  artifactManifest?: SimulationArtifactManifest;
   preprocessTime: number;
   buildTime: number;
   totalTime: number;
@@ -38,6 +46,7 @@ export interface PreprocessResult {
   preprocessTime: number;
   arduinoConfig?: any;
   upload?: ArduinoUploadCommand;
+  toolVersions?: Record<string, string>;
   compileConfig?: any;
   dependencies?: any[];
   error?: string;
@@ -60,6 +69,44 @@ export interface CompileOptions {
   toolVersions?: Record<string, string>;
   buildMacros?: string[];
   preprocessResult?: PreprocessResult;
+  artifactManifestPath?: string;
+  graphSemanticRevision?: string;
+  sourceDocumentSchemaVersion?: 1 | 2;
+  gpioDirections?: Record<string, 'input' | 'output'>;
+  gpioPulls?: Record<string, 'up' | 'down'>;
+  simulationDebug?: boolean;
+  recordBuildInputs?: boolean;
+}
+
+export function resolveCompileToolVersions(
+  explicitToolVersions: Record<string, string> = {},
+  preprocessResult?: PreprocessResult,
+): Record<string, string> {
+  return {
+    ...(preprocessResult?.compileConfig?.cacheIdentity?.requestedToolVersions || {}),
+    ...(preprocessResult?.cacheIdentity?.requestedToolVersions || {}),
+    ...(preprocessResult?.toolVersions || {}),
+    ...explicitToolVersions,
+  };
+}
+
+export function resolveArtifactTargetMarkers(
+  board: string,
+  boardProperties: Record<string, string> = {},
+): Readonly<{ boardId?: string; mcu?: string }> {
+  const architecture = board.split(':')[1]?.trim().toLowerCase();
+  if (architecture === 'stm32') {
+    const boardId = boardProperties['build.board']?.trim();
+    const mcu = boardProperties['build.product_line']?.trim();
+    if (!boardId || !mcu) {
+      throw new Error(
+        'STM32 simulation Artifact requires resolved build.board and build.product_line markers.',
+      );
+    }
+    return { boardId, mcu };
+  }
+  const mcu = boardProperties['build.mcu']?.trim();
+  return mcu ? { mcu } : {};
 }
 
 export class ArduinoCompiler {
@@ -83,6 +130,11 @@ export class ArduinoCompiler {
    * 注意：不包含 prepareBuildDirectory，该步骤在 compile 时执行
    */
   async preprocess(options: CompileOptions): Promise<PreprocessResult> {
+    return withBuildWorkspace(options.buildPath, 'preprocess', () =>
+      withBuildOutputPath(options.buildPath, () => this.preprocessInternal(options)));
+  }
+
+  private async preprocessInternal(options: CompileOptions): Promise<PreprocessResult> {
     const startTime = Date.now();
 
     try {
@@ -111,7 +163,7 @@ export class ArduinoCompiler {
       // Preserve the fast analyzer: only the read-only work remains parallel,
       // after the mandatory prebuild barrier.
       this.logger.info('Starting parallel preprocessing tasks...');
-      const [compileConfig, dependencies] = await Promise.all([
+      const tasks = await Promise.allSettled([
         // 构建编译配置
         (async () => {
           this.logger.info('Generating compile configuration...');
@@ -126,6 +178,11 @@ export class ArduinoCompiler {
           return deps;
         })()
       ]);
+      // A failed sibling must not release the workspace while the analyzer is
+      // still writing its derived cache/configuration.
+      const failed = tasks.find((task): task is PromiseRejectedResult => task.status === 'rejected');
+      if (failed) throw failed.reason;
+      const [compileConfig, dependencies] = tasks.map(task => (task as PromiseFulfilledResult<any>).value);
 
       // 输出分析
       this.logger.info(`Found ${dependencies.length} dependencies.`);
@@ -176,6 +233,7 @@ export class ArduinoCompiler {
         compileConfig,
         dependencies,
         cacheIdentity,
+        toolVersions: { ...(options.toolVersions || {}) },
         envVars
       };
     } catch (error) {
@@ -195,7 +253,37 @@ export class ArduinoCompiler {
    * @param options 编译选项，可以包含预处理结果以跳过预处理步骤
    */
   async compile(options: CompileOptions): Promise<CompileResult> {
+    return withBuildWorkspace(options.buildPath, 'compile', () => withBuildOutputPath(options.buildPath, () => {
+      assertBuildOutputPath(options.buildPath, options.preprocessResult?.envVars?.BUILD_PATH);
+      return this.compileOwned(options);
+    }));
+  }
+
+  private async compileOwned(options: CompileOptions): Promise<CompileResult> {
     const startTime = Date.now();
+    await fs.unlink(path.join(options.buildPath, INPUT_CONTEXT_FILE)).catch(error => { if (error.code !== 'ENOENT') throw error; });
+    if (options.recordBuildInputs && !options.artifactManifestPath) {
+      throw new Error('Build input recording requires an artifact manifest.');
+    }
+    if (options.artifactManifestPath) {
+      const relative = path.relative(path.resolve(options.buildPath), path.resolve(options.artifactManifestPath));
+      if (!relative || relative === '..' || relative.startsWith(`..${path.sep}`) || path.isAbsolute(relative)) {
+        throw new Error('Artifact manifest must be a file inside the build directory.');
+      }
+      const real = async (value: string) => fs.realpath(value).catch(error => {
+        if (error.code === 'ENOENT') return undefined;
+        throw error;
+      });
+      const [buildRoot, parent] = await Promise.all([real(options.buildPath), real(path.dirname(options.artifactManifestPath))]);
+      if (buildRoot && parent) {
+        const parentRelative = path.relative(buildRoot, parent);
+        if (parentRelative === '..' || parentRelative.startsWith(`..${path.sep}`) || path.isAbsolute(parentRelative)) {
+          throw new Error('Artifact manifest parent escapes the build directory.');
+        }
+      }
+      // Failed/rejected builds must never leave the previous successful manifest current.
+      await fs.unlink(options.artifactManifestPath).catch(error => { if (error.code !== 'ENOENT') throw error; });
+    }
 
     try {
       return await this.compileInternal(options, startTime);
@@ -214,6 +302,7 @@ export class ArduinoCompiler {
   }
 
   private async compileInternal(options: CompileOptions, startTime: number): Promise<CompileResult> {
+    const toolVersions = resolveCompileToolVersions(options.toolVersions, options.preprocessResult);
 
     this.logger.info(`Starting compilation process...`);
 
@@ -259,6 +348,11 @@ export class ArduinoCompiler {
 
     const buildStartTime = Date.now();
 
+    if (options.simulationDebug) {
+      compileConfig = applySimulationDebugProfile(compileConfig);
+      this.logger.info('Applied simulation source-debug compile profile.');
+    }
+
     // 在 Windows 上，对配置和依赖中嵌入的所有路径做 sanitize
     arduinoConfig = sanitizeObjectPaths(arduinoConfig);
     compileConfig = sanitizeObjectPaths(compileConfig);
@@ -278,11 +372,26 @@ export class ArduinoCompiler {
     // 每次编译都需要执行，确保源文件变化能被检测到
     await this.prepareBuildDirectory(options.buildPath);
 
+    const selectInputs = () => ({
+      roots: [path.dirname(options.sketchPath), ...dependencies.map(dependency => dependency.path),
+        ...(compileConfig.includes || [])].filter((value): value is string => typeof value === 'string' && value.length > 0),
+      exclude: [options.buildPath],
+      external: { recipes: Object.values(compileConfig.args || {}).filter((value): value is string => typeof value === 'string'),
+        tools: compileConfig.compiler || {}, cwd: options.buildPath,
+        searchPath: sanitizeNonAsciiPaths([process.env.COMPILER_PATH, process.env.ESPTOOL_PY_PATH, process.env.PATH].filter(Boolean).join(path.delimiter)) },
+      configuration: { board: options.board, buildProperties: options.buildProperties || {},
+        macros: options.buildMacros || [], toolVersions, simulationDebug: !!options.simulationDebug,
+        resolvedBoard: arduinoConfig.board, compiler: compileConfig.compiler, args: compileConfig.args,
+        includes: compileConfig.includes, platform: arduinoConfig.platform },
+    });
+    const inputRecording = options.recordBuildInputs ? await BuildInputRecording.open(selectInputs,
+      () => selectPackageInputs(arduinoConfig.platform, options.buildPath)) : undefined;
+
     // 8. 编译pipeline
     this.logger.verbose(`Starting compilation pipeline...`);
     let compileResult;
 
-    compileResult = await this.ninjaPipeline.compile({ dependencies, compileConfig });
+    compileResult = await this.ninjaPipeline.compile({ dependencies, compileConfig, inputIdentity: inputRecording?.inputIdentity, inputRecording });
 
     if (!compileResult.success) {
       return {
@@ -305,12 +414,49 @@ export class ArduinoCompiler {
     // 6. 计算固件大小信息
     const firmwareSize = await this.calculateFirmwareSize(arduinoConfig);
 
+    let artifactManifest: SimulationArtifactManifest | undefined;
+    if (options.artifactManifestPath) {
+      this.logger.info('Generating simulation artifact manifest...');
+      const buildInputs = inputRecording ? await inputRecording.finish() : undefined;
+      const artifactTarget = resolveArtifactTargetMarkers(
+        options.board,
+        arduinoConfig.board,
+      );
+      artifactManifest = await emitSimulationArtifactManifest({
+        buildPath: options.buildPath,
+        sketchPath: options.sketchPath,
+        board: options.board,
+        ...artifactTarget,
+        toolVersions,
+        platformProperties: arduinoConfig.platform,
+        sdkPath: arduinoConfig.platform?.['runtime.platform.path'],
+        graphSemanticRevision: options.graphSemanticRevision,
+        sourceDocumentSchemaVersion: options.sourceDocumentSchemaVersion,
+        gpioDirections: options.gpioDirections,
+        gpioPulls: options.gpioPulls,
+        primaryOutputPath: finalOutputPath,
+        manifestPath: options.artifactManifestPath,
+        buildInputs,
+      });
+      // Cover source copying and output hashing too; never retain a raced manifest.
+      if (inputRecording) {
+        try {
+          await inputRecording.confirmFinal();
+          await publishBuildInputContext(inputRecording.getVerificationContext());
+        }
+        catch (error) { await fs.unlink(options.artifactManifestPath); throw error; }
+      }
+      this.logger.info(`Simulation artifact manifest: ${options.artifactManifestPath}`);
+    }
+
     return {
       success: true,
       preprocessTime,
       buildTime,
       totalTime,
       outFilePath: finalOutputPath,
+      artifactManifestPath: options.artifactManifestPath,
+      artifactManifest,
       firmwareSize,
       warnings: compileResult.warnings
     }
@@ -318,10 +464,8 @@ export class ArduinoCompiler {
 
   async clean(buildPath: string): Promise<void> {
     try {
-      if (await fs.pathExists(buildPath)) {
-        await fs.remove(buildPath);
-        this.logger.debug(`Cleaned build directory: ${buildPath}`);
-      }
+      await cleanBuildWorkspace(buildPath);
+      this.logger.debug(`Cleaned build directory: ${buildPath}`);
     } catch (error) {
       throw new Error(`Failed to clean build directory: ${error instanceof Error ? error.message : error}`);
     }

@@ -15,6 +15,7 @@
   ],
   "scripts": {
     "build": "rimraf dist && tsc",
+    "test": "tsc --pretty false && node --import tsx --test test/*.test.ts && node test/capabilities.test.mjs",
     "bundle": "npm run build && node bundle.js --minify",
     "start": "ts-node main.ts",
     "clean": "rimraf dist",
@@ -39,6 +40,7 @@
     "@types/node": "^20.11.16",
     "esbuild": "^0.25.9",
     "rimraf": "^5.0.5",
+    "tsx": "^4.23.12",
     "typescript": "^5.3.3"
   },
   "engines": {
