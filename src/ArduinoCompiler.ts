@@ -152,7 +152,8 @@ export class ArduinoCompiler {
         options.board,
         options.buildProperties || {},
         options.toolVersions || {},
-        options.buildMacros || []
+        options.buildMacros || [],
+        message => this.logger.warn(message)
       );
       const { upload, ...arduinoConfig } = parsedArduinoConfig;
 

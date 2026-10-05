@@ -253,6 +253,7 @@ export function detectRecipeCommandKind(
 }
 
 interface SpawnInvocation {
+  executable: string;
   args: string[];
   windowsVerbatimArguments?: boolean;
 }
@@ -260,6 +261,19 @@ interface SpawnInvocation {
 interface WindowsCmdPayload {
   switchArgumentIndex: number;
   payload: string;
+}
+
+function getEnvironmentValue(
+  env: NodeJS.ProcessEnv,
+  name: string
+): string | undefined {
+  const normalizedName = name.toLowerCase();
+  for (const [key, value] of Object.entries(env)) {
+    if (key.toLowerCase() === normalizedName) {
+      return value;
+    }
+  }
+  return undefined;
 }
 
 /**
@@ -321,14 +335,36 @@ function findWindowsCmdPayload(command: string): WindowsCmdPayload | undefined {
   return undefined;
 }
 
-function prepareSpawnInvocation(prepared: PreparedRecipe): SpawnInvocation {
-  if (process.platform !== 'win32' || prepared.commandKind !== 'windows-cmd') {
-    return { args: prepared.args };
+function prepareSpawnInvocation(
+  prepared: PreparedRecipe,
+  env: NodeJS.ProcessEnv
+): SpawnInvocation {
+  if (process.platform !== 'win32') {
+    return { executable: prepared.executable, args: prepared.args };
+  }
+
+  const executableName = executableBaseName(prepared.executable);
+  if (executableName.endsWith('.bat') || executableName.endsWith('.cmd')) {
+    // CreateProcess cannot execute batch files directly; Node reports EINVAL
+    // when spawn() is used with shell:false. Route only batch recipes through
+    // the Windows command processor while leaving native executables direct.
+    const commandProcessor = getEnvironmentValue(env, 'ComSpec')
+      || getEnvironmentValue(process.env, 'ComSpec')
+      || 'cmd.exe';
+    return {
+      executable: commandProcessor,
+      args: ['/d', '/s', '/c', `"${prepared.expandedCommand}"`],
+      windowsVerbatimArguments: true
+    };
+  }
+
+  if (prepared.commandKind !== 'windows-cmd') {
+    return { executable: prepared.executable, args: prepared.args };
   }
 
   const command = findWindowsCmdPayload(prepared.expandedCommand);
   if (!command) {
-    return { args: prepared.args };
+    return { executable: prepared.executable, args: prepared.args };
   }
 
   // Node normally quotes Windows arguments only when they contain whitespace.
@@ -337,6 +373,7 @@ function prepareSpawnInvocation(prepared: PreparedRecipe): SpawnInvocation {
   // Pass one verbatim, outer-quoted payload so cmd receives all inner quotes,
   // redirections, parentheses and chaining operators unchanged.
   return {
+    executable: prepared.executable,
     args: [
       ...prepared.args.slice(0, command.switchArgumentIndex + 1),
       `"${command.payload}"`
@@ -474,7 +511,7 @@ export class RecipeRunner {
     const stdoutTarget = options.stdout ?? this.defaults.stdout;
     const stderrTarget = options.stderr ?? this.defaults.stderr;
     const windowsHide = options.windowsHide ?? this.defaults.windowsHide ?? true;
-    const invocation = prepareSpawnInvocation(prepared);
+    const invocation = prepareSpawnInvocation(prepared, env);
 
     if (signal?.aborted) {
       throw new RecipeRunnerError(`Recipe execution was aborted: ${recipeKey}`, {
@@ -501,7 +538,7 @@ export class RecipeRunner {
 
       let child: ReturnType<typeof spawn>;
       try {
-        child = spawn(prepared.executable, invocation.args, {
+        child = spawn(invocation.executable, invocation.args, {
           cwd,
           env,
           shell: false,
