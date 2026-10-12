@@ -13,7 +13,6 @@ import os from 'os';
 import fs from 'fs-extra';
 import packageJson from './package.json';
 import { withBuildWorkspace, assertBuildOutputPath } from './src/BuildWorkspace';
-import { INPUT_CONTEXT_FILE, verifyBuildInputContext } from './src/BuildInputVerification';
 
 const program = new Command();
 const logger = new Logger();
@@ -219,7 +218,7 @@ program
           ownerFileName: 'aily-workspace.lock',
           delegateFileName: 'aily-builder.lock',
           delegationEnvironment: 'AILY_BUILDER_WORKSPACE',
-          operations: ['compile', 'preprocess', 'clean', 'verify'],
+          operations: ['compile', 'preprocess', 'clean'],
         },
         simulationArtifactManifest: {
           schemaVersion: 1,
@@ -232,16 +231,8 @@ program
           manifestField: 'build.inputs',
           storage: 'sidecar-reference',
           defaultFileName: 'aily-build-inputs.json',
-          scope: 'prepared-dependency-trees',
+          scope: 'build-graph-facts',
           currentProjectFreshness: false,
-        },
-        buildPackageInputs: {
-          schemaVersion: 1, enabledBy: '--record-build-inputs', scope: 'resolved-sdk-tool-trees',
-          verification: 'content-and-state-at-build-boundaries', manifestField: 'build.inputs', currentProjectFreshness: false,
-        },
-        buildInputVerification: {
-          schemaVersion: 1, command: 'verify-build-inputs', contextFileName: INPUT_CONTEXT_FILE,
-          contextStorage: 'host-private', scope: 'prepared-dependency-trees-and-sdk-tools', currentProjectFreshness: false,
         },
         sceneGraphProvenance: {
           schemaVersion: 1,
@@ -289,22 +280,6 @@ program
   });
 
 program
-  .command('verify-build-inputs')
-  .description('Read-only recheck of observed build inputs; does not grant host authority')
-  .requiredOption('--build-path <path>', 'Owned build output directory')
-  .requiredOption('--context-sha256 <hash>', 'Private context hash from the observed build')
-  .requiredOption('--inputs-digest <hash>', 'Prepared input identity from the observed Artifact')
-  .action(async options => {
-    try {
-      console.log(JSON.stringify(await verifyBuildInputContext(path.resolve(options.buildPath), options.contextSha256, options.inputsDigest)));
-    } catch (error) {
-      console.error(JSON.stringify({ schemaVersion: 1, kind: 'aily-build-input-verification', status: 'failed',
-        code: error.code || 'BUILD_INPUT_VERIFICATION_FAILED', message: error.message, currentProjectAcceptance: false }));
-      process.exitCode = 1;
-    }
-  });
-
-program
   .command('compile')
   .description('Compile Arduino source')
   .argument('<sketch>', 'Path to Arduino source (.ino or .cpp file)')
@@ -336,7 +311,7 @@ program
   .option('--log-file', 'Write logs to file in build directory', false)
   .option('--tool-versions <versions>', 'Specify tool versions (format: tool1@version1,tool2@version2)', undefined)
   .option('--preprocess-result <path>', 'Path to preprocess result JSON file (skip preprocessing if provided)')
-  .option('--record-build-inputs', 'Record and recheck prepared dependency trees; requires --emit-artifact-manifest', false)
+  .option('--record-build-inputs', 'Record resolved configuration and successful build graph/recipe facts; requires --emit-artifact-manifest', false)
   .option('--archive-cloud-cache <path>', 'Local archive cloud cache directory')
   .option('--no-archive-cloud-cache', 'Disable archive cloud cache restore and generation')
   .option('--archive-cloud-cache-url <url>', 'Remote archive cloud cache base URL')

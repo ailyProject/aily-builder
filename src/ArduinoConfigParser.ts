@@ -1,4 +1,6 @@
 import path from 'path';
+import type { BuildTargetSelection } from './BuildInputRecord';
+import { projectResolvedBuildTargetSelection } from './ResolvedBuildTargetSelection';
 import { escapeDefineForShell } from './utils/escapeQuotes';
 import { getArduinoHostOs } from './utils/HostPlatform';
 import { projectPlatformBuildProperties } from './PlatformPropertyProjector';
@@ -40,6 +42,7 @@ export interface FQBNObject {
 export interface BoardParseResult {
     fqbn: string;
     fqbnParsed: FQBNObject;
+    targetSelection: BuildTargetSelection;
     platform: ArduinoProperties;
     board: ArduinoProperties;
     upload?: ArduinoUploadCommand;
@@ -230,6 +233,14 @@ export class ArduinoConfigParser {
         return {
             fqbn,
             fqbnParsed: fqbnObj,
+            targetSelection: projectResolvedBuildTargetSelection({
+                requestedFqbn: fqbn,
+                effectiveFqbn: boardProperties['build.fqbn'],
+                packageName: fqbnObj.package,
+                architecture: fqbnObj.platform,
+                selectedMenus: menuResolution.selectedMenus,
+                resolvedProperties: platformProperties,
+            }),
             platform: projectPlatformBuildProperties(platformProperties),
             board: boardProperties,
             upload: resolveArduinoUploadCommand({

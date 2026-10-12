@@ -25,22 +25,16 @@ const result = spawnSync(
 
 assert.equal(result.status, 0, result.stderr);
 const capabilities = JSON.parse(result.stdout);
-assert.deepEqual(capabilities.capabilities.buildPackageInputs, {
-  schemaVersion: 1, enabledBy: '--record-build-inputs', scope: 'resolved-sdk-tool-trees',
-  verification: 'content-and-state-at-build-boundaries', manifestField: 'build.inputs', currentProjectFreshness: false,
-});
+assert.equal(Object.hasOwn(capabilities.capabilities, 'buildPackageInputs'), false);
 assert.deepEqual(capabilities.capabilities.buildWorkspaceLease, {
   schemaVersion: 1, ownerFileName: 'aily-workspace.lock', delegateFileName: 'aily-builder.lock',
-  delegationEnvironment: 'AILY_BUILDER_WORKSPACE', operations: ['compile', 'preprocess', 'clean', 'verify'],
+  delegationEnvironment: 'AILY_BUILDER_WORKSPACE', operations: ['compile', 'preprocess', 'clean'],
 });
-assert.deepEqual(capabilities.capabilities.buildInputVerification, {
-  schemaVersion: 1, command: 'verify-build-inputs', contextFileName: 'aily-build-input-context.json',
-  contextStorage: 'host-private', scope: 'prepared-dependency-trees-and-sdk-tools', currentProjectFreshness: false,
-});
+assert.equal(Object.hasOwn(capabilities.capabilities, 'buildInputVerification'), false);
 assert.deepEqual(capabilities.capabilities.buildInputRecord, {
   schemaVersion: 1, cliOption: '--record-build-inputs', manifestField: 'build.inputs',
   storage: 'sidecar-reference', defaultFileName: 'aily-build-inputs.json',
-  scope: 'prepared-dependency-trees', currentProjectFreshness: false,
+  scope: 'build-graph-facts', currentProjectFreshness: false,
 });
 assert.equal(capabilities.schemaVersion, 1);
 assert.equal(capabilities.service, 'aily-builder');

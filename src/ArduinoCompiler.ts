@@ -7,10 +7,8 @@ import { ArduinoConfigParser } from './ArduinoConfigParser';
 import { DependencyAnalyzer } from './DependencyAnalyzer';
 import { sanitizeNonAsciiPaths, sanitizeObjectPaths } from './utils/ShortPath';
 import { emitSimulationArtifactManifest, SimulationArtifactManifest } from './ArtifactManifest';
-import { INPUT_CONTEXT_FILE, publishBuildInputContext } from './BuildInputVerification';
 import { applySimulationDebugProfile } from './SimulationDebugProfile';
-import { BuildInputRecording } from './BuildInputRecording';
-import { selectPackageInputs } from './PackageBuildInputs';
+import { BuildInputRecording } from './BuildInputRecord';
 import { collectPackageIdentitiesFromPaths, extractPackageIdentityFromPath } from './utils/PackageIdentity';
 import { RecipeRunner, RecipeRunnerError } from './RecipeRunner';
 import type { ArduinoUploadCommand } from './ArduinoUploadCommand';
@@ -262,7 +260,6 @@ export class ArduinoCompiler {
 
   private async compileOwned(options: CompileOptions): Promise<CompileResult> {
     const startTime = Date.now();
-    await fs.unlink(path.join(options.buildPath, INPUT_CONTEXT_FILE)).catch(error => { if (error.code !== 'ENOENT') throw error; });
     if (options.recordBuildInputs && !options.artifactManifestPath) {
       throw new Error('Build input recording requires an artifact manifest.');
     }
@@ -373,26 +370,19 @@ export class ArduinoCompiler {
     // 每次编译都需要执行，确保源文件变化能被检测到
     await this.prepareBuildDirectory(options.buildPath);
 
-    const selectInputs = () => ({
-      roots: [path.dirname(options.sketchPath), ...dependencies.map(dependency => dependency.path),
-        ...(compileConfig.includes || [])].filter((value): value is string => typeof value === 'string' && value.length > 0),
-      exclude: [options.buildPath],
-      external: { recipes: Object.values(compileConfig.args || {}).filter((value): value is string => typeof value === 'string'),
-        tools: compileConfig.compiler || {}, cwd: options.buildPath,
-        searchPath: sanitizeNonAsciiPaths([process.env.COMPILER_PATH, process.env.ESPTOOL_PY_PATH, process.env.PATH].filter(Boolean).join(path.delimiter)) },
-      configuration: { board: options.board, buildProperties: options.buildProperties || {},
-        macros: options.buildMacros || [], toolVersions, simulationDebug: !!options.simulationDebug,
-        resolvedBoard: arduinoConfig.board, compiler: compileConfig.compiler, args: compileConfig.args,
-        includes: compileConfig.includes, platform: arduinoConfig.platform },
-    });
-    const inputRecording = options.recordBuildInputs ? await BuildInputRecording.open(selectInputs,
-      () => selectPackageInputs(arduinoConfig.platform, options.buildPath)) : undefined;
+    // The resolved preprocess result and pipeline own these facts. Recording
+    // observes them without opening source, SDK, tool or linker search trees.
+    const inputRecording = options.recordBuildInputs ? new BuildInputRecording({
+      board: options.board, buildProperties: options.buildProperties || {},
+      macros: options.buildMacros || [], toolVersions, simulationDebug: !!options.simulationDebug,
+      arduinoConfig, compileConfig, dependencies,
+    }, arduinoConfig.targetSelection) : undefined;
 
     // 8. 编译pipeline
     this.logger.verbose(`Starting compilation pipeline...`);
     let compileResult;
 
-    compileResult = await this.ninjaPipeline.compile({ dependencies, compileConfig, inputIdentity: inputRecording?.inputIdentity, inputRecording });
+    compileResult = await this.ninjaPipeline.compile({ dependencies, compileConfig, inputRecording });
 
     if (!compileResult.success) {
       return {
@@ -409,16 +399,13 @@ export class ArduinoCompiler {
     // output that actually exists instead of guessing from platform families.
     const finalOutputPath = compileResult.outFilePath;
 
-    const finishedAt = Date.now();
-    const totalTime = finishedAt - startTime;
-    const buildTime = finishedAt - buildStartTime;
     // 6. 计算固件大小信息
     const firmwareSize = await this.calculateFirmwareSize(arduinoConfig);
 
     let artifactManifest: SimulationArtifactManifest | undefined;
     if (options.artifactManifestPath) {
       this.logger.info('Generating simulation artifact manifest...');
-      const buildInputs = inputRecording ? await inputRecording.finish() : undefined;
+      const buildInputs = inputRecording?.finish();
       const artifactTarget = resolveArtifactTargetMarkers(
         options.board,
         arduinoConfig.board,
@@ -439,22 +426,15 @@ export class ArduinoCompiler {
         manifestPath: options.artifactManifestPath,
         buildInputs,
       });
-      // Cover source copying and output hashing too; never retain a raced manifest.
-      if (inputRecording) {
-        try {
-          await inputRecording.confirmFinal();
-          await publishBuildInputContext(inputRecording.getVerificationContext());
-        }
-        catch (error) { await fs.unlink(options.artifactManifestPath); throw error; }
-      }
       this.logger.info(`Simulation artifact manifest: ${options.artifactManifestPath}`);
     }
 
+    const finishedAt = Date.now();
     return {
       success: true,
       preprocessTime,
-      buildTime,
-      totalTime,
+      buildTime: finishedAt - buildStartTime,
+      totalTime: finishedAt - startTime,
       outFilePath: finalOutputPath,
       artifactManifestPath: options.artifactManifestPath,
       artifactManifest,

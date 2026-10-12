@@ -1,97 +1,154 @@
-import { createHash } from 'crypto';
-import { createReadStream } from 'fs';
-import fs from 'fs-extra';
-import path from 'path';
-import { captureExternalBuildInputs, type ExternalInputSelection, type ExternalInputRecord } from './ExternalBuildInputs';
-import type { PackageInputRecord } from './PackageBuildInputs';
+import { createHash } from 'node:crypto';
+
+export interface BuildTargetSelection {
+  schemaVersion: 1;
+  requestedFqbn: string;
+  effectiveFqbn: string;
+  menuOptions: Record<string, string>;
+  /** Arduino platform identity; not an npm SDK identity or content proof. */
+  platform: { package: string; architecture: string; version: string | null };
+  /** Bounded facts from the final resolved properties consumed by compilation. */
+  resolvedBuildProperties: Record<string, string>;
+}
+
+export const RESOLVED_BUILD_PROPERTY_KEYS = [
+  'build.arch', 'build.board', 'build.boot', 'build.boot_freq', 'build.bootloader_addr',
+  'build.chip_variant', 'build.core', 'build.core.version', 'build.cpu', 'build.defines',
+  'build.extra_flags', 'build.f_cpu',
+  'build.f_crystal', 'build.flash_freq', 'build.flash_length', 'build.flash_mode',
+  'build.flash_offset', 'build.flash_size', 'build.flash_total', 'build.float-abi',
+  'build.fpu', 'build.hse', 'build.hse_value', 'build.img_freq', 'build.ldscript',
+  'build.lse', 'build.lse_value', 'build.mcu', 'build.memory_type', 'build.partitions',
+  'build.product_line', 'build.psram', 'build.psram_cs', 'build.psram_freq',
+  'build.psram_length', 'build.psram_size', 'build.psram_type', 'build.series', 'build.st_extra_flags',
+  'build.target', 'build.variant', 'build.variant.version',
+  'upload.maximum_data_size', 'upload.maximum_size',
+] as const;
+export type ResolvedBuildPropertyKey = typeof RESOLVED_BUILD_PROPERTY_KEYS[number];
+export const MAX_RESOLVED_BUILD_PROPERTY_LENGTH = 4096;
+export const MAX_RESOLVED_BUILD_PROPERTIES_BYTES = 64 * 1024;
+const resolvedBuildPropertyKeys = new Set<string>(RESOLVED_BUILD_PROPERTY_KEYS);
+
+/** Relative SDK variant/script names are facts; machine paths and unresolved
+ * property references are not portable target facts. Empty values are retained
+ * because an explicitly disabled option is different from missing evidence. */
+export function isSafeResolvedBuildProperty(value: unknown): value is string {
+  return typeof value === 'string' && value.length <= MAX_RESOLVED_BUILD_PROPERTY_LENGTH
+    && !/[\x00-\x1f\x7f{}]/.test(value) && !/%[A-Za-z0-9_]+%/.test(value)
+    && !/[A-Za-z]:[\\/]|\\\\|(?:^|[^A-Za-z0-9_.\/-]|-[ILTB])\//.test(value)
+    && !/(?:^|[^A-Za-z0-9_.-]|-[ILTB])\.\.(?:[\\/]|$)/.test(value);
+}
+
+export function isSafeArduinoPlatformVersion(value: unknown): value is string {
+  return typeof value === 'string' && /^[A-Za-z0-9][A-Za-z0-9.+_-]{0,127}$/.test(value);
+}
 
 export interface BuildInputRecord {
   schemaVersion: 1;
   kind: 'aily-build-input-record';
-  scope: 'prepared-dependency-trees';
+  scope: 'build-graph-facts';
   configurationSha256: string;
-  roots: Array<{ id: string; locationSha256: string; files: Array<{ path: string; sizeBytes: number; sha256: string }> }>;
-  external?: ExternalInputRecord;
-  packages?: PackageInputRecord;
-  phases?: Array<{ phase: 'sketch' | 'libraries' | 'core' | 'link' | 'objcopy'; external: ExternalInputRecord }>;
+  /** Absent when the supplied parsed configuration did not record selection. */
+  targetSelection?: BuildTargetSelection;
+  steps: Array<{ kind: 'ninja-plan' | 'recipe-run'; name: string; sha256: string; commandCount?: number }>;
   digest: string;
 }
-export interface BuildInputSelection { roots: string[]; exclude: string[]; configuration: unknown; external?: ExternalInputSelection; packages?: PackageInputRecord }
-export interface BuildInputSnapshot { record: BuildInputRecord; fileStates: string[] }
-const MAX_FILES = 4096;
-const MAX_BYTES = 256 * 1024 * 1024;
-const digest = (value: string) => createHash('sha256').update(value).digest('hex');
-function fail(message: string): never {
-  throw Object.assign(new Error(message), { code: 'BUILD_INPUTS_CHANGED' });
-}
+
+const sha = (value: string | Buffer) => createHash('sha256').update(value).digest('hex');
+const fail = (message: string): never => {
+  throw Object.assign(new Error(message), { code: 'BUILD_INPUT_RECORD_INVALID' });
+};
 function stable(value: any): any {
   if (Array.isArray(value)) return value.map(stable);
   if (value && typeof value === 'object') return Object.fromEntries(Object.keys(value).sort()
     .filter(key => value[key] !== undefined).map(key => [key, stable(value[key])]));
   return value;
 }
-function inside(root: string, candidate: string): boolean {
-  const relative = path.relative(root, candidate);
-  return relative === '' || (relative !== '..' && !relative.startsWith(`..${path.sep}`) && !path.isAbsolute(relative));
-}
-function state(stat: import('fs').Stats): string {
-  return [stat.dev, stat.ino, stat.size, stat.mtimeMs, stat.ctimeMs].join(':');
+
+export function normalizeBuildTargetSelection(value: BuildTargetSelection): BuildTargetSelection {
+  const plain = (item: unknown) => item && typeof item === 'object'
+    && [Object.prototype, null].includes(Object.getPrototypeOf(item));
+  const identifier = /^[A-Za-z0-9_][A-Za-z0-9_.-]{0,255}$/;
+  const menuIdentifier = /^[A-Za-z0-9_-]{1,128}$/;
+  if (!plain(value) || Object.keys(value).some(key => !['schemaVersion', 'requestedFqbn', 'effectiveFqbn',
+    'menuOptions', 'platform', 'resolvedBuildProperties'].includes(key)) || value.schemaVersion !== 1
+    || typeof value.requestedFqbn !== 'string' || value.requestedFqbn.split(':').length !== 3
+    || !value.requestedFqbn.split(':').every(part => identifier.test(part))
+    || typeof value.effectiveFqbn !== 'string' || value.effectiveFqbn.length > 16 * 1024
+    || !plain(value.menuOptions) || !plain(value.platform) || !plain(value.resolvedBuildProperties)) {
+    fail('Invalid target selection.');
+  }
+  const menus = Object.entries(value.menuOptions).sort(([left], [right]) => left < right ? -1 : left > right ? 1 : 0);
+  if (menus.length > 64 || menus.some(([key, option]) => !menuIdentifier.test(key)
+    || typeof option !== 'string' || !menuIdentifier.test(option))) fail('Invalid target selection menus.');
+  const choices = value.effectiveFqbn === value.requestedFqbn ? []
+    : value.effectiveFqbn.startsWith(`${value.requestedFqbn}:`)
+      ? value.effectiveFqbn.slice(value.requestedFqbn.length + 1).split(',') : [];
+  if (choices.length !== menus.length || !menus.every(([key, option]) => choices.includes(`${key}=${option}`))
+    || (menus.length === 0 && value.effectiveFqbn !== value.requestedFqbn)) fail('Inconsistent target selection.');
+  const [packageName, architecture] = value.requestedFqbn.split(':');
+  if (Object.keys(value.platform).some(key => !['package', 'architecture', 'version'].includes(key))
+    || value.platform.package !== packageName || value.platform.architecture !== architecture
+    || (value.platform.version !== null && !isSafeArduinoPlatformVersion(value.platform.version))) {
+    fail('Invalid target selection platform.');
+  }
+  const facts = Object.entries(value.resolvedBuildProperties).sort(([left], [right]) => left < right ? -1 : left > right ? 1 : 0);
+  if (facts.some(([key, property]) => !resolvedBuildPropertyKeys.has(key) || !isSafeResolvedBuildProperty(property))
+    || Buffer.byteLength(JSON.stringify(value.resolvedBuildProperties)) > MAX_RESOLVED_BUILD_PROPERTIES_BYTES) {
+    fail('Invalid resolved build properties.');
+  }
+  return { schemaVersion: 1, requestedFqbn: value.requestedFqbn, effectiveFqbn: value.effectiveFqbn,
+    menuOptions: Object.fromEntries(menus),
+    platform: { package: packageName, architecture, version: value.platform.version },
+    resolvedBuildProperties: Object.fromEntries(facts) };
 }
 
-/** Hash prepared trees plus explicit recipe response files and tool executables.
- * This is partial build provenance, NOT complete current-project freshness:
- * implicit SDK headers/archives, executable dependencies, hooks and host authority
- * still require a complete snapshot/lease contract.
+/** Observe existing build facts, never scan inputs or change compilation/cache
+ * policy. A Ninja plan includes cached/up-to-date edges, not proof that every
+ * command ran. Recipe commands are recorded only after successful execution.
+ * Digests identify metadata; they do NOT prove source/SDK bytes or freshness.
  */
-export async function captureBuildInputs(selection: BuildInputSelection): Promise<BuildInputSnapshot> {
-  const excluded = await Promise.all(selection.exclude.map(value => fs.realpath(value)));
-  const paths = [...new Set(await Promise.all(selection.roots.map(value => fs.realpath(value))))].sort();
-  if (!paths.length || paths.length > 128) fail('Build input roots must contain 1–128 directories.');
-  const roots: BuildInputRecord['roots'] = [];
-  const fileStates: string[] = [];
-  let bytes = 0, count = 0;
-  for (const [index, root] of paths.entries()) {
-    if (!(await fs.stat(root)).isDirectory() || excluded.some(value => inside(value, root))) fail('Invalid build input root.');
-    const files: BuildInputRecord['roots'][number]['files'] = [];
-    const visit = async (directory: string, depth: number): Promise<void> => {
-      if (depth > 64) fail('Build input tree exceeds depth limit.');
-      const entries = (await fs.readdir(directory, { withFileTypes: true })).sort((a, b) => a.name < b.name ? -1 : a.name > b.name ? 1 : 0);
-      for (const entry of entries) {
-        if (entry.name === '.git') continue;
-        const filename = path.join(directory, entry.name);
-        if (excluded.some(value => inside(value, filename))) continue;
-        const real = await fs.realpath(filename);
-        if (!inside(root, real) || entry.isSymbolicLink()) fail('Build input symlink/junction requires an explicit root; implicit traversal refused.');
-        if (entry.isDirectory()) { await visit(filename, depth + 1); continue; }
-        const before = await fs.stat(filename);
-        const relative = path.relative(root, filename).split(path.sep).join('/');
-        if (!before.isFile() || relative.length > 512) fail('Invalid build input file.');
-        if (++count > MAX_FILES || (bytes += before.size) > MAX_BYTES) fail('Build inputs exceed bounded capture budget.');
-        const hash = createHash('sha256');
-        for await (const chunk of createReadStream(filename)) hash.update(chunk);
-        const after = await fs.stat(filename);
-        if (state(before) !== state(after)) fail('Build input changed while hashing.');
-        files.push({ path: relative, sizeBytes: after.size, sha256: hash.digest('hex') });
-        fileStates.push(`${index}/${relative}:${state(after)}`);
-      }
-    };
-    await visit(root, 0);
-    roots.push({ id: `root-${index}`, locationSha256: digest(process.platform === 'win32' ? root.toLowerCase() : root), files });
-  }
-  const external = selection.external ? await captureExternalBuildInputs(selection.external) : undefined;
-  if (external) fileStates.push(...external.states);
-  const body = { schemaVersion: 1 as const, kind: 'aily-build-input-record' as const,
-    scope: 'prepared-dependency-trees' as const, configurationSha256: digest(JSON.stringify(stable(selection.configuration))), roots,
-    ...(external ? { external: external.record } : {}), ...(selection.packages ? { packages: selection.packages } : {}) };
-  const encoded = JSON.stringify(body);
-  if (Buffer.byteLength(encoded) > 1024 * 1024) fail('Build input record exceeds the 1 MiB manifest budget.');
-  return { record: { ...body, digest: digest(encoded) }, fileStates };
-}
+export class BuildInputRecording {
+  private readonly configurationSha256: string;
+  private readonly targetSelection?: BuildTargetSelection;
+  private readonly steps: BuildInputRecord['steps'] = [];
+  private finished = false;
 
-export async function confirmBuildInputs(before: BuildInputSnapshot, selection: BuildInputSelection): Promise<BuildInputRecord> {
-  const after = await captureBuildInputs(selection);
-  if (before.record.digest !== after.record.digest || JSON.stringify(before.fileStates) !== JSON.stringify(after.fileStates)) {
-    fail('Build inputs changed during compilation; discard this build and compile again.');
+  constructor(configuration: unknown, targetSelection?: BuildTargetSelection) {
+    const encoded = JSON.stringify(stable(configuration));
+    if (!encoded || Buffer.byteLength(encoded) > 16 * 1024 * 1024) fail('Build configuration exceeds record budget.');
+    this.configurationSha256 = sha(encoded);
+    if (targetSelection !== undefined) this.targetSelection = normalizeBuildTargetSelection(targetSelection);
   }
-  return after.record;
+
+  recordNinja(stage: string, graph: Buffer): void {
+    const expected = ['sketch', 'libraries', 'core', 'linking'];
+    const count = this.steps.filter(step => step.kind === 'ninja-plan').length;
+    if (stage !== expected[count] || !graph.length || graph.length > 8 * 1024 * 1024) fail('Invalid Ninja plan record.');
+    this.append({ kind: 'ninja-plan', name: stage, sha256: sha(graph) });
+  }
+
+  recordRecipes(group: string, commands: string[]): void {
+    if (!commands.length) return;
+    const encoded = JSON.stringify(commands);
+    if (Buffer.byteLength(encoded) > 8 * 1024 * 1024) fail('Recipe record exceeds budget.');
+    this.append({ kind: 'recipe-run', name: group, sha256: sha(encoded), commandCount: commands.length });
+  }
+
+  finish(): BuildInputRecord {
+    if (this.finished || this.steps.filter(step => step.kind === 'ninja-plan').length !== 4) {
+      fail('Cannot publish an incomplete or already finalized build record.');
+    }
+    this.finished = true;
+    const body = { schemaVersion: 1 as const, kind: 'aily-build-input-record' as const,
+      scope: 'build-graph-facts' as const, configurationSha256: this.configurationSha256,
+      ...(this.targetSelection ? { targetSelection: normalizeBuildTargetSelection(this.targetSelection) } : {}),
+      steps: this.steps.map(step => ({ ...step })) };
+    return { ...body, digest: sha(JSON.stringify(body)) };
+  }
+
+  private append(step: BuildInputRecord['steps'][number]): void {
+    if (this.finished || this.steps.length >= 128 || !step.name || step.name.length > 256) fail('Invalid build record step.');
+    this.steps.push(step);
+  }
 }

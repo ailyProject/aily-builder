@@ -8,14 +8,16 @@
   },
   "files": [
     "dist/main.js",
+    "dist/package.json",
     "dist/src",
+    "dist/ninja",
     "README.md",
     "README-ZH.md",
     "LICENSE"
   ],
   "scripts": {
-    "build": "rimraf dist && tsc",
-    "test": "tsc --pretty false && node --import tsx --test test/*.test.ts && node test/capabilities.test.mjs",
+    "build": "rimraf dist && tsc && node copy-ninja.js",
+    "test": "tsc --pretty false && node copy-ninja.js && node --import tsx --test test/*.test.ts && node --test test/package-assets.test.mjs && node test/capabilities.test.mjs",
     "bundle": "npm run build && node bundle.js --minify",
     "start": "ts-node main.ts",
     "clean": "rimraf dist",

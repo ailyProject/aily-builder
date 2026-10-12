@@ -2,7 +2,7 @@ import { createHash } from 'crypto';
 import { createReadStream } from 'fs';
 import fs from 'fs-extra';
 import path from 'path';
-import type { BuildInputRecord } from './BuildInputRecord';
+import { normalizeBuildTargetSelection, type BuildInputRecord } from './BuildInputRecord';
 
 export type ArtifactFileRole =
   | 'application'
@@ -124,7 +124,7 @@ export interface SimulationArtifactManifest {
     inputs?: {
       schemaVersion: 1;
       kind: 'aily-build-input-reference';
-      scope: 'prepared-dependency-trees';
+      scope: 'build-graph-facts';
       path: string;
       digest: string;
     };
@@ -1103,7 +1103,18 @@ export async function emitSimulationArtifactManifest(
     fs.remove(buildInputsPath),
   ]);
   // Evidence is a sidecar, never firmware/source content or a compiler input.
-  if (options.buildInputs) await fs.writeJson(buildInputsPath, options.buildInputs, { spaces: 2 });
+  if (options.buildInputs) {
+    const { digest, ...body } = options.buildInputs;
+    if (body.schemaVersion !== 1 || body.kind !== 'aily-build-input-record' || body.scope !== 'build-graph-facts'
+      || createHash('sha256').update(JSON.stringify(body)).digest('hex') !== digest) {
+      throw new Error('Unsupported or inconsistent build-graph record.');
+    }
+    if (body.targetSelection !== undefined
+      && normalizeBuildTargetSelection(body.targetSelection).requestedFqbn !== options.board) {
+      throw new Error('Build-graph target selection does not match the requested artifact FQBN.');
+    }
+    await fs.writeJson(buildInputsPath, options.buildInputs, { spaces: 2 });
+  }
   await fs.copyFile(sketchPath, sourceSnapshotPath);
   if (target.architecture === 'esp32') {
     await copyEsp32BootApp0(buildRoot, options.sdkPath);
@@ -1211,7 +1222,7 @@ export async function emitSimulationArtifactManifest(
       ...(options.buildInputs ? { inputs: {
         schemaVersion: 1 as const,
         kind: 'aily-build-input-reference' as const,
-        scope: 'prepared-dependency-trees' as const,
+        scope: 'build-graph-facts' as const,
         path: 'aily-build-inputs.json',
         digest: options.buildInputs.digest,
       } } : {}),

@@ -6,7 +6,7 @@ import { AsyncLocalStorage } from 'node:async_hooks';
 export const BUILDER_DELEGATION_ENV = 'AILY_BUILDER_WORKSPACE';
 export const WORKSPACE_MARKER = 'aily-workspace.lock';
 export const BUILDER_MARKER = 'aily-builder.lock';
-type Operation = 'compile' | 'preprocess' | 'clean' | 'verify';
+type Operation = 'compile' | 'preprocess' | 'clean';
 const canonical = (value: string) => process.platform === 'win32' ? value.toLowerCase() : value;
 const sameFile = (a: fs.Stats, b: fs.Stats) => a.dev === b.dev && a.ino === b.ino;
 const exists = (filename: string) => {
@@ -28,7 +28,7 @@ function readRecord(filename: string) {
   let record: any;
   try { record = JSON.parse(bytes); } catch { throw fault('BUILD_WORKSPACE_INVALID', 'Incomplete owner record.'); }
   if (record?.schemaVersion !== 1 || !Number.isSafeInteger(record.pid) || record.pid < 1
-    || !/^[a-f0-9-]{36}$/.test(record.token) || !['compile', 'preprocess', 'publish', 'clean', 'verify'].includes(record.operation)) {
+    || !/^[a-f0-9-]{36}$/.test(record.token) || !['compile', 'preprocess', 'publish', 'clean'].includes(record.operation)) {
     throw fault('BUILD_WORKSPACE_INVALID', 'Invalid owner record.');
   }
   return { record, stat, bytes };
@@ -54,7 +54,7 @@ function openDirectory(buildPath: string) {
  * A dead owner is never stolen: compiler descendants may still be writing.
  */
 export function acquireBuildWorkspace(buildPath: string, operation: Operation) {
-  if (!['compile', 'preprocess', 'clean', 'verify'].includes(operation)) throw fault('BUILD_WORKSPACE_INVALID', 'Invalid Builder operation.');
+  if (!['compile', 'preprocess', 'clean'].includes(operation)) throw fault('BUILD_WORKSPACE_INVALID', 'Invalid Builder operation.');
   const workspace = openDirectory(buildPath);
   const ownerPath = path.join(workspace.directory, WORKSPACE_MARKER);
   const childPath = path.join(workspace.directory, BUILDER_MARKER);
@@ -156,10 +156,14 @@ export async function withBuildWorkspace<T>(buildPath: string, operation: Operat
   const lease = acquireBuildWorkspace(buildPath, operation);
   processLease = lease;
   try {
-    // Direct writers invalidate old success tickets even if this invocation
-    // fails early. Host delegation already invalidates before preparing input.
+    // Direct writers revoke delivery even on early failure. Only compile
+    // supersedes the previous portable artifact; preprocessing does not.
+    // Host delegation owns its invalidation before preparing input.
     if (!process.env[BUILDER_DELEGATION_ENV] && ['compile', 'preprocess'].includes(operation)) {
-      for (const name of ['aily-artifact-manifest.json', 'aily-build-delivery.json', 'aily-build-input-context.json']) {
+      const staleFiles = operation === 'compile'
+        ? ['aily-artifact-manifest.json', 'aily-build-delivery.json']
+        : ['aily-build-delivery.json'];
+      for (const name of staleFiles) {
         fs.rmSync(path.join(lease.directory, name), { force: true });
       }
     }

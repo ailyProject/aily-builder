@@ -1,6 +1,7 @@
 const esbuild = require('esbuild');
 const fs = require('fs-extra');
 const path = require('path');
+const { copyNinja } = require('./copy-ninja.js');
 
 const DIST_MAIN_PATH = './dist/main.js';
 const BUNDLE_DIR = './dist/bundle-min';
@@ -17,7 +18,7 @@ async function bundleMinified() {
     await fs.emptyDir(BUNDLE_DIR);
 
     await bundleJavaScript(BUNDLE_DIR);
-    await copyNinja(BUNDLE_DIR);
+    await copyNinja(path.join(BUNDLE_DIR, 'ninja'));
     await createLaunchScript(BUNDLE_DIR, options);
     await createPackageJson(BUNDLE_DIR, options);
 
@@ -65,33 +66,6 @@ async function bundleJavaScript(bundleDir) {
     sourcemap: false,
     logLevel: 'info',
   });
-}
-
-async function copyNinja(bundleDir) {
-  console.log('Copying Ninja build tools for Windows and macOS...');
-
-  const ninjaDir = './ninja';
-  const ninjaDest = path.join(bundleDir, 'ninja');
-  await fs.ensureDir(ninjaDest);
-
-  const ninjaFiles = [
-    { name: 'ninja.exe', executable: false },
-    { name: 'ninja', executable: true },
-  ];
-
-  for (const ninjaFile of ninjaFiles) {
-    const sourcePath = path.join(ninjaDir, ninjaFile.name);
-    const destinationPath = path.join(ninjaDest, ninjaFile.name);
-
-    if (!await fs.pathExists(sourcePath)) {
-      throw new Error(`${ninjaFile.name} not found in ${ninjaDir} directory.`);
-    }
-
-    await fs.copy(sourcePath, destinationPath);
-    if (ninjaFile.executable) {
-      await fs.chmod(destinationPath, '755');
-    }
-  }
 }
 
 async function createLaunchScript(bundleDir, options) {

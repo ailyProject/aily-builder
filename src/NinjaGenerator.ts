@@ -38,7 +38,6 @@ export interface NinjaOptions {
   buildPath: string;
   jobs: number;
   archiveCacheHits?: Map<string, ArchiveCacheHit>;
-  inputIdentity?: string;
 }
 
 export class NinjaGenerator {
@@ -111,19 +110,6 @@ export class NinjaGenerator {
 
       // 生成链接目标
       this.generateLinkTargets();
-
-      if (options.inputIdentity) {
-        if (!/^[a-f0-9]{64}$/.test(options.inputIdentity)) throw new Error('Invalid build input identity.');
-        const marker = 'aily-input-identity.txt';
-        const filename = path.join(this.buildPath, marker);
-        const previous = await fs.readFile(filename, 'utf8').catch(error => { if (error.code !== 'ENOENT') throw error; return ''; });
-        if (previous !== options.inputIdentity) await fs.writeFile(filename, options.inputIdentity);
-        for (const build of this.ninjaFile.builds) {
-          if (build.rule.endsWith('_compile') || build.rule === 'archive') {
-            build.implicit = [...(build.implicit || []), marker];
-          }
-        }
-      }
 
       // 写入ninja文件
       const ninjaFilePath = path.join(this.buildPath, 'build.ninja');

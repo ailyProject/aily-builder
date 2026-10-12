@@ -16,7 +16,7 @@ import { ArchiveCacheFetchResult, ArchiveCacheHit, ArchiveCloudCacheManager, get
 import { sanitizeNonAsciiPaths } from './utils/ShortPath';
 import { isMacOSHost, isWindowsHost, toHostPathKey } from './utils/HostPlatform';
 import { RecipeExecutionResult, RecipeRunner, RecipeRunnerError } from './RecipeRunner';
-import type { BuildInputRecording, BuildInputPhase } from './BuildInputRecording';
+import type { BuildInputRecording } from './BuildInputRecord';
 import {
   collectGeneratedSketchSources,
   GENERATED_SKETCH_DEPENDENCY_NAME,
@@ -26,8 +26,7 @@ import {
 export interface NinjaPipelineOptions {
   dependencies: Dependency[];
   compileConfig: any;
-  inputIdentity?: string;
-  inputRecording?: Pick<BuildInputRecording, 'beginPhase'>;
+  inputRecording?: BuildInputRecording;
 }
 
 export interface NinjaCompilationResult {
@@ -57,8 +56,7 @@ export class NinjaCompilationPipeline {
   private logger: Logger;
   private dependencies: Dependency[];
   private compileConfig: any;
-  private recordingInputs = false;
-  private inputRecording?: Pick<BuildInputRecording, 'beginPhase'>;
+  private inputRecording?: BuildInputRecording;
   private cacheManager: CacheManager;
   private archiveCloudCacheManager: ArchiveCloudCacheManager;
   private ninjaGenerator: NinjaGenerator;
@@ -75,10 +73,9 @@ export class NinjaCompilationPipeline {
     this.ninjaGenerator = new NinjaGenerator(logger);
   }
 
-  async compile({ dependencies, compileConfig, inputIdentity, inputRecording }: NinjaPipelineOptions): Promise<NinjaCompilationResult> {
+  async compile({ dependencies, compileConfig, inputRecording }: NinjaPipelineOptions): Promise<NinjaCompilationResult> {
     this.dependencies = dependencies;
     this.compileConfig = compileConfig;
-    this.recordingInputs = !!inputIdentity;
     this.inputRecording = inputRecording;
     let remoteFetches = new Map<string, Promise<ArchiveCacheFetchResult>>();
     let archiveCacheHits = new Map<string, ArchiveCacheHit>();
@@ -119,7 +116,6 @@ export class NinjaCompilationPipeline {
         compileConfig,
         buildPath,
         jobs: parseInt(process.env['BUILD_JOBS'] || '4'),
-        inputIdentity,
         archiveCacheHits
       };
 
@@ -157,17 +153,17 @@ export class NinjaCompilationPipeline {
           await this.invalidateLocalOutputsForChangedContext();
 
           this.logger.verbose('Checking archive cloud cache for compiled archives...');
-          archiveCacheHits = inputIdentity ? new Map() : await this.archiveCloudCacheManager.restoreArchives(dependencies, compileConfig);
+          archiveCacheHits = await this.archiveCloudCacheManager.restoreArchives(dependencies, compileConfig);
           this.dropUnsafePhaseArchiveHits(
             archiveCacheHits,
             dynamicLibrariesPrebuild,
             dynamicCorePrebuild
           );
           ninjaOptions.archiveCacheHits = archiveCacheHits;
-          remoteFetches = inputIdentity ? new Map() : this.archiveCloudCacheManager.startRemoteFetches(archiveCacheHits);
+          remoteFetches = this.archiveCloudCacheManager.startRemoteFetches(archiveCacheHits);
 
           this.logger.verbose('Checking cache for compiled objects...');
-          if (!inputIdentity) await this.restoreFromCache(dependencies, archiveCacheHits);
+          await this.restoreFromCache(dependencies, archiveCacheHits);
 
           ninjaFilePath = await this.ninjaGenerator.generateNinjaFile(ninjaOptions);
           this.logger.verbose(`Ninja file generated: ${ninjaFilePath}`);
@@ -322,7 +318,7 @@ export class NinjaCompilationPipeline {
         !(dynamicLibrariesPrebuild && dependency.type === 'library')
         && !(dynamicCorePrebuild && dependency.type === 'core')
       );
-      if (!inputIdentity) await this.archiveCloudCacheManager.storeArchives(
+      await this.archiveCloudCacheManager.storeArchives(
         cacheableArchiveDependencies,
         compileConfig,
         archiveCacheHits
@@ -383,14 +379,35 @@ export class NinjaCompilationPipeline {
   ): Promise<boolean> {
     this.reportProgress(progressRange.stage, progressRange.start, progressRange.message);
     this.logger.info(`Starting ninja stage: ${target}`);
+    // Only read the generated graph, never its source/SDK paths. Reading before
+    // execution preserves the plan consumed by this stage, including cache hits.
+    const graph = this.inputRecording ? await this.readRecordedNinjaGraph(ninjaFilePath) : undefined;
     const result = await this.executeNinjaBuild(ninjaFilePath, [target], progressRange);
     if (result.warnings) {
       warnings.push(...result.warnings);
     }
     if (result.success) {
+      if (graph) this.inputRecording!.recordNinja(progressRange.stage, graph);
       this.reportProgress(progressRange.stage, progressRange.end, progressRange.message);
     }
     return result.success;
+  }
+
+  private async readRecordedNinjaGraph(filename: string): Promise<Buffer> {
+    const handle = await fs.open(filename, 'r');
+    try {
+      const stat = await fs.fstat(handle);
+      if (!stat.isFile() || stat.size > 8 * 1024 * 1024) throw new Error('Ninja graph exceeds record budget.');
+      const bytes = Buffer.alloc(stat.size + 1);
+      let size = 0;
+      while (size < bytes.length) {
+        const read = await fs.read(handle, bytes, size, bytes.length - size, null);
+        if (!read.bytesRead) break;
+        size += read.bytesRead;
+      }
+      if (size !== stat.size) throw new Error('Ninja graph changed while reading.');
+      return bytes.subarray(0, size);
+    } finally { await fs.close(handle); }
   }
 
   private reportProgress(
@@ -473,10 +490,7 @@ export class NinjaCompilationPipeline {
     let primaryError: unknown;
     try {
       await this.runRecipeGroup(runner, prebuildPrefix, `${label} prebuild`);
-      const checkpoint = await this.inputRecording?.beginPhase(label.toLowerCase());
-      if (checkpoint) await this.invalidateChangedPhaseInputs(checkpoint.phase, checkpoint.identity);
       const result = await action();
-      if (checkpoint) await checkpoint.confirm();
       return result;
     } catch (error) {
       primaryError = error;
@@ -522,6 +536,7 @@ export class NinjaCompilationPipeline {
     }
 
     const results = await runner.runRecipes(prefix, '.pattern');
+    this.inputRecording?.recordRecipes(prefix, results.map(result => result.expandedCommand));
     for (const result of results) {
       if (result.stdout.trim()) {
         this.logger.verbose(`${result.recipeKey} stdout: ${result.stdout.trim()}`);
@@ -535,17 +550,6 @@ export class NinjaCompilationPipeline {
 
   private hasRecipeGroup(runner: RecipeRunner | undefined, prefix: string): boolean {
     return (runner?.findRecipes(prefix, '.pattern').length || 0) > 0;
-  }
-
-  private async invalidateChangedPhaseInputs(phase: BuildInputPhase, identity: string): Promise<void> {
-    const buildPath = this.getValidatedBuildPath();
-    const marker = path.join(buildPath, `aily-input-${phase}.txt`);
-    const previous = await fs.readFile(marker, 'utf8').catch(error => { if (error.code !== 'ENOENT') throw error; return ''; });
-    if (previous === identity) return;
-    if (phase === 'sketch' || phase === 'libraries' || phase === 'core') await this.invalidatePhaseOutputs(phase);
-    else if (phase === 'link') await fs.remove(path.join(buildPath, `${path.basename(process.env.SKETCH_NAME || 'sketch')}.elf`));
-    // Objcopy recipes already execute on every build; no generic file deletion needed.
-    await fs.writeFile(marker, identity);
   }
 
   private isKnownArduinoCoreBuildHook(runner: RecipeRunner | undefined): boolean {
@@ -1012,7 +1016,6 @@ export class NinjaCompilationPipeline {
    * 处理编译进度并立即存储缓存
    */
   private async handleCompilationProgress(progressLine: string, buildDir: string): Promise<void> {
-    if (this.recordingInputs) return; // A recorded build must not publish unconfirmed cache entries.
     // 解析ninja的进度信息，查找编译完成的文件
 
     let objectFileName: string | null = null; // 輸出的文件
@@ -1150,8 +1153,7 @@ export class NinjaCompilationPipeline {
     const executableName = this.getNinjaExecutableName();
     const candidatePaths = [
       path.join(__dirname, 'ninja', executableName),
-      path.resolve(__dirname, '..', 'ninja', executableName),
-      path.join(process.cwd(), 'ninja', executableName)
+      path.resolve(__dirname, '..', 'ninja', executableName)
     ];
 
     for (const candidatePath of candidatePaths) {

@@ -54,16 +54,50 @@ test('public compile/preprocess/clean and their CLI refuse an existing owner bef
   assert.deepEqual(fs.readFileSync(f.marker), bytes); owner.release();
 });
 
-test('normal CLI failure releases the lease and revokes previous successful tickets', t => {
+test('normal CLI failure releases the lease and revokes delivery without discarding a preprocess artifact', t => {
   const f = fixture(t);
+  const manifestBytes = Buffer.from('{\r\n  "artifactId": "previous-compile",\r\n  "note": "精确保留字节"\r\n}\r\n');
   for (const operation of ['compile', 'preprocess']) {
-    for (const name of ['aily-artifact-manifest.json', 'aily-build-delivery.json']) fs.writeFileSync(path.join(f.build, name), 'old');
+    fs.writeFileSync(path.join(f.build, 'aily-artifact-manifest.json'), manifestBytes);
+    fs.writeFileSync(path.join(f.build, 'aily-build-delivery.json'), 'old');
     const result = invoke([operation, path.join(f.root, 'missing.ino'), '--build-path', f.build, '--log-file']);
     assert.equal(result.status, 1, result.stderr);
     assert.equal(fs.existsSync(f.marker), false);
-    assert.equal(fs.existsSync(path.join(f.build, 'aily-artifact-manifest.json')), false);
+    if (operation === 'compile') assert.equal(fs.existsSync(path.join(f.build, 'aily-artifact-manifest.json')), false);
+    else assert.deepEqual(fs.readFileSync(path.join(f.build, 'aily-artifact-manifest.json')), manifestBytes);
     assert.equal(fs.existsSync(path.join(f.build, 'aily-build-delivery.json')), false);
   }
+});
+
+test('direct preprocess success and early failure preserve exact artifact bytes while revoking delivery', async t => {
+  const f = fixture(t), manifest = path.join(f.build, 'aily-artifact-manifest.json');
+  const delivery = path.join(f.build, 'aily-build-delivery.json');
+  const manifestBytes = Buffer.from('{\r\n  "artifactId": "previous-compile",\r\n  "note": "精确保留字节"\r\n}\r\n');
+  for (const fails of [false, true]) {
+    fs.writeFileSync(manifest, manifestBytes); fs.writeFileSync(delivery, 'old');
+    const result = withBuildWorkspace(f.build, 'preprocess', async () => {
+      assert.deepEqual(fs.readFileSync(manifest), manifestBytes);
+      assert.equal(fs.existsSync(delivery), false);
+      if (fails) throw new Error('expected early preprocess failure');
+      return 'preprocessed';
+    });
+    if (fails) await assert.rejects(result, /expected early preprocess failure/);
+    else assert.equal(await result, 'preprocessed');
+    assert.deepEqual(fs.readFileSync(manifest), manifestBytes);
+    assert.equal(fs.existsSync(delivery), false); assert.equal(fs.existsSync(f.marker), false);
+  }
+});
+
+test('direct compile early failure still revokes both prior artifact and delivery', async t => {
+  const f = fixture(t), manifest = path.join(f.build, 'aily-artifact-manifest.json');
+  const delivery = path.join(f.build, 'aily-build-delivery.json');
+  fs.writeFileSync(manifest, 'previous-compile'); fs.writeFileSync(delivery, 'old');
+  await assert.rejects(withBuildWorkspace(f.build, 'compile', async () => {
+    assert.equal(fs.existsSync(manifest), false); assert.equal(fs.existsSync(delivery), false);
+    throw new Error('expected early compile failure');
+  }), /expected early compile failure/);
+  assert.equal(fs.existsSync(manifest), false); assert.equal(fs.existsSync(delivery), false);
+  assert.equal(fs.existsSync(f.marker), false);
 });
 
 test('clean empties contents while preserving the directory identity and only then releases', async t => {
@@ -79,7 +113,13 @@ test('internal preprocess reuses compile scope; unrelated calls remain exclusive
   const f = fixture(t);
   await withBuildWorkspace(f.build, 'compile', async () => {
     const bytes = fs.readFileSync(f.marker);
-    await withBuildWorkspace(f.build, 'preprocess', async () => assert.deepEqual(fs.readFileSync(f.marker), bytes));
+    const manifest = path.join(f.build, 'aily-artifact-manifest.json'), delivery = path.join(f.build, 'aily-build-delivery.json');
+    fs.writeFileSync(manifest, 'current compile phase'); fs.writeFileSync(delivery, 'current compile ticket');
+    await withBuildWorkspace(f.build, 'preprocess', async () => {
+      assert.deepEqual(fs.readFileSync(f.marker), bytes);
+      assert.equal(fs.readFileSync(manifest, 'utf8'), 'current compile phase');
+      assert.equal(fs.readFileSync(delivery, 'utf8'), 'current compile ticket');
+    });
     await assert.rejects(withBuildWorkspace(f.build, 'clean', async () => {}), /OWNER_MISMATCH/);
     assert.throws(() => acquireBuildWorkspace(f.build, 'compile'), /BUSY/);
   });
@@ -94,6 +134,23 @@ test('delegated Builder owns one child phase, not the host owner', t => {
   assert.throws(() => acquireBuildWorkspace(f.build, 'clean'), /OWNER_MISMATCH/);
   lease.release(); assert.equal(fs.existsSync(f.child), false);
   assert.deepEqual(fs.readFileSync(f.marker), parentBytes);
+});
+
+test('delegated compile and preprocess keep host-owned artifact invalidation unchanged', async t => {
+  const f = fixture(t); delegate(t, f);
+  const grant = JSON.parse(process.env[BUILDER_DELEGATION_ENV]!), parentBytes = fs.readFileSync(f.marker);
+  const manifest = path.join(f.build, 'aily-artifact-manifest.json'), delivery = path.join(f.build, 'aily-build-delivery.json');
+  fs.writeFileSync(manifest, 'host-controlled artifact'); fs.writeFileSync(delivery, 'host-controlled ticket');
+  for (const operation of ['compile', 'preprocess'] as const) {
+    process.env[BUILDER_DELEGATION_ENV] = JSON.stringify({ ...grant, operation });
+    await withBuildWorkspace(f.build, operation, async () => {
+      assert.ok(fs.existsSync(f.child));
+      assert.equal(fs.readFileSync(manifest, 'utf8'), 'host-controlled artifact');
+      assert.equal(fs.readFileSync(delivery, 'utf8'), 'host-controlled ticket');
+      assert.throws(() => acquireBuildWorkspace(f.build, operation), /BUSY/);
+    });
+    assert.equal(fs.existsSync(f.child), false); assert.deepEqual(fs.readFileSync(f.marker), parentBytes);
+  }
 });
 
 test('delegation binds workspace, operation, live owner and issuer; it cannot redirect', t => {
