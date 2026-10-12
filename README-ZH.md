@@ -234,6 +234,14 @@ aily-builder cache clear --all
 
 该行是进度协议数据，不应当作为普通构建日志显示。未输出该协议的 1.2.10 及更早版本仍可通过原始 Ninja 进度格式兼容。
 
+## 固件容量校验
+
+ESP32 使用最终 APP BIN（含镜像头、填充和签名）的实际大小，与 SDK 生成的二进制分区表比较，不使用 `upload.maximum_size` 估算。串口和 APP-only 按所选上传配方中的 APP 地址确定目标分区；其他较小 OTA 槽返回警告，非目标恢复/测试镜像不限制本次 APP。
+
+DFU/ArduinoOTA 由设备运行时选择 OTA 槽，因此固件必须能放入所有候选 OTA 槽，不包含较小的 factory 恢复镜像。APP/分区文件缺失或损坏、容量超限都会使编译失败并返回退出码 1。其他平台保留原有 section/RAM 计算方式，超限同样返回失败。只有容量检查通过后才发送最终 100% 成功事件。
+
+执行 `npm test` 可验证容量边界、不等 OTA 槽、DFU、路径别名及 CLI 失败传导。
+
 ## 贡献
 欢迎提交 Issue 和 Pull Request！
 

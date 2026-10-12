@@ -321,8 +321,6 @@ export class NinjaCompilationPipeline {
       );
 
       const outFilePath = await this.getExistingOutputFilePath(recipeRunner, artifactSnapshot);
-      this.reportProgress('complete', 100, 'Build complete', 'complete');
-
       return {
         success: true,
         outFilePath,

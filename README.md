@@ -229,6 +229,14 @@ Starting with 1.2.11, the `compile` command emits a single-line, machine-readabl
 
 `percent` is monotonic across the complete build, and only the final successful event uses `status: "complete"` with `percent: 100`. Consumers should handle this line as protocol data rather than displaying it as a regular build log. Clients can continue parsing the legacy Ninja progress format for builder 1.2.10 and earlier.
 
+## Firmware capacity checks
+
+ESP32 builds compare the final APP BIN (including image headers, padding and signatures) against the SDK-generated binary partition table, not `upload.maximum_size`. Wired and APP-only uploads use the partition at the selected upload recipe's APP address. Smaller, non-target OTA slots produce a warning; recovery and test images do not constrain another APP's upload.
+
+DFU/ArduinoOTA select an OTA slot on the device, so their image must fit every OTA candidate; a smaller factory recovery image is excluded. Missing or invalid APP/table outputs and capacity overflow fail compilation with exit code 1. Other platforms retain their existing section/RAM size calculation, with overflow also failing compilation. The final 100% success event is emitted only after capacity checks pass.
+
+Run `npm test` for capacity boundaries, unequal OTA slots, DFU, path aliases and CLI failure propagation.
+
 ## Contributing
 Issues and Pull Requests are welcome!
 

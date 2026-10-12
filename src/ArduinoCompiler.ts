@@ -9,6 +9,7 @@ import { sanitizeObjectPaths } from './utils/ShortPath';
 import { collectPackageIdentitiesFromPaths, extractPackageIdentityFromPath } from './utils/PackageIdentity';
 import { RecipeRunner, RecipeRunnerError } from './RecipeRunner';
 import type { ArduinoUploadCommand } from './ArduinoUploadCommand';
+import { readEsp32AppCapacity, type Esp32AppCapacity } from './Esp32AppCapacity';
 
 export interface ExecutableSectionSize {
   name: string;
@@ -222,6 +223,7 @@ export class ArduinoCompiler {
     let arduinoConfig: any;
     let compileConfig: any;
     let dependencies: any[];
+    let upload: ArduinoUploadCommand | undefined;
     let reusedPreprocessResult = false;
 
     // 检查是否提供了预处理结果
@@ -231,6 +233,7 @@ export class ArduinoCompiler {
       arduinoConfig = options.preprocessResult.arduinoConfig;
       compileConfig = options.preprocessResult.compileConfig;
       dependencies = options.preprocessResult.dependencies!;
+      upload = options.preprocessResult.upload;
       reusedPreprocessResult = true;
       if (options.preprocessResult.cacheIdentity && compileConfig && !compileConfig.cacheIdentity) {
         compileConfig.cacheIdentity = options.preprocessResult.cacheIdentity;
@@ -253,6 +256,7 @@ export class ArduinoCompiler {
       arduinoConfig = preprocessResult.arduinoConfig;
       compileConfig = preprocessResult.compileConfig;
       dependencies = preprocessResult.dependencies!;
+      upload = preprocessResult.upload;
       if (preprocessResult.cacheIdentity && compileConfig && !compileConfig.cacheIdentity) {
         compileConfig.cacheIdentity = preprocessResult.cacheIdentity;
       }
@@ -300,11 +304,23 @@ export class ArduinoCompiler {
     // output that actually exists instead of guessing from platform families.
     const finalOutputPath = compileResult.outFilePath;
 
+    // 6. 计算固件大小信息
+    const appCapacity = await readEsp32AppCapacity(arduinoConfig, options.buildPath, finalOutputPath, upload?.command);
+    for (const warning of appCapacity?.warnings || []) this.logger.warn(warning);
+    const firmwareSize = await this.calculateFirmwareSize(arduinoConfig, appCapacity);
     const finishedAt = Date.now();
     const totalTime = finishedAt - startTime;
     const buildTime = finishedAt - buildStartTime;
-    // 6. 计算固件大小信息
-    const firmwareSize = await this.calculateFirmwareSize(arduinoConfig);
+    const warnings = [...(compileResult.warnings || []), ...(firmwareSize.warnings || [])];
+    if (firmwareSize.errors?.length) {
+      return {
+        success: false, preprocessTime, buildTime, totalTime, firmwareSize,
+        error: firmwareSize.errors.join('\n'),
+        warnings: warnings.length ? warnings : undefined
+      };
+    }
+    // Capacity is part of compilation, not a diagnostic after "complete".
+    this.logger.progress({ stage: 'complete', percent: 100, status: 'complete', message: 'Build complete' });
 
     return {
       success: true,
@@ -313,7 +329,7 @@ export class ArduinoCompiler {
       totalTime,
       outFilePath: finalOutputPath,
       firmwareSize,
-      warnings: compileResult.warnings
+      warnings: warnings.length ? warnings : undefined
     }
   }
 
@@ -567,18 +583,18 @@ export class ArduinoCompiler {
     );
   }
 
-  async calculateFirmwareSize(arduinoConfig: any): Promise<FirmwareSizeInfo> {
+  async calculateFirmwareSize(arduinoConfig: any, appCapacity?: Esp32AppCapacity): Promise<FirmwareSizeInfo> {
     this.logger.verbose('Calculating firmware size...');
     try {
       // 获取最大尺寸配置
       const maxTextSizeString = arduinoConfig.platform['upload.maximum_size'];
       const maxDataSizeString = arduinoConfig.platform['upload.maximum_data_size'];
 
-      if (!maxTextSizeString) {
+      if (!maxTextSizeString && !appCapacity) {
         return { sections: [] };
       }
 
-      const maxTextSize = parseInt(maxTextSizeString);
+      const maxTextSize = appCapacity?.maxBytes ?? parseInt(maxTextSizeString);
       const maxDataSize = maxDataSizeString ? parseInt(maxDataSizeString) : -1;
 
       // Size is a normal platform recipe and follows the same argv/property
@@ -589,7 +605,7 @@ export class ArduinoCompiler {
         windowsHide: true
       });
       const sizeResults = await runner.runRecipes('recipe.size', '.pattern');
-      if (sizeResults.length === 0) {
+      if (sizeResults.length === 0 && !appCapacity) {
         return { sections: [] };
       }
       const output = sizeResults
@@ -597,7 +613,7 @@ export class ArduinoCompiler {
         .join('\n');
 
       // 计算各部分大小
-      const textSize = this.computeSize(arduinoConfig.platform['recipe.size.regex'], output);
+      const textSize = appCapacity?.imageBytes ?? this.computeSize(arduinoConfig.platform['recipe.size.regex'], output);
       const dataSize = this.computeSize(arduinoConfig.platform['recipe.size.regex.data'], output);
 
       if (textSize === -1) {
@@ -636,11 +652,13 @@ export class ArduinoCompiler {
       }
 
       // 检查是否超出限制
-      const warnings: string[] = [];
+      const warnings: string[] = [...(appCapacity?.warnings || [])];
       const errors: string[] = [];
 
       if (textSize > maxTextSize) {
-        const errorMsg = 'text section exceeds available space in board';
+        const errorMsg = appCapacity
+          ? `ESP32 APP image ${path.basename(appCapacity.imageFile)} is ${textSize} bytes, exceeding ${appCapacity.targetMode === 'ota' ? 'runtime OTA capacity: ' : ''}partition "${appCapacity.target.name}" at 0x${appCapacity.target.offset.toString(16)} (${maxTextSize} bytes) by ${textSize - maxTextSize} bytes. Reduce firmware size or enlarge the APP partition and rebuild.`
+          : 'text section exceeds available space in board';
         errors.push(errorMsg);
         this.logger.debug('Sketch too big!');
       }
