@@ -1,3 +1,4 @@
+import { readArduinoSketch } from './ArduinoSketchSources';
 import fs from 'fs-extra';
 import path from 'path';
 import { Logger } from './utils/Logger';
@@ -429,7 +430,7 @@ export class ArduinoCompiler {
       }
 
       // 读取原始源文件内容
-      let content = await fs.readFile(sourcePath, 'utf-8');
+      let content = isInoSource ? await readArduinoSketch(sourcePath) : await fs.readFile(sourcePath, 'utf-8');
 
       if (isInoSource) {
         // 检查是否已包含 Arduino.h

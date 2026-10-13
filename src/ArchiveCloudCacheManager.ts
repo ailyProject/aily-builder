@@ -17,12 +17,12 @@ import { Dependency } from './DependencyAnalyzer';
 import { collectPackageIdentitiesFromPaths, extractPackageIdentityFromPath } from './utils/PackageIdentity';
 import { getAilyBuilderCacheDirectory } from './utils/CacheDirectory';
 
-const CACHE_SCHEMA = 'aily.archive-cache.v2';
-const INPUT_SCHEMA = 'aily.archive-build-inputs.v2';
-const FETCH_REQUEST_SCHEMA = 'aily.archive-fetch-request.v2';
-const KEY_VERSION = 'archive-cloud-cache-v2';
-const CACHE_LAYOUT_VERSION = 'v2';
-const DEFAULT_REMOTE_BASE_URL = 'https://cache.aily.pro/v2';
+const CACHE_SCHEMA = 'aily.archive-cache.v3';
+const INPUT_SCHEMA = 'aily.archive-build-inputs.v3';
+const FETCH_REQUEST_SCHEMA = 'aily.archive-fetch-request.v3';
+const KEY_VERSION = 'archive-cloud-cache-v3';
+const CACHE_LAYOUT_VERSION = 'v3';
+const DEFAULT_REMOTE_BASE_URL = 'https://cache.aily.pro/v3';
 const DEFAULT_REMOTE_TIMEOUT_MS = 1500;
 const LIBRARY_ARCHIVE_CACHE_MIN_COMPILE_FILES = 20;
 const LIBRARY_ARCHIVE_CACHE_MIN_COMPILE_BYTES = 300 * 1024;
@@ -123,6 +123,7 @@ export class ArchiveCloudCacheManager {
   private cacheDir: string;
   private remoteDisabledForRun = false;
   private compilerVersionCache = new Map<string, string>();
+  private commandBinarySignatureCache = new Map<string, Record<string, any>>();
   private fileHashCache = new Map<string, string>();
   private packageVersion?: string;
 
@@ -302,7 +303,7 @@ export class ArchiveCloudCacheManager {
     }
 
     await this.touchEntryAccess(entryDir);
-    await this.linkOrCopy(archivePath, buildArchivePath);
+    await this.copyArchive(archivePath, buildArchivePath);
     this.logger.debug(`[ARCHIVE_CLOUD_CACHE] local hit ${target.archiveName} ${key}`);
     return {
       dependencyName: target.dependencyName,
@@ -435,7 +436,7 @@ export class ArchiveCloudCacheManager {
       }
 
       const localArchivePath = path.join(this.getEntryDir(fetch.key), fetch.archiveName);
-      await this.linkOrCopy(localArchivePath, hit.buildArchivePath);
+      await this.copyArchive(localArchivePath, hit.buildArchivePath);
       this.logger.debug(`[ARCHIVE_CLOUD_CACHE] remote download ready ${fetch.archiveName} ${fetch.key}`);
 
       return {
@@ -694,11 +695,23 @@ export class ArchiveCloudCacheManager {
     const cppCommand = compiler.cpp || '';
     const cCommand = compiler.c || '';
     const arCommand = compiler.ar || '';
+    const [cppBinary, cBinary, arBinary] = await Promise.all([
+      this.getCommandBinarySignature(cppCommand),
+      this.getCommandBinarySignature(cCommand),
+      this.getCommandBinarySignature(arCommand)
+    ]);
 
     return {
+      host: {
+        platform: process.platform,
+        arch: process.arch
+      },
       c: this.getCommandIdentity(cCommand),
       cpp: this.getCommandIdentity(cppCommand),
       ar: this.getCommandIdentity(arCommand),
+      cBinary,
+      cppBinary,
+      arBinary,
       cppVersion: await this.getCommandVersion(cppCommand),
       cVersion: await this.getCommandVersion(cCommand),
       arVersion: await this.getCommandVersion(arCommand)
@@ -869,11 +882,7 @@ export class ArchiveCloudCacheManager {
     const artifactHash = await this.hashFile(sourceArchivePath);
     const stat = await fs.stat(sourceArchivePath);
     await this.writeEntry(target, inputs, key, origin, artifactHash, stat.size, async (archivePath) => {
-      try {
-        await fs.link(sourceArchivePath, archivePath);
-      } catch {
-        await fs.copy(sourceArchivePath, archivePath);
-      }
+      await fs.copy(sourceArchivePath, archivePath);
     });
   }
 
@@ -954,14 +963,10 @@ export class ArchiveCloudCacheManager {
     }
   }
 
-  private async linkOrCopy(sourcePath: string, targetPath: string): Promise<void> {
+  private async copyArchive(sourcePath: string, targetPath: string): Promise<void> {
     await fs.ensureDir(path.dirname(targetPath));
     await fs.remove(targetPath).catch(() => undefined);
-    try {
-      await fs.link(sourcePath, targetPath);
-    } catch {
-      await fs.copy(sourcePath, targetPath);
-    }
+    await fs.copy(sourcePath, targetPath);
   }
 
   private async touchEntryAccess(entryDir: string): Promise<void> {
@@ -1081,6 +1086,61 @@ export class ArchiveCloudCacheManager {
       this.compilerVersionCache.set(command, '');
       return '';
     }
+  }
+
+  private async getCommandBinarySignature(command: string): Promise<Record<string, any>> {
+    if (!command) return { sha256: '', size: 0 };
+    if (this.commandBinarySignatureCache.has(command)) {
+      return this.commandBinarySignatureCache.get(command)!;
+    }
+
+    const resolved = await this.resolveCommandPath(command);
+    if (!resolved) {
+      const missing = { sha256: '', size: 0 };
+      this.commandBinarySignatureCache.set(command, missing);
+      return missing;
+    }
+
+    try {
+      const stat = await fs.stat(resolved);
+      const signature = {
+        sha256: await this.hashFile(resolved),
+        size: stat.size
+      };
+      this.commandBinarySignatureCache.set(command, signature);
+      return signature;
+    } catch {
+      const unreadable = { sha256: '', size: 0 };
+      this.commandBinarySignatureCache.set(command, unreadable);
+      return unreadable;
+    }
+  }
+
+  private async resolveCommandPath(command: string): Promise<string | null> {
+    const cleaned = command.replace(/^["']|["']$/g, '');
+    if (!cleaned) return null;
+
+    const hasDirectory = path.dirname(cleaned) !== '.';
+    const searchDirectories = hasDirectory
+      ? ['']
+      : (this.createToolEnv().PATH || '').split(path.delimiter).filter(Boolean);
+    const extensions = process.platform === 'win32' && !path.extname(cleaned)
+      ? (process.env['PATHEXT'] || '.EXE;.CMD;.BAT;.COM').split(';').filter(Boolean)
+      : [''];
+
+    for (const directory of searchDirectories) {
+      for (const extension of extensions) {
+        const candidate = path.resolve(directory || process.cwd(), `${cleaned}${extension}`);
+        try {
+          const stat = await fs.stat(candidate);
+          if (stat.isFile()) return candidate;
+        } catch {
+          // Try the next PATH entry or executable extension.
+        }
+      }
+    }
+
+    return null;
   }
 
   private getCommandIdentity(command: string): string {

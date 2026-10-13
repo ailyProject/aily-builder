@@ -1,3 +1,5 @@
+import { resolveArduinoSketchLibraries } from './ArduinoSketchDependencies';
+import { collectArduinoSketchTabs, collectArduinoSketchSources } from './ArduinoSketchSources';
 /**
  * DependencyAnalyzer resolves Arduino sketch, core, variant, and library
  * dependencies. Library internals are routed through LibraryIndexCache so
@@ -238,6 +240,13 @@ export class DependencyAnalyzer {
     // example STM32's sketch/requiredLibraries.cpp. Persist them as a sketch
     // dependency so the compile phase consumes the exact files analyzed here.
     const generatedSketchSources = await collectGeneratedSketchSources();
+    const sketchSources = sketchPath ? await collectArduinoSketchSources(sketchPath) : [];
+    if (sketchSources.length) {
+      this.dependencyList.set('__arduino_sketch__', {
+        name: '__arduino_sketch__', path: path.dirname(sketchPath!), type: 'sketch',
+        includes: sketchSources, others: []
+      });
+    }
     const generatedSketchSourceRoot = getGeneratedSketchSourceRoot();
     if (generatedSketchSourceRoot && generatedSketchSources.length > 0) {
       this.dependencyList.set(GENERATED_SKETCH_DEPENDENCY_NAME, {
@@ -255,15 +264,30 @@ export class DependencyAnalyzer {
     // Generated sources are separate translation units, so retain the platform
     // macro state from before the main sketch mutates its own analysis map.
     const generatedSourceMacros = new Map(this.macroDefinitions);
-    const mainIncludeFiles = await analyzeFile(sketchPath, this.macroDefinitions, {
-      hasInclude: includePath => this.canResolveKnownInclude(includePath, sketchPath)
-    });
-
+    const sketchTabs = await collectArduinoSketchTabs(sketchPath!);
+    if (sketchSources.length > 0 || sketchTabs.length > 1) {
+      const libraries = await resolveArduinoSketchLibraries(arduinoConfig.platform, sketchPath!, this.libraryMap,
+        root => this.scanDirectoryRecursive(root, ['.cpp', '.cc', '.cxx', '.c', '.S', '.s']), generatedSketchSources);
+      for (const library of libraries) {
+        if (arduinoConfig.platform['compiler.libraries.ldflags'] && process.env['BUILD_MCU']) {
+          library.others = await glob('*.a', {
+            cwd: path.join(library.path, process.env['BUILD_MCU']!), absolute: true, nodir: true,
+          });
+        }
+        this.dependencyList.set(library.name, library);
+      }
+      return Array.from(this.dependencyList.values());
+    }
     // 5. 递归分析依赖，resolveA用于确定是否处理预编译库
     let resolveA = arduinoConfig.platform['compiler.libraries.ldflags'] ? true : false;
-    await this.resolveDependencies(mainIncludeFiles, resolveA);
+    for (const tab of sketchTabs) {
+      const includes = await analyzeFile(tab, this.macroDefinitions, {
+        hasInclude: includePath => this.canResolveKnownInclude(includePath, tab)
+      });
+      await this.resolveDependencies(includes, resolveA);
+    }
 
-    for (const generatedSource of generatedSketchSources) {
+    for (const generatedSource of [...sketchSources, ...generatedSketchSources]) {
       const translationUnitMacros = new Map(generatedSourceMacros);
       const includeFiles = await analyzeFile(generatedSource, translationUnitMacros, {
         hasInclude: includePath => this.canResolveKnownInclude(includePath, generatedSource)

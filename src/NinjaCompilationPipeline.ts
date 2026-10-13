@@ -1089,6 +1089,8 @@ export class NinjaCompilationPipeline {
 
       switch (ext) {
         case '.ino':
+        case '.cc':
+        case '.cxx':
         case '.cpp':
           compiler = this.compileConfig.compiler.cpp;
           argsTemplate = this.compileConfig.args.cpp;
@@ -1394,6 +1396,8 @@ export class NinjaCompilationPipeline {
         // 确定编译器和参数模板
         switch (ext) {
           case '.ino':
+          case '.cc':
+          case '.cxx':
           case '.cpp':
             compiler = this.compileConfig.compiler.cpp;
             argsTemplate = this.compileConfig.args.cpp;
@@ -1474,6 +1478,8 @@ export class NinjaCompilationPipeline {
         // 确定编译器和参数模板
         switch (ext) {
           case '.ino':
+          case '.cc':
+          case '.cxx':
           case '.cpp':
             compiler = this.compileConfig.compiler.cpp;
             argsTemplate = this.compileConfig.args.cpp;

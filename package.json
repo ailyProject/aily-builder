@@ -15,7 +15,7 @@
   ],
   "scripts": {
     "build": "rimraf dist && tsc",
-    "test": "node --import tsx --test test/esp32-app-capacity.test.ts test/firmware-capacity-integration.test.ts",
+    "test": "npm run build && node --import tsx --test test/*.test.js test/*.test.ts",
     "bundle": "npm run build && node bundle.js --minify",
     "start": "ts-node main.ts",
     "clean": "rimraf dist",
