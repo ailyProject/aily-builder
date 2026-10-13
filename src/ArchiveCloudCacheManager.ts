@@ -17,12 +17,12 @@ import { Dependency } from './DependencyAnalyzer';
 import { collectPackageIdentitiesFromPaths, extractPackageIdentityFromPath } from './utils/PackageIdentity';
 import { getAilyBuilderCacheDirectory } from './utils/CacheDirectory';
 
-const CACHE_SCHEMA = 'aily.archive-cache.v3';
-const INPUT_SCHEMA = 'aily.archive-build-inputs.v3';
-const FETCH_REQUEST_SCHEMA = 'aily.archive-fetch-request.v3';
-const KEY_VERSION = 'archive-cloud-cache-v3';
-const CACHE_LAYOUT_VERSION = 'v3';
-const DEFAULT_REMOTE_BASE_URL = 'https://cache.aily.pro/v3';
+const CACHE_SCHEMA = 'aily.archive-cache.v2';
+const INPUT_SCHEMA = 'aily.archive-build-inputs.v2';
+const FETCH_REQUEST_SCHEMA = 'aily.archive-fetch-request.v2';
+const KEY_VERSION = 'archive-cloud-cache-v2';
+const CACHE_LAYOUT_VERSION = 'v2';
+const DEFAULT_REMOTE_BASE_URL = 'https://cache.aily.pro/v2';
 const DEFAULT_REMOTE_TIMEOUT_MS = 1500;
 const LIBRARY_ARCHIVE_CACHE_MIN_COMPILE_FILES = 20;
 const LIBRARY_ARCHIVE_CACHE_MIN_COMPILE_BYTES = 300 * 1024;
