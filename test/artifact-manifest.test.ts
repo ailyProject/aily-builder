@@ -7,13 +7,15 @@ import {
   resolveArtifactTargetMarkers,
   resolveCompileToolVersions,
 } from '../src/ArduinoCompiler';
-import { emitSimulationArtifactManifest } from '../src/ArtifactManifest';
+import { emitSimulationArtifactManifest, type EmitArtifactManifestOptions } from '../src/ArtifactManifest';
 import { applySimulationDebugProfile } from '../src/SimulationDebugProfile';
 import { projectPlatformBuildProperties } from '../src/PlatformPropertyProjector';
 
 async function main(): Promise<void> {
   assert.deepEqual(projectPlatformBuildProperties({ version: '3.3.1', 'runtime.platform.path': '/sdk', unused: 'discard' }),
     { version: '3.3.1', 'runtime.platform.path': '/sdk' });
+  assert.deepEqual(projectPlatformBuildProperties({ 'compiler.sdk.path': '/resolved/chip-sdk', unused: 'discard' }),
+    { 'compiler.sdk.path': '/resolved/chip-sdk' });
   const debugCompileConfig = applySimulationDebugProfile({
     args: {
       c: '-c -Os -flto',
@@ -123,6 +125,8 @@ async function main(): Promise<void> {
       'include',
       'esp_idf_version.h',
     );
+    const chipSdkPath = path.join(root, 'esp32-chip-sdk');
+    const chipIdfVersionHeaderPath = path.join(chipSdkPath, 'include', 'esp_common', 'include', 'esp_idf_version.h');
     const manifestPath = path.join(root, 'aily-artifact-manifest.json');
     const sourceMapPath = path.join(root, 'aily-block-source-map.json');
     const sketch = 'void setup() {}\\nvoid loop() {}\\n';
@@ -139,6 +143,7 @@ async function main(): Promise<void> {
       mkdir(path.dirname(bootApp0SourcePath), { recursive: true }),
       mkdir(path.dirname(idfVersionHeaderPath), { recursive: true }),
       mkdir(path.dirname(c3IdfVersionHeaderPath), { recursive: true }),
+      mkdir(path.dirname(chipIdfVersionHeaderPath), { recursive: true }),
     ]);
     await Promise.all([
       writeFile(sketchPath, sketch),
@@ -161,6 +166,9 @@ async function main(): Promise<void> {
       writeFile(bootloaderPath, bootloader),
       writeFile(partitionsPath, partitions),
       writeFile(applicationPath, application),
+      // Newer Arduino-ESP32 recipes also copy this official upload input into
+      // the build directory. It is OTA data, never the application binary.
+      writeFile(path.join(root, 'boot_app0.bin'), bootApp0),
       writeFile(bootApp0SourcePath, bootApp0),
       writeFile(idfVersionHeaderPath, [
         '#define ESP_IDF_VERSION_MAJOR 5',
@@ -172,6 +180,12 @@ async function main(): Promise<void> {
         '#define ESP_IDF_VERSION_MAJOR 5',
         '#define ESP_IDF_VERSION_MINOR 5',
         '#define ESP_IDF_VERSION_PATCH 1',
+        '',
+      ].join('\n')),
+      writeFile(chipIdfVersionHeaderPath, [
+        '#define ESP_IDF_VERSION_MAJOR 5',
+        '#define ESP_IDF_VERSION_MINOR 5',
+        '#define ESP_IDF_VERSION_PATCH 4',
         '',
       ].join('\n')),
       writeFile(sdkconfigPath, 'CONFIG_ESPTOOLPY_FLASHSIZE="16MB"\n'),
@@ -193,7 +207,7 @@ async function main(): Promise<void> {
       })),
     ]);
 
-    const manifest = await emitSimulationArtifactManifest({
+    const emitOptions: EmitArtifactManifestOptions = {
       buildPath: root,
       sketchPath,
       board: 'esp32:esp32:XIAO_ESP32S3',
@@ -208,7 +222,7 @@ async function main(): Promise<void> {
         'build.flash_mode': 'dio',
         'build.boot': 'qio',
         'build.img_freq': '80m',
-        'runtime.tools.esp32-arduino-libs.path': esp32ArduinoLibsPath,
+        'compiler.sdk.path': path.join(esp32ArduinoLibsPath, 'esp32s3'),
         'recipe.hooks.objcopy.postobjcopy.3.pattern_args': [
           '--chip esp32s3 merge_bin --fill-flash-size 1MB -o "sketch.merged.bin"',
           '0x0 "sketch.bootloader.bin"',
@@ -231,7 +245,8 @@ async function main(): Promise<void> {
       },
       primaryOutputPath: mergedPath,
       manifestPath,
-    });
+    };
+    const manifest = await emitSimulationArtifactManifest(emitOptions);
 
     assert.equal(manifest.schemaVersion, 1);
     assert.equal(manifest.kind, 'aily-build-artifact');
@@ -313,7 +328,10 @@ async function main(): Promise<void> {
       manifest.debug?.instrumentationPath,
       'aily-debug-instrumentation.json',
     );
-    assert.equal(manifest.files.length, 11);
+    assert.equal(manifest.files.length, 12);
+    assert.deepEqual(manifest.files.filter(file => file.role === 'application').map(file => file.path), ['sketch.bin']);
+    assert.deepEqual(manifest.files.filter(file => file.role === 'ota-data-initializer').map(file => file.path),
+      ['aily-boot-app0.bin', 'boot_app0.bin']);
     assert.match(manifest.artifactId, /^[a-f0-9]{64}$/);
     const sourceSnapshot = manifest.files.find(
       (file) => file.role === 'debug-source',
@@ -387,7 +405,7 @@ async function main(): Promise<void> {
         'build.flash_mode': 'dio',
         'build.boot': 'qio',
         'build.img_freq': '80m',
-        'runtime.tools.esp32-arduino-libs.path': esp32ArduinoLibsPath,
+        'compiler.sdk.path': path.join(esp32ArduinoLibsPath, 'esp32c3'),
         'recipe.hooks.objcopy.postobjcopy.3.pattern_args': [
           '--chip esp32c3 merge-bin --pad-to-size 1MB -o "sketch.merged.bin"',
           '0x0 "sketch.bootloader.bin"',
@@ -418,6 +436,36 @@ async function main(): Promise<void> {
         source: 'toolVersions.esp-rv32',
       },
     });
+
+    const chipSdkManifest = await emitSimulationArtifactManifest({ ...emitOptions,
+      platformProperties: { ...emitOptions.platformProperties,
+        version: '3.3.10', 'compiler.sdk.path': chipSdkPath,
+        // The compiler-resolved root wins. A legacy tool root must not be
+        // consulted, nor may the MCU be appended to a chip-specific package.
+        'runtime.tools.esp32-arduino-libs.path': esp32ArduinoLibsPath,
+      },
+    });
+    assert.equal(chipSdkManifest.build.environment?.arduinoCore.version, '3.3.10');
+    assert.equal(chipSdkManifest.build.environment?.espIdf.version, '5.5.4');
+    for (const sdkRoot of [undefined, 'relative-sdk', '{tools.esp32-arduino-libs.path}', path.join(root, 'missing-sdk')]) {
+      await assert.rejects(emitSimulationArtifactManifest({ ...emitOptions,
+        platformProperties: { ...emitOptions.platformProperties,
+          'compiler.sdk.path': sdkRoot as string,
+          'runtime.tools.esp32-arduino-libs.path': esp32ArduinoLibsPath,
+        },
+      }), /resolved compiler.sdk.path|cannot read esp_idf_version.h/u);
+    }
+
+    await writeFile(applicationPath, Buffer.from([0xe9, 0x04, 0x05, 0xff]));
+    await assert.rejects(emitSimulationArtifactManifest(emitOptions),
+      /merged image does not contain the declared application segment/u);
+    await writeFile(applicationPath, application);
+    await assert.rejects(emitSimulationArtifactManifest({ ...emitOptions,
+      platformProperties: { ...emitOptions.platformProperties,
+        'recipe.hooks.objcopy.postobjcopy.3.pattern_args':
+          `${emitOptions.platformProperties['recipe.hooks.objcopy.postobjcopy.3.pattern_args']} 0x20000 "other.bin"`,
+      },
+    }), /merge recipe contains duplicate application segments/u);
     console.log('artifact manifest contract: ok');
   } finally {
     await rm(root, { recursive: true, force: true });

@@ -88,6 +88,24 @@ export function resolveCompileToolVersions(
   };
 }
 
+const STM32_F103_C8_CB_VARIANT = 'STM32F1xx/F103C8T_F103CB(T-U)';
+const STM32_F103_SELECTIONS = [
+  { mcu: 'STM32F103C8', compilerFamily: 'STM32F103xB', board: /^(?:[A-Z0-9]+_)*F103C8(?:T[6-7X])?$/u,
+    flash: '65536', ram: '20480', variant: STM32_F103_C8_CB_VARIANT },
+  { mcu: 'STM32F103CB', compilerFamily: 'STM32F103xB', board: /^(?:[A-Z0-9]+_)*F103CBT[6-7X]$/u,
+    flash: '131072', ram: '20480', variant: STM32_F103_C8_CB_VARIANT },
+  { mcu: 'STM32F103RB', compilerFamily: 'STM32F103xB', board: /^(?:[A-Z0-9]+_)*F103RBT[6-7X]$/u,
+    flash: '131072', ram: '20480', variant: 'STM32F1xx/F103R(8-B)T' },
+  { mcu: 'STM32F103RC', compilerFamily: 'STM32F103xE', board: /^(?:[A-Z0-9]+_)*F103RCT[6-7X]$/u,
+    flash: '262144', ram: '49152', variant: 'STM32F1xx/F103R(C-D-E)T' },
+  { mcu: 'STM32F103RE', compilerFamily: 'STM32F103xE', board: /^(?:[A-Z0-9]+_)*F103RET[6-7X]$/u,
+    flash: '524288', ram: '65536', variant: 'STM32F1xx/F103R(C-D-E)T' },
+  { mcu: 'STM32F103VC', compilerFamily: 'STM32F103xE', board: /^(?:[A-Z0-9]+_)*F103VCT[6-7X]$/u,
+    flash: '262144', ram: '49152', variant: 'STM32F1xx/F103V(C-D-E)(H-T)' },
+  { mcu: 'STM32F103ZE', compilerFamily: 'STM32F103xE', board: /^(?:[A-Z0-9]+_)*F103ZET[6-7X]$/u,
+    flash: '524288', ram: '65536', variant: 'STM32F1xx/F103Z(C-D-E)(H-T)' },
+] as const;
+
 export function resolveArtifactTargetMarkers(
   board: string,
   boardProperties: Record<string, string> = {},
@@ -95,11 +113,25 @@ export function resolveArtifactTargetMarkers(
   const architecture = board.split(':')[1]?.trim().toLowerCase();
   if (architecture === 'stm32') {
     const boardId = boardProperties['build.board']?.trim();
-    const mcu = boardProperties['build.product_line']?.trim();
+    let mcu = boardProperties['build.product_line']?.trim();
     if (!boardId || !mcu) {
       throw new Error(
         'STM32 simulation Artifact requires resolved build.board and build.product_line markers.',
       );
+    }
+    // STM32's xB/xE compiler families cover multiple packages. Preserve each
+    // original family in resolved build facts, but publish an exact chip/package
+    // identity only when the SDK chip token, variant and capacities agree.
+    // This consumes compile configuration, never the user-facing board name.
+    const chip = STM32_F103_SELECTIONS.find(value => value.compilerFamily === mcu && value.board.test(boardId));
+    if (chip) {
+      if (boardProperties['build.mcu'] !== 'cortex-m3'
+        || boardProperties['build.variant'] !== chip.variant
+        || boardProperties['upload.maximum_size'] !== chip.flash
+        || boardProperties['upload.maximum_data_size'] !== chip.ram) {
+        throw new Error(`${chip.mcu} chip selection conflicts with resolved variant or memory capacities.`);
+      }
+      mcu = chip.mcu;
     }
     return { boardId, mcu };
   }

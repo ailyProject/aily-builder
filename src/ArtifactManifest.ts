@@ -234,7 +234,7 @@ function classifyArtifact(fileName: string): ArtifactFileRole | null {
   if (lowerName === 'aily-debug-instrumentation.json') {
     return 'debug-instrumentation';
   }
-  if (lowerName === 'aily-boot-app0.bin') return 'ota-data-initializer';
+  if (lowerName === 'aily-boot-app0.bin' || lowerName === 'boot_app0.bin') return 'ota-data-initializer';
   if (lowerName.endsWith('.merged.bin')) return 'merged-flash';
   if (lowerName.endsWith('.bootloader.bin') || lowerName === 'bootloader.bin') return 'bootloader';
   if (lowerName.endsWith('.partitions.bin') || lowerName === 'partitions.bin') return 'partitions';
@@ -763,15 +763,13 @@ async function copyEsp32BootApp0(
 
 async function readEspIdfVersion(
   platformProperties: Record<string, string>,
-  mcu: string,
 ): Promise<string> {
-  const librariesPath = platformProperties['runtime.tools.esp32-arduino-libs.path'];
-  if (!librariesPath) {
-    throw new Error('ESP32 Artifact requires the resolved esp32-arduino-libs path.');
+  const sdkPath = platformProperties['compiler.sdk.path']?.trim();
+  if (!sdkPath || !path.isAbsolute(sdkPath) || /[{}]/u.test(sdkPath)) {
+    throw new Error('ESP32 Artifact requires the resolved compiler.sdk.path.');
   }
   const headerPath = path.resolve(
-    librariesPath,
-    mcu,
+    sdkPath,
     'include',
     'esp_common',
     'include',
@@ -822,7 +820,8 @@ async function createEsp32BuildEnvironment(
     },
     espIdf: {
       name: 'esp-idf',
-      version: await readEspIdfVersion(platformProperties, target.mcu),
+      version: await readEspIdfVersion(platformProperties),
+      // Stable logical source label, not an actual tool-package installation path.
       source: 'esp32-arduino-libs/esp_idf_version.h',
     },
     toolchain: {
