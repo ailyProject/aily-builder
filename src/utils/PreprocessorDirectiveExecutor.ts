@@ -33,6 +33,7 @@ export type PreprocessorExecutionDiagnosticCode =
     | 'malformed-conditional'
     | 'malformed-define'
     | 'malformed-undef'
+    | 'extra-undef-tokens'
     | 'malformed-include'
     | 'unclosed-conditional';
 
@@ -551,10 +552,17 @@ export function executeDirectiveTape(
         }
 
         if (opcode === PreprocessorDirectiveOpcode.Undef) {
-            const macroName = parseSingleMacroName(getPayload(tape, index));
+            const payload = getPayload(tape, index).trim();
+            // GCC/Clang undefine the first identifier and diagnose extra tokens as
+            // a warning (including function-like spellings used by libraries).
+            // Do not truncate unsupported identifier extensions into another name.
+            const macroName = /^([A-Za-z_][A-Za-z0-9_]*)(?=[^\w$\\\u0080-\uFFFF]|$)/.exec(payload)?.[1];
             if (!macroName) {
                 requireFallback('malformed-undef', 'Unable to parse active #undef', index);
             } else {
+                if (payload.slice(macroName.length).trim()) {
+                    report('extra-undef-tokens', 'Extra tokens after #undef macro name are ignored', index, 'warning');
+                }
                 defines.set(macroName, { name: macroName, isDefined: false });
             }
             continue;
