@@ -39,10 +39,10 @@ export function parseBoardMenuPropertyKey(key: string): BoardMenuPropertyKey | u
  *
  * Only keys beginning with `<boardId>.` are returned and that prefix is
  * removed. When a truthy build property explicitly selects a menu, only that
- * exact, case-sensitive option is retained. An invalid explicit option thus
- * removes every standard entry for that menu, matching the parser's existing
- * filtering behavior. Property insertion order is preserved and neither
- * input object is modified.
+ * exact, case-sensitive option is retained. Invalid explicit menu values are
+ * rejected before filtering, so a typo cannot silently remove a menu and leave
+ * the board's base build flags active. Property insertion order is preserved
+ * and neither input object is modified.
  */
 export function selectBoardProperties(
     boardPropertiesWithBoardPrefix: Readonly<BoardProperties>,
@@ -52,12 +52,21 @@ export function selectBoardProperties(
     const boardPrefix = `${boardId}.`;
     const selected: BoardProperties = {};
 
+    // Collect this board's complete choices before discarding unselected ones.
+    const available: BoardProperties = {};
     for (const [key, value] of Object.entries(boardPropertiesWithBoardPrefix)) {
-        if (!key.startsWith(boardPrefix)) {
-            continue;
+        if (key.startsWith(boardPrefix)) {
+            available[key.substring(boardPrefix.length)] = value;
         }
+    }
+    for (const [menuType, options] of collectMenuOptions(available)) {
+        const requested = buildProperties[menuType];
+        if (requested !== undefined && !options.includes(requested)) {
+            throw new Error(`Invalid board option ${menuType}=${JSON.stringify(requested)} for ${boardId}. Valid options: ${options.join(', ')}`);
+        }
+    }
 
-        const configKey = key.substring(boardPrefix.length);
+    for (const [configKey, value] of Object.entries(available)) {
         const menu = configKey.startsWith('menu.')
             ? parseBoardMenuPropertyKey(configKey)
             : undefined;
