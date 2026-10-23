@@ -1,5 +1,7 @@
 import os from 'node:os';
 import path from 'node:path';
+import { access, realpath, stat } from 'node:fs/promises';
+import { constants } from 'node:fs';
 import { glob } from 'glob';
 import type { ArduinoProperties } from './ArduinoPropertyFile';
 import { expandArduinoProperty } from './ArduinoPropertyResolver';
@@ -29,8 +31,18 @@ export interface ResolveArduinoToolPathsOptions extends ArduinoToolLocation {
     boardProperties?: Readonly<ArduinoProperties>;
     /** Explicit tool versions keyed by versionless tool name. */
     toolVersions?: Readonly<ArduinoProperties>;
-    /** Receives discovery errors while preserving already resolved paths. */
+    /** Receives discovery errors; already-resolved paths are preserved unless a selected tool is unreadable. */
     onWarning?: (message: string) => void;
+}
+
+/** A selected tool cannot safely be used; discovery must not report partial success. */
+export class ArduinoSelectedToolPathError extends Error {
+    readonly code = 'ARDUINO_SELECTED_TOOL_PATH_UNREADABLE';
+
+    constructor(readonly selectedPath: string, readonly cause: unknown) {
+        super(`The selected Arduino tool is unavailable: ${selectedPath}`);
+        this.name = 'ArduinoSelectedToolPathError';
+    }
 }
 
 /**
@@ -118,7 +130,8 @@ export function resolveArduinoToolsBasePath(location: ArduinoToolLocation): stri
  * fuzzy names in the `name@version` layout, then fuzzy traditional directory
  * names. Within a matching pattern, the existing version-selection and
  * first-item fallback semantics are preserved. Returns `null` when no
- * candidate exists.
+ * candidate exists. A selected directory must exist and be readable; its
+ * physical location avoids repeated junction traversal during compilation.
  */
 export async function findArduinoToolPath(
     options: FindArduinoToolPathOptions
@@ -137,7 +150,16 @@ export async function findArduinoToolPath(
         const candidates = await glob(toGlobPath(pattern), { absolute: true });
         const match = selectToolMatch(candidates, options.version);
         if (match) {
-            return match;
+            try {
+                const physicalPath = await realpath(match);
+                await access(physicalPath, constants.R_OK);
+                if (!(await stat(physicalPath)).isDirectory()) {
+                    throw new TypeError('The selected Arduino tool is not a directory.');
+                }
+                return physicalPath;
+            } catch (error) {
+                throw new ArduinoSelectedToolPathError(match, error);
+            }
         }
     }
 
@@ -194,6 +216,9 @@ export async function resolveArduinoToolPaths(
         }
     } catch (error) {
         options.onWarning?.(`解析工具路径失败: ${error}`);
+        if (error instanceof ArduinoSelectedToolPathError) {
+            throw error;
+        }
     }
 
     return result;

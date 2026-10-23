@@ -1,4 +1,6 @@
 import path from 'node:path';
+import { access, realpath } from 'node:fs/promises';
+import { constants } from 'node:fs';
 import { glob } from 'glob';
 import type { ArduinoProperties } from './ArduinoPropertyFile';
 import { toGlobPath } from './ArduinoToolResolver';
@@ -54,19 +56,24 @@ export interface LegacyArduinoEnvironmentOptions {
 /**
  * Locate `platform.txt` and `boards.txt` for one Arduino platform.
  *
- * An explicit SDK directory is used directly. Otherwise the standard
+ * An explicit SDK directory selects the platform. Otherwise the standard
  * Arduino15 package layout is searched and the first glob result is selected,
  * preserving the parser's existing discovery order. The filesystem is read
- * but never modified, and the resolved SDK directory is returned explicitly.
+ * but never modified. Selected filesystem paths are resolved to their physical
+ * locations so compiler header reads do not repeatedly traverse junctions.
  */
 export async function resolveArduinoPlatformFiles(
   options: ResolveArduinoPlatformFilesOptions
 ): Promise<ArduinoPlatformFiles> {
   if (options.sdkPath) {
+    const sdkPath = await realpath(options.sdkPath);
+    const platformTxtPath = path.join(sdkPath, 'platform.txt');
+    const boardsTxtPath = path.join(sdkPath, 'boards.txt');
+    await Promise.all([access(platformTxtPath, constants.R_OK), access(boardsTxtPath, constants.R_OK)]);
     return {
-      sdkPath: options.sdkPath,
-      platformTxtPath: path.join(options.sdkPath, 'platform.txt'),
-      boardsTxtPath: path.join(options.sdkPath, 'boards.txt')
+      sdkPath,
+      platformTxtPath,
+      boardsTxtPath
     };
   }
 
@@ -81,12 +88,18 @@ export async function resolveArduinoPlatformFiles(
     glob(toGlobPath(path.join(hardwarePath, '**', 'platform.txt')), { absolute: true }),
     glob(toGlobPath(path.join(hardwarePath, '**', 'boards.txt')), { absolute: true })
   ]);
-  const platformTxtPath = platformFiles[0];
+  if (!platformFiles[0] || !boardsFiles[0]) {
+    throw new Error(`Arduino platform metadata is unavailable: ${options.packageName}:${options.platformName}`);
+  }
+  const [platformTxtPath, boardsTxtPath] = await Promise.all([
+    realpath(platformFiles[0]), realpath(boardsFiles[0])
+  ]);
+  await Promise.all([access(platformTxtPath, constants.R_OK), access(boardsTxtPath, constants.R_OK)]);
 
   return {
     sdkPath: path.dirname(platformTxtPath),
     platformTxtPath,
-    boardsTxtPath: boardsFiles[0]
+    boardsTxtPath
   };
 }
 
