@@ -31,6 +31,23 @@ async function main(): Promise<void> {
     debugCompileConfig,
   );
 
+  const sourceRoot = path.join(os.tmpdir(), 'aily source root');
+  const originalCompileConfig = { args: { c: '-c -Os', cpp: '-c -Os', s: '-c' } };
+  const portableDebug = applySimulationDebugProfile(originalCompileConfig, sourceRoot);
+  const sourceMapping = `"-fdebug-prefix-map=${path.resolve(sourceRoot)}=/source"`;
+  assert.ok(portableDebug.args.c.endsWith(sourceMapping));
+  assert.ok(portableDebug.args.cpp.endsWith(sourceMapping));
+  assert.ok(!portableDebug.args.s.includes('-fdebug-prefix-map='));
+  assert.deepEqual(applySimulationDebugProfile(portableDebug, sourceRoot), portableDebug);
+  assert.deepEqual(originalCompileConfig, { args: { c: '-c -Os', cpp: '-c -Os', s: '-c' } });
+  const dollarRoot = sourceRoot + '$literal';
+  const dollarMapping = applySimulationDebugProfile(originalCompileConfig, dollarRoot).args.cpp;
+  assert.ok(dollarMapping.includes(process.platform === 'win32' ? '$$literal' : '\\$$literal'));
+  for (const invalid of ['', 'relative/source', sourceRoot + '\n', sourceRoot + '=foreign',
+    sourceRoot + '  two-spaces', sourceRoot + '\u00a0non-breaking-space', '/' + 'x'.repeat(4096)]) {
+    assert.throws(() => applySimulationDebugProfile(originalCompileConfig, invalid), /source root/u);
+  }
+
   assert.deepEqual(
     resolveArtifactTargetMarkers('STMicroelectronics:stm32:Disco', {
       'build.board': 'DISCO_F407VG',

@@ -379,7 +379,7 @@ export class ArduinoCompiler {
     const buildStartTime = Date.now();
 
     if (options.simulationDebug) {
-      compileConfig = applySimulationDebugProfile(compileConfig);
+      compileConfig = applySimulationDebugProfile(compileConfig, path.dirname(path.resolve(options.sketchPath)));
       this.logger.info('Applied simulation source-debug compile profile.');
     }
 
