@@ -23,6 +23,7 @@ export interface ResolvedBoardMenus {
  */
 export function parseBoardMenuPropertyKey(key: string): BoardMenuPropertyKey | undefined {
     const match = /^menu\.([^.]+)\.([^.]+)(?:\.(.*))?$/.exec(key);
+
     if (!match) {
         return undefined;
     }
@@ -58,6 +59,7 @@ export function selectBoardProperties(
         }
 
         const configKey = key.substring(boardPrefix.length);
+
         const menu = configKey.startsWith('menu.')
             ? parseBoardMenuPropertyKey(configKey)
             : undefined;
@@ -66,6 +68,7 @@ export function selectBoardProperties(
             if (menu.option === buildProperties[menu.menuType]) {
                 selected[configKey] = value;
             }
+
             continue;
         }
 
@@ -80,15 +83,19 @@ function collectMenuOptions(boardProperties: Readonly<BoardProperties>): Map<str
 
     for (const key of Object.keys(boardProperties)) {
         const menu = parseBoardMenuPropertyKey(key);
+
         if (!menu) {
             continue;
         }
 
         let options = menuOptions.get(menu.menuType);
+
         if (!options) {
             options = [];
+
             menuOptions.set(menu.menuType, options);
         }
+
         if (!options.includes(menu.option)) {
             options.push(menu.option);
         }
@@ -105,6 +112,7 @@ function applyMenuOption(
 ): void {
     for (const [key, value] of Object.entries(source)) {
         const menu = parseBoardMenuPropertyKey(key);
+
         if (menu?.menuType === menuType
             && menu.option === option
             && menu.propertyKey !== undefined) {
@@ -135,6 +143,7 @@ export function resolveBoardMenus(
         }
 
         const requestedOption = buildProperties[menuType];
+
         const selectedOption = requestedOption && options.includes(requestedOption)
             ? requestedOption
             : options[0];
@@ -160,6 +169,7 @@ function findPartitionScheme(
 ): PartitionScheme | undefined {
     for (const [key, value] of Object.entries(boardProperties)) {
         const menu = parseBoardMenuPropertyKey(key);
+
         if (menu?.menuType !== 'PartitionScheme'
             || menu.propertyKey !== 'build.partitions'
             || value !== partitionValue) {
@@ -182,8 +192,8 @@ function findPartitionScheme(
  *
  * Existing menu selections are applied first in menu insertion order. A
  * `build.partitions` value then maps the matching `PartitionScheme` upload
- * limits and flags, but intentionally does not replace `build.partitions`
- * itself. Remaining non-menu properties are overlaid in build-property order.
+ * limits and flags. Explicit non-menu properties, including the partition
+ * filename, are overlaid in build-property order.
  * The returned object is a copy and neither input is modified.
  */
 export function applyBoardBuildProperties(
@@ -195,24 +205,28 @@ export function applyBoardBuildProperties(
 
     for (const menuType of menuOptions.keys()) {
         const requestedOption = buildProperties[menuType];
+
         if (requestedOption) {
             applyMenuOption(resolved, boardProperties, menuType, requestedOption);
         }
     }
 
     const partitionValue = buildProperties['build.partitions'];
+
     if (partitionValue) {
         const scheme = findPartitionScheme(boardProperties, partitionValue);
+
         if (scheme?.uploadMaximumSize) {
             resolved['upload.maximum_size'] = scheme.uploadMaximumSize;
         }
+
         if (scheme?.uploadExtraFlags) {
             resolved['upload.extra_flags'] = scheme.uploadExtraFlags;
         }
     }
 
     for (const [key, value] of Object.entries(buildProperties)) {
-        if (!menuOptions.has(key) && key !== 'build.partitions') {
+        if (!menuOptions.has(key)) {
             resolved[key] = value;
         }
     }
