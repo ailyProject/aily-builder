@@ -8,6 +8,7 @@ import { DependencyAnalyzer } from './DependencyAnalyzer';
 import { sanitizeNonAsciiPaths, sanitizeObjectPaths } from './utils/ShortPath';
 import { emitSimulationArtifactManifest, SimulationArtifactManifest } from './ArtifactManifest';
 import { applySimulationDebugProfile } from './SimulationDebugProfile';
+import { prepareSimulationTransportSources } from './SimulationTransportSources';
 import { BuildInputRecording } from './BuildInputRecord';
 import { collectPackageIdentitiesFromPaths, extractPackageIdentityFromPath } from './utils/PackageIdentity';
 import { RecipeRunner, RecipeRunnerError } from './RecipeRunner';
@@ -402,6 +403,9 @@ export class ArduinoCompiler {
     // 每次编译都需要执行，确保源文件变化能被检测到
     await this.prepareBuildDirectory(options.buildPath);
 
+    const simulationRuntime = await prepareSimulationTransportSources(options.buildPath, !!options.simulationDebug,
+      resolveArtifactTargetMarkers(options.board, arduinoConfig.board).mcu, dependencies);
+
     // The resolved preprocess result and pipeline own these facts. Recording
     // observes them without opening source, SDK, tool or linker search trees.
     const inputRecording = options.recordBuildInputs ? new BuildInputRecording({
@@ -457,6 +461,8 @@ export class ArduinoCompiler {
         primaryOutputPath: finalOutputPath,
         manifestPath: options.artifactManifestPath,
         buildInputs,
+        simulationProviders: simulationRuntime.providers,
+        simulationNetwork: simulationRuntime.network,
       });
       this.logger.info(`Simulation artifact manifest: ${options.artifactManifestPath}`);
     }

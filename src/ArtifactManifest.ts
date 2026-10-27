@@ -121,6 +121,8 @@ export interface SimulationArtifactManifest {
       sha256: string;
     };
     toolVersions: Record<string, string>;
+    simulationProviders?: string[];
+  simulationNetwork?: { wifi: true; httpPort?: number };
     inputs?: {
       schemaVersion: 1;
       kind: 'aily-build-input-reference';
@@ -186,6 +188,8 @@ export interface EmitArtifactManifestOptions {
   primaryOutputPath?: string;
   manifestPath: string;
   buildInputs?: BuildInputRecord;
+  simulationProviders?: string[];
+  simulationNetwork?: { wifi: true; httpPort?: number };
 }
 
 const ARTIFACT_FILE_NAMES = [
@@ -1218,6 +1222,8 @@ export async function emitSimulationArtifactManifest(
         sha256: sourceSha256,
       },
       toolVersions: stableToolVersions(options.toolVersions),
+      ...(options.simulationProviders?.length ? { simulationProviders: options.simulationProviders } : {}),
+      ...(options.simulationNetwork ? { simulationNetwork: options.simulationNetwork } : {}),
       ...(options.buildInputs ? { inputs: {
         schemaVersion: 1 as const,
         kind: 'aily-build-input-reference' as const,

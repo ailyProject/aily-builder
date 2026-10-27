@@ -1,9 +1,10 @@
-const { mkdir, copyFile, chmod } = require('node:fs/promises');
+const { mkdir, copyFile, chmod, cp } = require('node:fs/promises');
 const path = require('node:path');
 
 /** Both TypeScript and bundled distributions use the same provided tool assets. */
 async function copyNinja(destination = path.join(__dirname, 'dist', 'ninja'), source = path.join(__dirname, 'ninja')) {
   await mkdir(destination, { recursive: true });
+  await cp(path.join(__dirname, 'resources'), path.join(path.dirname(destination), 'resources'), { recursive: true });
   for (const name of ['ninja.exe', 'ninja']) {
     const target = path.join(destination, name);
     await copyFile(path.join(source, name), target);

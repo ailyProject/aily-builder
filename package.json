@@ -10,6 +10,7 @@
     "dist/main.js",
     "dist/package.json",
     "dist/src",
+    "dist/resources",
     "dist/ninja",
     "README.md",
     "README-ZH.md",
