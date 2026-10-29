@@ -59,8 +59,9 @@ test('archive cache binary identity changes when executable content changes', as
     }
   });
 
-  const firstPath = path.join(cacheDir, 'compiler-a');
-  const secondPath = path.join(cacheDir, 'compiler-b');
+  const executableExtension = process.platform === 'win32' ? '.exe' : '';
+  const firstPath = path.join(cacheDir, `compiler-a${executableExtension}`);
+  const secondPath = path.join(cacheDir, `compiler-b${executableExtension}`);
   fs.writeFileSync(firstPath, 'compiler-a');
   fs.writeFileSync(secondPath, 'compiler-b');
 

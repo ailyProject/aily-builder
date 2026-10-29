@@ -16,6 +16,7 @@ import { Logger } from './utils/Logger';
 import { Dependency } from './DependencyAnalyzer';
 import { collectPackageIdentitiesFromPaths, extractPackageIdentityFromPath } from './utils/PackageIdentity';
 import { getAilyBuilderCacheDirectory } from './utils/CacheDirectory';
+import { LIBRARY_FINGERPRINT_FILE_GLOBS } from './utils/LibraryFilePatterns';
 
 const CACHE_SCHEMA = 'aily.archive-cache.v2';
 const INPUT_SCHEMA = 'aily.archive-build-inputs.v2';
@@ -606,7 +607,7 @@ export class ArchiveCloudCacheManager {
 
     if (dependency.path && await fs.pathExists(dependency.path)) {
       try {
-        const scanned = await glob(['**/*.{h,hpp,hh,c,cpp,S,s}', 'library.properties'], {
+        const scanned = await glob(LIBRARY_FINGERPRINT_FILE_GLOBS, {
           cwd: dependency.path,
           absolute: true,
           nodir: true,

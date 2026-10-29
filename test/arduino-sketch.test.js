@@ -12,7 +12,7 @@ test('multi-tab sketches merge primary first, preserve diagnostics and compile o
  const entry=path.join(root,'A.ino');
  assert.deepEqual((await collectArduinoSketchTabs(entry)).map(file=>path.basename(file)),['Tabs.ino','A.ino','Z.ino']);
  const code=await readArduinoSketch(entry);assert.ok(code.indexOf('void setup')<code.indexOf('void helper'));assert.match(code,/#line 1 .*A\.ino/);
- assert.deepEqual((await collectArduinoSketchSources(entry)).map(file=>path.relative(root,file)),['extra.cpp','src/deep/c_api.c','src/deep/core.cpp']);
+ assert.deepEqual((await collectArduinoSketchSources(entry)).map(file=>path.relative(root,file).split(path.sep).join('/')),['extra.cpp','src/deep/c_api.c','src/deep/core.cpp']);
  assert.deepEqual(await collectArduinoSketchSources(path.join(root,'extra.cpp')),[]);
 });
 test('GCC dependencies preserve escaped spaces, line continuation and Windows drive paths',()=>{

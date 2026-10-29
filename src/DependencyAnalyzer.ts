@@ -24,6 +24,7 @@ import {
   getGeneratedSketchSourceRoot
 } from './GeneratedSketchSources';
 import { getPathListDelimiter, toHostPathKey } from './utils/HostPlatform';
+import { LIBRARY_INCLUDE_FILE_GLOB } from './utils/LibraryFilePatterns';
 
 export type { MacroDefinition } from './utils/PreprocessorExpression';
 
@@ -152,6 +153,7 @@ export class DependencyAnalyzer {
   private macroDefinitions: Map<string, MacroDefinition>;
   private configuredMacros: Map<string, MacroDefinition>;
   private libraryMap: Map<string, Dependency>
+  private libraryEntryPoints: Map<string, Set<string>>;
   private libraryIndexCache: LibraryIndexCache;
   private platformHeaderRoots: string[];
   private platformContextKey: string;
@@ -167,6 +169,7 @@ export class DependencyAnalyzer {
     this.macroDefinitions = new Map<string, MacroDefinition>();
     this.configuredMacros = new Map<string, MacroDefinition>();
     this.libraryMap = new Map<string, Dependency>();
+    this.libraryEntryPoints = new Map<string, Set<string>>();
     this.libraryIndexCache = new LibraryIndexCache(logger);
     this.platformHeaderRoots = [];
     this.platformContextKey = '';
@@ -187,6 +190,7 @@ export class DependencyAnalyzer {
       this.macroDefinitions.set(name, { ...macroDefinition });
     }
     this.libraryMap.clear();
+    this.libraryEntryPoints.clear();
     const sketchPath = process.env['SKETCH_PATH'];
 
     // 获取核心SDK和库路径
@@ -618,7 +622,7 @@ export class DependencyAnalyzer {
    * @param depth 当前递归深度，默认为0
    * @param maxDepth 最大递归深度，默认为10
    */
-  private async resolveDependencies(includeFiles: string[], resolveA = false, depth: number = 0, maxDepth: number = 10, macroDefinitions = this.macroDefinitions): Promise<void> {
+  private async resolveDependencies(includeFiles: string[], resolveA = false, depth: number = 0, maxDepth: number = 10, macroDefinitions = this.macroDefinitions, activeEntries = new Set<string>()): Promise<void> {
     // 检查递归深度限制
     if (depth >= maxDepth) {
       this.logger.debug(`Reached maximum recursion depth (${maxDepth}) while resolving dependencies`);
@@ -637,46 +641,54 @@ export class DependencyAnalyzer {
         const libraryObject = this.libraryMap.get(includeFile)
         this.logger.debug(`Found library for ${includeFile}: ${libraryObject.name}`);
 
-        if (this.dependencyList.has(libraryObject.name)) {
-          continue;
-        }
-        const libraryIndex = await this.applyLibraryIndex(libraryObject, macroDefinitions);
-        this.dependencyList.set(libraryObject.name, libraryObject);
+        const libraryKey = this.normalizeAnalysisPath(libraryObject.path);
+        const entryKey = this.normalizeAnalysisPath(path.resolve(libraryObject.path, includeFile));
+        if (activeEntries.has(entryKey)) continue;
+        const entries = this.libraryEntryPoints.get(libraryKey) || new Set<string>();
+        entries.add(includeFile);
+        this.libraryEntryPoints.set(libraryKey, entries);
+        activeEntries.add(entryKey);
+        try {
+          const libraryIndex = await this.applyLibraryIndex(libraryObject, macroDefinitions, [...entries]);
+          this.dependencyList.set(libraryObject.name, libraryObject);
 
-        // 读取libraryObject.path下的所有.a文件
-        if (resolveA) {
-          const aFiles = await glob('*.a', {
-            cwd: path.join(libraryObject.path, process.env['BUILD_MCU']),
-            absolute: true,
-            nodir: true
-          });
-          // console.log(aFiles);
-          if (aFiles.length > 0) {
-            libraryObject['others'] = aFiles;
+          // Keep precompiled archives associated with the selected library.
+          if (resolveA) {
+            const aFiles = await glob('*.a', {
+              cwd: path.join(libraryObject.path, process.env['BUILD_MCU']),
+              absolute: true,
+              nodir: true
+            });
+            if (aFiles.length > 0) libraryObject.others = aFiles;
           }
-        }
 
-        await this.resolveDependencies(libraryIndex.includeFiles, resolveA, depth + 1, maxDepth, libraryIndex.macroDefinitions || macroDefinitions)
+          await this.resolveDependencies(libraryIndex.includeFiles, resolveA, depth + 1, maxDepth, libraryIndex.macroDefinitions || macroDefinitions, activeEntries);
+        } finally {
+          activeEntries.delete(entryKey);
+        }
       } else {
         this.logger.verbose(`Not found ${includeFile}`);
       }
     }
   }
 
-  private async applyLibraryIndex(libraryObject: Dependency, macroDefinitions: Map<string, MacroDefinition>): Promise<LibraryIndexResult> {
+  private async applyLibraryIndex(libraryObject: Dependency, macroDefinitions: Map<string, MacroDefinition>, entryPoints: string[] = []): Promise<LibraryIndexResult> {
+    const entries = [...new Set(entryPoints.map(entry =>
+      toHostPathKey(path.relative(libraryObject.path, path.resolve(libraryObject.path, entry)).replace(/\\/g, '/'))
+    ))].sort();
     const index = await this.libraryIndexCache.getOrCreate(
       libraryObject.name,
       libraryObject.path,
       macroDefinitions,
-      () => this.buildLibraryIndex(libraryObject, macroDefinitions),
-      this.platformContextKey
+      () => this.buildLibraryIndex(libraryObject, macroDefinitions, entries),
+      JSON.stringify([this.platformContextKey, entries])
     );
 
     libraryObject.includes = index.sourceFiles;
     return index;
   }
 
-  private async buildLibraryIndex(libraryObject: Dependency, macroDefinitions: Map<string, MacroDefinition>): Promise<LibraryIndexBuildResult> {
+  private async buildLibraryIndex(libraryObject: Dependency, macroDefinitions: Map<string, MacroDefinition>, entryPoints: string[] = []): Promise<LibraryIndexBuildResult> {
     const macroDefinitionsCopy = new Map(macroDefinitions);
     const directiveTapeCache = new Map<string, PreprocessorDirectiveTape>();
     const getTape: DirectiveTapeProvider = (filePath: string) => {
@@ -697,7 +709,8 @@ export class DependencyAnalyzer {
       libraryObject.path,
       macroDefinitionsCopy,
       sourceFiles,
-      getTape
+      getTape,
+      entryPoints
     );
 
     return {
@@ -711,11 +724,12 @@ export class DependencyAnalyzer {
     libraryPath: string,
     macroDefinitions: Map<string, MacroDefinition>,
     sourceFiles: string[],
-    getTape: DirectiveTapeProvider
+    getTape: DirectiveTapeProvider,
+    entryPoints: string[]
   ): Promise<string[]> {
     let includeFilePaths: string[] = [];
     try {
-      const libraryFiles = await glob('**/*.{h,hpp,cpp,c}', {
+      const libraryFiles = await glob(LIBRARY_INCLUDE_FILE_GLOB, {
         cwd: libraryPath,
         absolute: true,
         nodir: true,
@@ -778,19 +792,19 @@ export class DependencyAnalyzer {
     };
 
     const sourceRootPaths = new Set(sourceFiles.map(normalizeAbsolutePath));
-    const entryFiles = includeFilePaths.filter(filePath => {
+    const publicRootPaths = new Set(entryPoints.map(entry => normalizeAbsolutePath(path.resolve(libraryPath, entry))));
+    const rootFiles = includeFilePaths.filter(filePath => {
       const ext = path.extname(filePath).toLowerCase();
       if (ext === '.cpp' || ext === '.c') {
         return sourceRootPaths.has(normalizeAbsolutePath(filePath));
       }
 
       if (ext === '.h' || ext === '.hpp') {
-        return path.dirname(path.relative(libraryPath, filePath)) === '.';
+        return publicRootPaths.has(normalizeAbsolutePath(filePath));
       }
 
       return false;
     });
-    const rootFiles = entryFiles.length > 0 ? entryFiles : includeFilePaths;
     const initialMacroDefinitions = new Map(macroDefinitions);
     const mergedMacroDefinitions = new Map(macroDefinitions);
     const externalIncludes = new Set<string>();
@@ -1050,7 +1064,7 @@ export class DependencyAnalyzer {
                 includedFiles.add(normalizeFileKey(localPath));
               }
               if (this.isPlatformHeaderPath(resolvedPath)
-                || /\.(?:h|hpp|c|cpp)$/i.test(resolvedPath)) {
+                || /\.(?:h|hpp|c|cpp|ipp|inc)$/i.test(resolvedPath)) {
                 analyzeLocalFile(resolvedPath);
               }
             }
@@ -1233,13 +1247,13 @@ export class DependencyAnalyzer {
       let effectiveLines = 0;
       let functionCount = 0;
       let hasComplexImplementation = false;
-      let includesCFile = false;  // 是否包含对 .c 文件的 #include
+      let includesImplementation = false;
 
       for (const line of lines) {
-        // 检测 #include ".c" 模式（如 STM32 SDK 的 system_stm32yyxx.c）
-        // 这种文件通过条件编译 #include 实际的实现文件，不应被视为代码片段
-        if (line.match(/^#include\s+["<][^">]+\.c[">]/)) {
-          includesCFile = true;
+        // A thin translation unit can contain its implementation in an included
+        // fragment. No function body in the wrapper does not make it a fragment.
+        if (/^#\s*include\s+["<][^">]+\.(?:c|cpp|ipp|inc)[">]/i.test(line)) {
+          includesImplementation = true;
         }
 
         // 跳过空行、注释和预处理指令
@@ -1262,10 +1276,8 @@ export class DependencyAnalyzer {
         }
       }
 
-      // 如果文件 #include 了 .c 文件，说明这是一个包装器文件，不应被视为代码片段
-      // 这是 STM32 SDK 等平台的常见模式（如 system_stm32yyxx.c 通过条件编译 include 具体平台的实现）
-      if (includesCFile) {
-        this.logger.debug(`[CODE_FRAGMENT] File ${filePath} includes .c files, treating as wrapper file, keeping it`);
+      if (includesImplementation) {
+        this.logger.debug(`[CODE_FRAGMENT] File ${filePath} includes an implementation, keeping the wrapper`);
         return false;
       }
 

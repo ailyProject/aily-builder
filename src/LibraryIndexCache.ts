@@ -13,9 +13,10 @@ import { Logger } from './utils/Logger';
 import type { MacroDefinition } from './utils/PreprocessorExpression';
 import { getAilyBuilderCacheDirectory } from './utils/CacheDirectory';
 import { toHostPathKey } from './utils/HostPlatform';
+import { LIBRARY_FINGERPRINT_FILE_GLOBS } from './utils/LibraryFilePatterns';
 
-const SCHEMA_VERSION = 3;
-export const DEPENDENCY_ANALYZER_VERSION = 'dependency-directive-tape-v2';
+const SCHEMA_VERSION = 4;
+export const DEPENDENCY_ANALYZER_VERSION = 'dependency-directive-tape-v4';
 const ANALYZER_VERSION = DEPENDENCY_ANALYZER_VERSION;
 const STAT_CONCURRENCY = 32;
 
@@ -33,6 +34,7 @@ interface CachedFileSnapshot {
 }
 
 interface CachedMacroIndex {
+  sourceFiles: string[];
   includeFiles: string[];
   macroDeltas: Record<string, CachedMacroDefinition>;
   builtAt: string;
@@ -62,7 +64,6 @@ interface CachedSourceIndex {
   analyzerVersion: string;
   libraryName: string;
   sourceHash: string;
-  sourceFiles: string[];
   macroIndexes: Record<string, CachedMacroIndex>;
   updatedAt: string;
 }
@@ -112,7 +113,7 @@ export class LibraryIndexCache {
         ]);
         this.logger.debug(`[LIB_INDEX] hit ${libraryName}: ${files.length} files, ${Date.now() - startedAt}ms`);
         return {
-          sourceFiles: this.toAbsolutePaths(libraryPath, sourceIndex.sourceFiles),
+          sourceFiles: this.toAbsolutePaths(libraryPath, macroIndex.sourceFiles),
           includeFiles: macroIndex.includeFiles,
           macroDefinitions: this.applyMacroDeltas(macroDefinitions, macroIndex.macroDeltas),
           cacheHit: true,
@@ -156,7 +157,7 @@ export class LibraryIndexCache {
       await this.touchCacheAccess([this.getSourceIndexPath(sourceHash)]);
       this.logger.debug(`[LIB_INDEX] source hit ${libraryName}: ${files.length} files, ${Date.now() - startedAt}ms`);
       return {
-        sourceFiles: this.toAbsolutePaths(libraryPath, sourceIndex.sourceFiles),
+        sourceFiles: this.toAbsolutePaths(libraryPath, macroIndex.sourceFiles),
         includeFiles: macroIndex.includeFiles,
         macroDefinitions: this.applyMacroDeltas(macroDefinitions, macroIndex.macroDeltas),
         cacheHit: true,
@@ -212,13 +213,13 @@ export class LibraryIndexCache {
     const nextSourceIndex = this.createSourceIndex(
       libraryName,
       sourceHash,
-      sourceFiles,
       sourceIndex?.macroIndexes || {}
     );
     const finalMacroDefinitions = built.macroDefinitions || macroDefinitions;
     const hasSensitiveDelta = this.hasSensitiveMacroDelta(macroDefinitions, finalMacroDefinitions);
     if (!hasSensitiveDelta) {
       nextSourceIndex.macroIndexes[macroKey] = this.createMacroIndex(
+        sourceFiles,
         built.includeFiles,
         macroDefinitions,
         finalMacroDefinitions
@@ -265,7 +266,7 @@ export class LibraryIndexCache {
   }
 
   private async collectFiles(libraryPath: string): Promise<FileSnapshot[]> {
-    const files = await glob(['**/*.{h,hpp,hh,c,cpp,S,s}', 'library.properties'], {
+    const files = await glob(LIBRARY_FINGERPRINT_FILE_GLOBS, {
       cwd: libraryPath,
       absolute: true,
       nodir: true,
@@ -441,11 +442,13 @@ export class LibraryIndexCache {
   }
 
   private createMacroIndex(
+    sourceFiles: string[],
     includeFiles: string[],
     baseMacros: Map<string, MacroDefinition>,
     finalMacros: Map<string, MacroDefinition>
   ): CachedMacroIndex {
     return {
+      sourceFiles,
       includeFiles: [...new Set(includeFiles)],
       macroDeltas: this.serializeMacroDeltas(baseMacros, finalMacros),
       builtAt: new Date().toISOString()
@@ -547,8 +550,10 @@ export class LibraryIndexCache {
       cache.schemaVersion === SCHEMA_VERSION &&
       cache.analyzerVersion === ANALYZER_VERSION &&
       cache.sourceHash === sourceHash &&
-      Array.isArray(cache.sourceFiles) &&
-      !!cache.macroIndexes;
+      !!cache.macroIndexes &&
+      Object.values(cache.macroIndexes).every(index =>
+        !!index && typeof index === 'object' &&
+        Array.isArray(index.sourceFiles) && Array.isArray(index.includeFiles));
   }
 
   private createPathState(
@@ -573,7 +578,6 @@ export class LibraryIndexCache {
   private createSourceIndex(
     libraryName: string,
     sourceHash: string,
-    sourceFiles: string[],
     macroIndexes: Record<string, CachedMacroIndex>
   ): CachedSourceIndex {
     return {
@@ -581,7 +585,6 @@ export class LibraryIndexCache {
       analyzerVersion: ANALYZER_VERSION,
       libraryName,
       sourceHash,
-      sourceFiles,
       macroIndexes: { ...macroIndexes },
       updatedAt: new Date().toISOString()
     };
