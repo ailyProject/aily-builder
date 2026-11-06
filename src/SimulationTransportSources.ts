@@ -19,6 +19,9 @@ export const ESP32C6_BLE_LINKER_WRAPPERS = Object.freeze([
 ] as const);
 export const ESP32C3_WIFI_PROVIDER = 'aily.esp32c3-wifi-sdk-driver-v1';
 export const ESP32C6_WIFI_PROVIDER = 'aily.esp32c6-wifi-sdk-driver-v1';
+/** Ordinary classic STA uses a versioned SDK driver over the actual OpenETH
+ * device, separate from the historical split-radio simulationNetwork path. */
+export const ESP32_WIFI_OPENETH_PROVIDER = 'aily.esp32-wifi-openeth-v1';
 export const ESP32C3_WIFI_LINKER_WRAPPERS = Object.freeze([
   'esp_wifi_init', 'esp_wifi_deinit', 'esp_netif_create_default_wifi_sta',
   'esp_netif_create_default_wifi_ap', 'esp_netif_destroy_default_wifi',
@@ -43,6 +46,10 @@ const C3_BLE_DEPENDENCY = '__simulation_transport_c3_ble__';
 const C6_BLE_IPC_DIRECTORY = 'aily-esp32c6-ble-nimble-v1';
 const C6_BLE_IPC_FILES = ['aily-c6-ble-hci-ipc-v1.c', 'aily_packet_abi.h'] as const;
 const C6_BLE_IPC_DEPENDENCY = '__simulation_transport_c6_ble_ipc__';
+const CLASSIC_WIFI_DIRECTORY = 'aily-esp32-wifi-openeth-v1';
+const CLASSIC_WIFI_FILES = ['aily-classic-wifi-driver-v1.c', 'aily-openeth.c',
+  'aily-openeth.h', 'awf-control-v1.h'] as const;
+const CLASSIC_WIFI_DEPENDENCY = '__simulation_transport_classic_wifi__';
 export interface SimulationTransportAbi {
   platformVersion?: string;
   sdkPath?: string;
@@ -52,7 +59,7 @@ export interface SimulationTransportAbi {
 }
 export interface PreparedSimulationProviderInputs {
   schemaVersion: 1;
-  provider: typeof ESP32C3_BLE_PROVIDER | typeof ESP32C6_BLE_PROVIDER;
+  provider: typeof ESP32C3_BLE_PROVIDER | typeof ESP32C6_BLE_PROVIDER | typeof ESP32_WIFI_OPENETH_PROVIDER;
   scope: 'prepared-and-verified-sources-not-compiler-consumption';
   sources: Array<{ path: string; bytes: number; sha256: string }>;
   selectedSdk: Array<{ path: string; bytes: number; sha256: string }>;
@@ -67,7 +74,9 @@ function selectWrappedProvider(providers: readonly string[]) {
   const c6BleIpc = providers.includes(ESP32C6_BLE_PROVIDER)
     ? { name: 'C6 BLE IPC', symbols: ESP32C6_BLE_LINKER_WRAPPERS }
     : undefined;
-  const selected = c6BleIpc ?? (providers.includes(ESP32C3_BLE_PROVIDER)
+  const selected = providers.includes(ESP32_WIFI_OPENETH_PROVIDER)
+    ? { name: 'Classic Wi-Fi OpenETH', symbols: ESP32C3_WIFI_LINKER_WRAPPERS }
+    : c6BleIpc ?? (providers.includes(ESP32C3_BLE_PROVIDER)
     ? { name: 'C3 BLE', symbols: ESP32C3_BLE_LINKER_WRAPPERS }
     : providers.includes(ESP32C3_WIFI_PROVIDER)
       ? { name: 'C3 Wi-Fi', symbols: ESP32C3_WIFI_LINKER_WRAPPERS }
@@ -159,6 +168,18 @@ async function sourceIdentity(filename: string, maximum: number) {
  * bookend does not assert that a compiler executed or consumed any given byte. */
 export async function verifyPreparedSimulationProviderInputs(inputs?: PreparedSimulationProviderInputs): Promise<void> {
   if (!inputs) return;
+  if (inputs.provider === ESP32_WIFI_OPENETH_PROVIDER) {
+    if (inputs.schemaVersion !== 1 || inputs.sources.length !== 4 || inputs.selectedSdk.length !== 8) {
+      throw new Error('Invalid prepared classic Wi-Fi OpenETH input identity.');
+    }
+    for (const expected of [...inputs.sources, ...inputs.selectedSdk]) {
+      const actual = await sourceIdentity(expected.path, 4 * 1024 * 1024);
+      if (actual.bytes !== expected.bytes || actual.sha256 !== expected.sha256) {
+        throw new Error('Prepared classic Wi-Fi OpenETH input changed before Artifact emission.');
+      }
+    }
+    return;
+  }
   if (inputs.provider === ESP32C6_BLE_PROVIDER) {
     if (inputs.schemaVersion !== 1 || inputs.sources.length !== 2 || inputs.selectedSdk.length !== 7) {
       throw new Error('Invalid prepared C6 BLE IPC input identity.');
@@ -244,6 +265,44 @@ async function requireC6BleIpcSdk(abi: SimulationTransportAbi | undefined, depen
   }))];
 }
 
+async function requireClassicWifiSdk(abi: SimulationTransportAbi | undefined, dependencies: Dependency[]) {
+  if (abi?.platformVersion !== '3.3.10' || abi.toolVersions?.['esp32-libs'] !== '3.3.10'
+    || abi.toolVersions?.['esp-x32'] !== '14.2.0'
+    || !isC6WifiMemoryType(abi.memoryType) || !abi.sdkPath || !abi.compilerSdkPath
+    || [abi.sdkPath, abi.compilerSdkPath].some(value => !path.isAbsolute(value) || /[{}\x00-\x1f]/.test(value))) {
+    throw new Error('Classic Wi-Fi OpenETH requires Arduino 3.3.10, esp32-libs 3.3.10 dio_qspi/qio_qspi and esp-x32 14.2.0.');
+  }
+  const selected = dependencies.filter(item => item.type === 'library' && item.name === 'WiFi');
+  const library = path.join(abi.sdkPath, 'libraries', 'WiFi');
+  const expected = await fs.realpath(path.join(library, 'src'));
+  if (selected.length !== 1 || await fs.realpath(selected[0].path) !== expected) {
+    throw new Error('Classic Wi-Fi OpenETH requires the selected Arduino SDK WiFi library.');
+  }
+  // Pin the selected public driver ABI and original WiFi host sources. This is
+  // preparation identity, not a claim that a compiler consumed a given byte.
+  const pinned = classicWifiSdkPins(abi.memoryType, library, abi.compilerSdkPath);
+  return Promise.all(Object.entries(pinned).map(async ([filename, sha256]) => {
+    const identity = await sourceIdentity(filename, 4 * 1024 * 1024);
+    if (identity.sha256 !== sha256) throw new Error(`Classic Wi-Fi OpenETH SDK input differs: ${path.basename(filename)}`);
+    return identity;
+  }));
+}
+
+function classicWifiSdkPins(memoryType: 'dio_qspi' | 'qio_qspi', library: string, sdk: string): Record<string, string> {
+  return {
+    [path.join(sdk, memoryType, 'include/sdkconfig.h')]: memoryType === 'dio_qspi'
+      ? '1ce600ddcbc213ab68d518f5150d99fa26a325e1992cfbcd521860de5e65dc72'
+      : 'd10e864388ee37191e43a605bef5b99033cc51e939aa5425169d231647735b6b',
+    [path.join(sdk, 'include/esp_common/include/esp_idf_version.h')]: 'da41e7251d748325eea76ae95f329f77434092afde399882dd9ee3d42ea68b20',
+    [path.join(sdk, 'include/esp_netif/include/esp_netif_types.h')]: 'feaec5a6dffcbe3a840f6590e7d61cebf85d46542507f59fad0e3e495905986a',
+    [path.join(sdk, 'lib/libesp_netif.a')]: '0eb199ec747d711e14fee483c7f8d82744e7845b0c6a905dfc90d5179a95ca69',
+    [path.join(sdk, 'lib/libesp_wifi.a')]: '340d9319360baac3516d84eb9ae3e6062440694476620bf4c77b861e56d93fe5',
+    [path.join(library, 'library.properties')]: '0bd56ad5dc0461f770f36ac28901cccf13d34cefb77cd0278dfdc3d378544bcc',
+    [path.join(library, 'src/WiFiGeneric.cpp')]: '57928f366c63e16e41988d26a9f65d5569340ef20d3e453d4dd49e1a9181cc44',
+    [path.join(library, 'src/STA.cpp')]: 'ae3598b10d51d27bc3048a350fe231f6e995731a939621ce9c26d2a32c775855',
+  };
+}
+
 async function resource(relative: string): Promise<string> {
   // Both TypeScript and bundled distributions keep resources beside the entry.
   for (const directory of [path.join(__dirname, 'resources'), path.resolve(__dirname, '..', 'resources')]) {
@@ -267,7 +326,13 @@ export async function prepareSimulationTransportSources(
   const c6Directory = path.join(buildPath, 'sketch', C6_DIRECTORY);
   const c3BleDirectory = path.join(buildPath, 'sketch', C3_BLE_DIRECTORY);
   const c6BleIpcDirectory = path.join(buildPath, 'sketch', C6_BLE_IPC_DIRECTORY);
+  const classicWifiDirectory = path.join(buildPath, 'sketch', CLASSIC_WIFI_DIRECTORY);
   const requestedLibrary = (name: string) => dependencies.some(item => item.type === 'library' && item.name === name);
+  const classicWifi = simulationDebug && mcu === 'esp32' && requestedLibrary('WiFi');
+  if (classicWifi && ['BLE', 'BluetoothSerial', 'NimBLE-Arduino'].some(requestedLibrary)) {
+    throw new Error('Classic Wi-Fi OpenETH cannot be mixed with an unverified Bluetooth controller provider.');
+  }
+  const selectedClassicWifiSdk = classicWifi ? await requireClassicWifiSdk(abi, dependencies) : undefined;
   if (simulationDebug && mcu === 'esp32c3' && requestedLibrary('NimBLE-Arduino')) throw new Error('C3 BLE requires the selected real Arduino SDK BLE host library, not an unverified third-party library.');
   const c3Ble = simulationDebug && mcu === 'esp32c3' && requestedLibrary('BLE');
   if (c3Ble && (requestedLibrary('WiFi') || requestedLibrary('BluetoothSerial') || requestedLibrary('NimBLE-Arduino'))) throw new Error('C3 BLE provider cannot be mixed with an unverified Wi-Fi, SPP or third-party controller provider.');
@@ -287,10 +352,11 @@ export async function prepareSimulationTransportSources(
   const selectedC6BleSdk = c6BleIpc ? await requireC6BleIpcSdk(abi, dependencies) : undefined;
   const ownedPaths = new Set([destination, ...C3_FILES.map(name => path.join(c3Directory, name)),
     ...C6_FILES.map(name => path.join(c6Directory, name)), ...C3_BLE_FILES.map(name => path.join(c3BleDirectory, name)),
-    ...C6_BLE_IPC_FILES.map(name => path.join(c6BleIpcDirectory, name))]
+    ...C6_BLE_IPC_FILES.map(name => path.join(c6BleIpcDirectory, name)),
+    ...CLASSIC_WIFI_FILES.map(name => path.join(classicWifiDirectory, name))]
     .map(value => path.resolve(value)));
   for (let index = dependencies.length - 1; index >= 0; index--) {
-    if (['__simulation_transport__', C3_DEPENDENCY, C6_DEPENDENCY, C3_BLE_DEPENDENCY, C6_BLE_IPC_DEPENDENCY].includes(dependencies[index].name)) dependencies.splice(index, 1);
+    if (['__simulation_transport__', C3_DEPENDENCY, C6_DEPENDENCY, C3_BLE_DEPENDENCY, C6_BLE_IPC_DEPENDENCY, CLASSIC_WIFI_DEPENDENCY].includes(dependencies[index].name)) dependencies.splice(index, 1);
   }
   for (const dependency of dependencies) {
     if (dependency.includes) dependency.includes = dependency.includes.filter(source => !ownedPaths.has(path.resolve(source)));
@@ -298,7 +364,6 @@ export async function prepareSimulationTransportSources(
   }
   const library = (name: string) => dependencies.some(dependency => dependency.type === 'library' && dependency.name === name);
   const classic = simulationDebug && mcu === 'esp32';
-  const network = classic && library('WiFi') ? { wifi: true as const, ...(library('WebServer') ? { httpPort: 80 } : {}) } : undefined;
   const classicBluetooth = classic && library('BluetoothSerial');
   const c3Wifi = simulationDebug && mcu === 'esp32c3' && library('WiFi');
   // Validate before publishing/copying any provider for a requested C3 ABI.
@@ -308,6 +373,25 @@ export async function prepareSimulationTransportSources(
   if (!c3Ble) await fs.remove(c3BleDirectory);
   if (!c6BleIpc) await fs.remove(c6BleIpcDirectory);
   if (!classicBluetooth) await fs.remove(destination);
+  if (!classicWifi) await fs.remove(classicWifiDirectory);
+  if (selectedClassicWifiSdk) {
+    const originals = await Promise.all(CLASSIC_WIFI_FILES.map(name => resource(name === 'awf-control-v1.h'
+      ? `esp32c3-wifi-sdk-driver-v1/${name}` : `esp32-wifi-openeth-v1/${name}`)));
+    await fs.ensureDir(classicWifiDirectory);
+    const staged = await Promise.all(CLASSIC_WIFI_FILES.map(async (name, index) => {
+      const target = path.join(classicWifiDirectory, name);
+      await fs.copyFile(originals[index], target);
+      const before = await sourceIdentity(originals[index], 64 * 1024);
+      const after = await sourceIdentity(target, 64 * 1024);
+      if (before.bytes !== after.bytes || before.sha256 !== after.sha256) throw new Error('Classic Wi-Fi copied source changed.');
+      return after;
+    }));
+    dependencies.push({ name: CLASSIC_WIFI_DEPENDENCY, path: classicWifiDirectory, type: 'sketch',
+      includes: staged.slice(0, 2).map(item => item.path), others: staged.slice(2).map(item => item.path) });
+    return { providers: [ESP32_WIFI_OPENETH_PROVIDER], providerSourceInputs: { schemaVersion: 1,
+      provider: ESP32_WIFI_OPENETH_PROVIDER, scope: 'prepared-and-verified-sources-not-compiler-consumption',
+      sources: staged, selectedSdk: selectedClassicWifiSdk } };
+  }
   if (selectedC6BleSdk) {
     const sources = await Promise.all(C6_BLE_IPC_FILES.map(name => resource(`esp32c6-ble-nimble-v1/${name}`)));
     await fs.ensureDir(c6BleIpcDirectory);
@@ -351,9 +435,9 @@ export async function prepareSimulationTransportSources(
     // legacy classic network or allocate an unnecessary Guest HTTP route.
     return { providers: [c6Wifi ? ESP32C6_WIFI_PROVIDER : ESP32C3_WIFI_PROVIDER] };
   }
-  if (!classicBluetooth) return { providers: [], ...(network ? { network } : {}) };
+  if (!classicBluetooth) return { providers: [] };
   await fs.ensureDir(path.dirname(destination));
   await fs.copyFile(await resource('esp32-vhci-v1.c'), destination);
   dependencies.push({ name: '__simulation_transport__', path: path.dirname(destination), type: 'sketch', includes: [destination], others: [] });
-  return { providers: [ESP32_VHCI_PROVIDER], ...(network ? { network } : {}) };
+  return { providers: [ESP32_VHCI_PROVIDER] };
 }

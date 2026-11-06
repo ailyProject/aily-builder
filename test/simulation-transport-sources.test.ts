@@ -150,11 +150,24 @@ test('requested C3 simulation rejects absent, changed or incomplete exact ABI be
   }
 });
 
-test('classic WiFi, WebServer and BluetoothSerial retain the prior exact result and source', async t => {
-  const build = await fixture(t), dependencies = [library('WiFi'), library('WebServer'), library('BluetoothSerial')];
+test('classic SPP retains its byte-identical legacy source independently of unverified WiFi mixing', async t => {
+  const build = await fixture(t), dependencies = [library('BluetoothSerial')];
   assert.deepEqual(await prepareSimulationTransportSources(build, true, 'esp32', dependencies),
-    { providers: [ESP32_VHCI_PROVIDER], network: { wifi: true, httpPort: 80 } });
+    { providers: [ESP32_VHCI_PROVIDER] });
   assert.equal(sha(await readFile(path.join(build, 'sketch/aily-esp32-vhci-v1.c'))), sha(await readFile(path.join(root, 'resources/simulation/esp32-vhci-v1.c'))));
+  await assert.rejects(prepareSimulationTransportSources(build, true, 'esp32',
+    [library('WiFi'), library('BluetoothSerial')]), /cannot be mixed/);
+});
+
+test('classic WiFi requires its exact selected SDK and never affects ordinary hardware builds', async t => {
+  const build = await fixture(t), dependencies = [library('WiFi')];
+  assert.deepEqual(await prepareSimulationTransportSources(build, false, 'esp32', dependencies), { providers: [] });
+  for (const context of [undefined, abi, { ...abi, toolVersions: { 'esp32-libs': '3.3.10', 'esp-x32': '14.2.0' } }]) {
+    await assert.rejects(prepareSimulationTransportSources(build, true, 'esp32', [...dependencies], context),
+      /requires Arduino 3.3.10/);
+  }
+  await assert.rejects(stat(path.join(build, 'sketch/aily-esp32-wifi-openeth-v1')), { code: 'ENOENT' });
+  assert.equal(dependencies.length, 1);
 });
 
 test('same build directory reselect/disable removes only owned provider sources and never duplicates dependencies', async t => {

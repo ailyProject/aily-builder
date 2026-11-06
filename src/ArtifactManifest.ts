@@ -3,7 +3,7 @@ import { createReadStream } from 'fs';
 import fs from 'fs-extra';
 import path from 'path';
 import { normalizeBuildTargetSelection, type BuildInputRecord } from './BuildInputRecord';
-import { ESP32C3_WIFI_PROVIDER, ESP32C3_BLE_PROVIDER, ESP32C6_WIFI_PROVIDER, ESP32C6_BLE_PROVIDER,
+import { ESP32C3_WIFI_PROVIDER, ESP32C3_BLE_PROVIDER, ESP32C6_WIFI_PROVIDER, ESP32C6_BLE_PROVIDER, ESP32_WIFI_OPENETH_PROVIDER,
   isC6WifiMemoryType } from './SimulationTransportSources';
 
 export type ArtifactFileRole =
@@ -1204,6 +1204,16 @@ export async function emitSimulationArtifactManifest(
       : 'C3 Wi-Fi simulation Artifact requires its exact SDK/IDF/tool ABI and recorded build inputs.');
   }
   const recordedBuildProperties = options.buildInputs?.targetSelection?.resolvedBuildProperties;
+  if (options.simulationProviders?.includes(ESP32_WIFI_OPENETH_PROVIDER)
+    && (options.simulationProviders.length !== 1 || target.mcu !== 'esp32'
+      || target.architecture !== 'esp32' || options.simulationNetwork !== undefined
+      || buildEnvironment?.arduinoCore.version !== '3.3.10' || buildEnvironment.espIdf.version !== '5.5.4'
+      || buildEnvironment.toolchain.name !== 'esp-x32' || buildEnvironment.toolchain.version !== '14.2.0'
+      || options.toolVersions?.['esp32-libs'] !== '3.3.10'
+      || recordedBuildProperties?.['build.mcu'] !== 'esp32'
+      || !isC6WifiMemoryType(recordedBuildProperties?.['build.memory_type']))) {
+    throw new Error('Classic Wi-Fi OpenETH Artifact requires its exact SDK/IDF/tool ABI and recorded build inputs.');
+  }
   const c6BleIpc = options.simulationProviders?.includes(ESP32C6_BLE_PROVIDER);
   if ((c6BleIpc || options.simulationProviders?.includes(ESP32C6_WIFI_PROVIDER))
     && (options.simulationProviders.length !== 1 || target.mcu !== 'esp32c6'

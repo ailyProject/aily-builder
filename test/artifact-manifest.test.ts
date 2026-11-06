@@ -9,7 +9,7 @@ import {
 } from '../src/ArduinoCompiler';
 import { emitSimulationArtifactManifest, type EmitArtifactManifestOptions } from '../src/ArtifactManifest';
 import type { BuildInputRecord } from '../src/BuildInputRecord';
-import { ESP32C3_WIFI_PROVIDER, ESP32C6_WIFI_PROVIDER, ESP32C6_BLE_PROVIDER } from '../src/SimulationTransportSources';
+import { ESP32C3_WIFI_PROVIDER, ESP32C6_WIFI_PROVIDER, ESP32C6_BLE_PROVIDER, ESP32_WIFI_OPENETH_PROVIDER } from '../src/SimulationTransportSources';
 import { applySimulationDebugProfile } from '../src/SimulationDebugProfile';
 import { projectPlatformBuildProperties } from '../src/PlatformPropertyProjector';
 
@@ -508,6 +508,28 @@ async function main(): Promise<void> {
     ]) {
       await assert.rejects(emitSimulationArtifactManifest({ ...c6BleOptions, ...changes }),
         /C6 BLE IPC Artifact requires its exact SDK\/IDF\/tool ABI/);
+    }
+
+    const classicOptions: EmitArtifactManifestOptions = { ...emitOptions,
+      board: 'esp32:esp32:esp32', mcu: 'esp32',
+      manifestPath: path.join(root, 'aily-artifact-manifest-classic-openeth.json'),
+      platformProperties: { ...emitOptions.platformProperties, version: '3.3.10', 'compiler.sdk.path': chipSdkPath },
+      simulationProviders: [ESP32_WIFI_OPENETH_PROVIDER],
+      toolVersions: { 'esp-x32': '14.2.0', 'esp32-libs': '3.3.10' },
+      buildInputs: buildInputsFor('esp32', 'dio_qspi') };
+    const classicManifest = await emitSimulationArtifactManifest(classicOptions);
+    assert.deepEqual(classicManifest.build.simulationProviders, [ESP32_WIFI_OPENETH_PROVIDER]);
+    assert.equal(classicManifest.build.simulationNetwork, undefined);
+    for (const changes of [
+      { buildInputs: undefined },
+      { buildInputs: buildInputsFor('esp32c3') },
+      { buildInputs: buildInputsFor('esp32', 'qio_opi') },
+      { toolVersions: { 'esp-rv32': '14.2.0', 'esp32-libs': '3.3.10' } },
+      { simulationProviders: [ESP32_WIFI_OPENETH_PROVIDER, ESP32C3_WIFI_PROVIDER] },
+      { simulationNetwork: { wifi: true as const } },
+    ]) {
+      await assert.rejects(emitSimulationArtifactManifest({ ...classicOptions, ...changes }),
+        /requires its exact SDK\/IDF\/tool ABI|Build-graph target selection does not match/);
     }
 
     const chipSdkManifest = await emitSimulationArtifactManifest({ ...emitOptions,
