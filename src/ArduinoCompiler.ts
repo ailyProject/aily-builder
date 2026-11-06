@@ -8,7 +8,7 @@ import { DependencyAnalyzer } from './DependencyAnalyzer';
 import { sanitizeNonAsciiPaths, sanitizeObjectPaths } from './utils/ShortPath';
 import { emitSimulationArtifactManifest, SimulationArtifactManifest } from './ArtifactManifest';
 import { applySimulationDebugProfile } from './SimulationDebugProfile';
-import { prepareSimulationTransportSources } from './SimulationTransportSources';
+import { applySimulationTransportCompileConfig, applySimulationTransportPlatform, prepareSimulationTransportSources, verifyPreparedSimulationProviderInputs } from './SimulationTransportSources';
 import { BuildInputRecording } from './BuildInputRecord';
 import { collectPackageIdentitiesFromPaths, extractPackageIdentityFromPath } from './utils/PackageIdentity';
 import { RecipeRunner, RecipeRunnerError } from './RecipeRunner';
@@ -390,7 +390,6 @@ export class ArduinoCompiler {
     dependencies = sanitizeObjectPaths(dependencies);
     // Preprocess results store the platform once, under arduinoConfig. Attach
     // the runtime view only when the Ninja pipeline is about to consume it.
-    compileConfig.arduino = arduinoConfig;
 
     // A preprocess result describes generated inputs but does not embed them.
     // Replay global hooks so a cleaned/interrupted build directory is restored
@@ -403,8 +402,20 @@ export class ArduinoCompiler {
     // 每次编译都需要执行，确保源文件变化能被检测到
     await this.prepareBuildDirectory(options.buildPath);
 
+    // Provider discovery owns only this compile's dependency arrays and effective
+    // platform; the saved preprocess input remains valid for hardware builds.
+    dependencies = dependencies.map(dependency => ({ ...dependency,
+      ...(dependency.includes ? { includes: [...dependency.includes] } : {}),
+      ...(dependency.others ? { others: [...dependency.others] } : {}),
+    }));
     const simulationRuntime = await prepareSimulationTransportSources(options.buildPath, !!options.simulationDebug,
-      resolveArtifactTargetMarkers(options.board, arduinoConfig.board).mcu, dependencies);
+      resolveArtifactTargetMarkers(options.board, arduinoConfig.board).mcu, dependencies,
+      { platformVersion: arduinoConfig.platform?.version, toolVersions,
+        sdkPath: arduinoConfig.platform?.['runtime.platform.path'], compilerSdkPath: arduinoConfig.platform?.['compiler.sdk.path'],
+        memoryType: arduinoConfig.platform?.['build.memory_type'] });
+    arduinoConfig = applySimulationTransportPlatform(arduinoConfig, simulationRuntime.providers);
+    compileConfig = { ...applySimulationTransportCompileConfig(compileConfig, simulationRuntime.providers), arduino: arduinoConfig,
+      ...(simulationRuntime.providerSourceInputs ? { simulationProviderSourceInputs: simulationRuntime.providerSourceInputs } : {}) };
 
     // The resolved preprocess result and pipeline own these facts. Recording
     // observes them without opening source, SDK, tool or linker search trees.
@@ -430,6 +441,8 @@ export class ArduinoCompiler {
         warnings: compileResult.warnings
       };
     }
+
+    await verifyPreparedSimulationProviderInputs(simulationRuntime.providerSourceInputs);
 
     // The pipeline now owns the complete hook/objcopy lifecycle and returns an
     // output that actually exists instead of guessing from platform families.

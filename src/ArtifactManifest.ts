@@ -3,6 +3,8 @@ import { createReadStream } from 'fs';
 import fs from 'fs-extra';
 import path from 'path';
 import { normalizeBuildTargetSelection, type BuildInputRecord } from './BuildInputRecord';
+import { ESP32C3_WIFI_PROVIDER, ESP32C3_BLE_PROVIDER, ESP32C6_WIFI_PROVIDER, ESP32C6_BLE_PROVIDER,
+  isC6WifiMemoryType } from './SimulationTransportSources';
 
 export type ArtifactFileRole =
   | 'application'
@@ -122,7 +124,7 @@ export interface SimulationArtifactManifest {
     };
     toolVersions: Record<string, string>;
     simulationProviders?: string[];
-  simulationNetwork?: { wifi: true; httpPort?: number };
+    simulationNetwork?: { wifi: true; httpPort?: number };
     inputs?: {
       schemaVersion: 1;
       kind: 'aily-build-input-reference';
@@ -1191,6 +1193,32 @@ export async function emitSimulationArtifactManifest(
         options.toolVersions,
       )
     : undefined;
+  if ((options.simulationProviders?.includes(ESP32C3_WIFI_PROVIDER) || options.simulationProviders?.includes(ESP32C3_BLE_PROVIDER))
+    && (options.simulationProviders.length !== 1 || target.mcu !== 'esp32c3'
+      || target.architecture !== 'esp32' || options.simulationNetwork !== undefined
+      || buildEnvironment?.arduinoCore.version !== '3.3.10' || buildEnvironment.espIdf.version !== '5.5.4'
+      || buildEnvironment.toolchain.name !== 'esp-rv32' || buildEnvironment.toolchain.version !== '14.2.0'
+      || options.toolVersions?.['esp32c3-libs'] !== '3.3.10' || !options.buildInputs)) {
+    throw new Error(options.simulationProviders?.includes(ESP32C3_BLE_PROVIDER)
+      ? 'C3 BLE simulation Artifact requires its exact SDK/IDF/tool ABI and recorded build inputs.'
+      : 'C3 Wi-Fi simulation Artifact requires its exact SDK/IDF/tool ABI and recorded build inputs.');
+  }
+  const recordedBuildProperties = options.buildInputs?.targetSelection?.resolvedBuildProperties;
+  const c6BleIpc = options.simulationProviders?.includes(ESP32C6_BLE_PROVIDER);
+  if ((c6BleIpc || options.simulationProviders?.includes(ESP32C6_WIFI_PROVIDER))
+    && (options.simulationProviders.length !== 1 || target.mcu !== 'esp32c6'
+      || target.architecture !== 'esp32' || options.simulationNetwork !== undefined
+      || buildEnvironment?.arduinoCore.version !== '3.3.10' || buildEnvironment.espIdf.version !== '5.5.4'
+      || buildEnvironment.toolchain.name !== 'esp-rv32' || buildEnvironment.toolchain.version !== '14.2.0'
+      || options.toolVersions?.['esp32c6-libs'] !== '3.3.10'
+      || recordedBuildProperties?.['build.mcu'] !== 'esp32c6'
+      || (c6BleIpc
+        ? recordedBuildProperties['build.memory_type'] !== 'qio_qspi'
+        : !isC6WifiMemoryType(recordedBuildProperties['build.memory_type'])))) {
+    throw new Error(c6BleIpc
+      ? 'C6 BLE IPC Artifact requires its exact SDK/IDF/tool ABI and recorded build inputs.'
+      : 'C6 Wi-Fi simulation Artifact requires its exact SDK/IDF/tool ABI and recorded build inputs.');
+  }
   const elf = files.find((file) => file.role === 'elf');
   const linkerMap = files.find((file) => file.role === 'map');
   const memoryMap = files.find((file) => file.role === 'memory-map');

@@ -8,6 +8,8 @@ import {
   resolveCompileToolVersions,
 } from '../src/ArduinoCompiler';
 import { emitSimulationArtifactManifest, type EmitArtifactManifestOptions } from '../src/ArtifactManifest';
+import type { BuildInputRecord } from '../src/BuildInputRecord';
+import { ESP32C3_WIFI_PROVIDER, ESP32C6_WIFI_PROVIDER, ESP32C6_BLE_PROVIDER } from '../src/SimulationTransportSources';
 import { applySimulationDebugProfile } from '../src/SimulationDebugProfile';
 import { projectPlatformBuildProperties } from '../src/PlatformPropertyProjector';
 
@@ -407,7 +409,7 @@ async function main(): Promise<void> {
     const persisted = JSON.parse(await readFile(manifestPath, 'utf8'));
     assert.deepEqual(persisted, manifest);
 
-    const c3Manifest = await emitSimulationArtifactManifest({
+    const c3Options: EmitArtifactManifestOptions = {
       buildPath: root,
       sketchPath,
       board: 'esp32:esp32:esp32c3',
@@ -434,7 +436,8 @@ async function main(): Promise<void> {
       sdkPath,
       primaryOutputPath: mergedPath,
       manifestPath: path.join(root, 'aily-artifact-manifest-c3.json'),
-    });
+    };
+    const c3Manifest = await emitSimulationArtifactManifest(c3Options);
     assert.deepEqual(c3Manifest.build.environment, {
       schemaVersion: 1,
       arduinoCore: {
@@ -453,6 +456,59 @@ async function main(): Promise<void> {
         source: 'toolVersions.esp-rv32',
       },
     });
+
+    const buildInputsFor = (mcu: string, memoryType = 'qio_qspi'): BuildInputRecord => {
+      const fqbn = `esp32:esp32:${mcu}`;
+      const facts: Omit<BuildInputRecord, 'digest'> = {
+        schemaVersion: 1, kind: 'aily-build-input-record', scope: 'build-graph-facts',
+        configurationSha256: 'a'.repeat(64), steps: [],
+        targetSelection: { schemaVersion: 1, requestedFqbn: fqbn, effectiveFqbn: fqbn,
+          menuOptions: {}, platform: { package: 'esp32', architecture: 'esp32', version: '3.3.10' },
+          resolvedBuildProperties: { 'build.mcu': mcu, 'build.memory_type': memoryType } },
+      };
+      return { ...facts, digest: createHash('sha256').update(JSON.stringify(facts)).digest('hex') };
+    };
+    const buildInputs = buildInputsFor('esp32c6');
+    const c6Options: EmitArtifactManifestOptions = {
+      ...c3Options,
+      board: 'esp32:esp32:esp32c6',
+      mcu: 'esp32c6',
+      manifestPath: path.join(root, 'aily-artifact-manifest-c6.json'),
+      toolVersions: { 'esp-rv32': '14.2.0', 'esp32c6-libs': '3.3.10' },
+      platformProperties: { ...c3Options.platformProperties, version: '3.3.10', 'compiler.sdk.path': chipSdkPath,
+        'recipe.hooks.objcopy.postobjcopy.3.pattern_args':
+          c3Options.platformProperties['recipe.hooks.objcopy.postobjcopy.3.pattern_args']!.replace('esp32c3', 'esp32c6') },
+      simulationProviders: [ESP32C6_WIFI_PROVIDER],
+      buildInputs,
+    };
+    const c6Manifest = await emitSimulationArtifactManifest(c6Options);
+    assert.deepEqual(c6Manifest.build.simulationProviders, [ESP32C6_WIFI_PROVIDER]);
+    assert.equal(c6Manifest.build.simulationNetwork, undefined);
+    assert.equal(c6Manifest.build.inputs?.digest, buildInputs.digest);
+    for (const changes of [
+      { board: c3Options.board, mcu: c3Options.mcu, buildInputs: buildInputsFor('esp32c3') },
+      { buildInputs: undefined },
+      { buildInputs: buildInputsFor('esp32c6', 'qio_opi') },
+      { toolVersions: { 'esp-rv32': '14.2.0', 'esp32c3-libs': '3.3.10' } },
+      { simulationProviders: [ESP32C6_WIFI_PROVIDER, ESP32C3_WIFI_PROVIDER] },
+      { simulationNetwork: { wifi: true as const } },
+    ]) {
+      await assert.rejects(emitSimulationArtifactManifest({ ...c6Options, ...changes }), /requires its exact SDK\/IDF\/tool ABI/);
+    }
+    const c6BleOptions: EmitArtifactManifestOptions = { ...c6Options,
+      manifestPath: path.join(root, 'aily-artifact-manifest-c6-ble-probe.json'),
+      simulationProviders: [ESP32C6_BLE_PROVIDER] };
+    const c6BleManifest = await emitSimulationArtifactManifest(c6BleOptions);
+    assert.deepEqual(c6BleManifest.build.simulationProviders, [ESP32C6_BLE_PROVIDER]);
+    assert.equal(c6BleManifest.build.inputs?.digest, buildInputs.digest);
+    for (const changes of [
+      { buildInputs: buildInputsFor('esp32c6', 'dio_qspi') },
+      { simulationProviders: [ESP32C6_BLE_PROVIDER, ESP32C6_WIFI_PROVIDER] },
+      { simulationNetwork: { wifi: true as const } },
+    ]) {
+      await assert.rejects(emitSimulationArtifactManifest({ ...c6BleOptions, ...changes }),
+        /C6 BLE IPC Artifact requires its exact SDK\/IDF\/tool ABI/);
+    }
 
     const chipSdkManifest = await emitSimulationArtifactManifest({ ...emitOptions,
       platformProperties: { ...emitOptions.platformProperties,
