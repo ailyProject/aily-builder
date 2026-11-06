@@ -136,6 +136,13 @@ export class NinjaGenerator {
       sketch_dir_path: (process.env['SKETCH_DIR_PATH'] || '').replace(/\\/g, '/')
     };
 
+    // This is a real generated graph input, committed by the existing raw
+    // ninja-plan hashes. The portable build-record schema remains unchanged.
+    if (this.compileConfig.sketchInputsDigest !== undefined) {
+      if (!/^[a-f0-9]{64}$/.test(this.compileConfig.sketchInputsDigest)) throw new Error('Invalid sketch input digest.');
+      this.ninjaFile.variables.aily_sketch_inputs_digest = this.compileConfig.sketchInputsDigest;
+    }
+
     // 添加 RP2040 平台变量（从 Arduino 配置中获取）
     if (this.compileConfig.arduino && this.compileConfig.arduino.platform) {
       const platform = this.compileConfig.arduino.platform;
@@ -538,8 +545,7 @@ export class NinjaGenerator {
       });
       if (dependency) {
         const relativePath = path.relative(dependency.path, sourceFile);
-        const prefixedFileName = relativePath.replace(/[\\/]/g, '_');
-        return path.join('sketch', `${prefixedFileName}.o`);
+        return path.join('sketch', dependencyName, `${relativePath}.o`);
       }
       return path.join('sketch', `${fileName}.o`);
     } else {

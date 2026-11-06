@@ -1,3 +1,4 @@
+import { collectSketchFiles, SKETCH_SOURCE_EXTENSIONS, USER_SKETCH_DEPENDENCY_NAME } from './SketchSources';
 import fs from 'fs-extra';
 import path from 'path';
 import { spawn } from 'child_process';
@@ -89,6 +90,7 @@ export class NinjaCompilationPipeline {
       const startTime = Date.now();
       const warnings: string[] = [];
       const buildPath = process.env['BUILD_PATH'] || '';
+      await this.invalidateChangedSketchInputs();
       const platformProgressEnabled = isPlatformRecipeProgressEnabled(
         compileConfig?.arduino?.platform
       );
@@ -589,7 +591,11 @@ export class NinjaCompilationPipeline {
     const result = new Map<string, string>();
     const roots = new Set<string>();
     for (const dependency of this.dependencies) {
-      if (dependency.path) {
+      if (dependency.name === USER_SKETCH_DEPENDENCY_NAME) {
+        for (const source of await collectSketchFiles(dependency.path)) {
+          if (SKETCH_SOURCE_EXTENSIONS.has(path.extname(source))) result.set(this.normalizeSourceKey(source), source);
+        }
+      } else if (dependency.path) {
         roots.add(path.resolve(dependency.path));
       }
     }
@@ -673,6 +679,9 @@ export class NinjaCompilationPipeline {
       if (!dependency) {
         this.logger.warn(`Hook generated source is outside known dependency roots: ${source}`);
         continue;
+      }
+      if (dependency.name === USER_SKETCH_DEPENDENCY_NAME) {
+        throw new Error('Sketch user sources changed in a build hook; retry preprocessing with stable inputs.');
       }
       dependency.includes = dependency.includes || [];
       if (!dependency.includes.some(existing => this.normalizeSourceKey(existing) === key)) {
@@ -1324,6 +1333,24 @@ export class NinjaCompilationPipeline {
     }
 
     return Array.from(files);
+  }
+
+  /** Sketch content hashes supplement Ninja's timestamp-based depfiles. */
+  private async invalidateChangedSketchInputs(): Promise<void> {
+    const fingerprint = this.compileConfig?.sketchInputFingerprint;
+    if (typeof fingerprint !== 'string' || !/^[a-f0-9]{64}:[a-f0-9]{64}$/.test(fingerprint)) return;
+    const buildPath = this.getValidatedBuildPath();
+    const marker = path.join(buildPath, '.aily-sketch-inputs-v1');
+    if (await fs.pathExists(marker) && (await fs.readFile(marker, 'utf8')).trim() === fingerprint) return;
+    const sourceOutputs = path.join(buildPath, 'sketch');
+    if (await fs.pathExists(sourceOutputs)) {
+      for (const filename of await glob(['**/*.o', '**/*.o.d'], { cwd: sourceOutputs, absolute: true, nodir: true, follow: false })) {
+        await fs.remove(filename);
+      }
+    }
+    // The graph is regenerated on every compile; removed units cannot remain
+    // link inputs even when their previous object still existed on disk.
+    await fs.outputFile(marker, fingerprint, 'utf8');
   }
 
   private async invalidateLocalOutputsForChangedContext(): Promise<boolean> {

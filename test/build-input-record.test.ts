@@ -1,3 +1,4 @@
+import { captureSketchSourceIdentity } from '../src/SketchSources';
 import assert from 'node:assert/strict';
 import { mkdtemp, mkdir, writeFile, rm, symlink, stat, readFile } from 'node:fs/promises';
 import os from 'node:os';
@@ -175,7 +176,7 @@ for (const selected of [false, true]) test(`preprocess reuse keeps parsed select
   const result = await compiler.compile({ sketchPath: path.join(f.source, 'sketch.ino'), buildPath: f.build,
     board: f.parsed.fqbn, buildProperties: { Speed: 'Fast' }, recordBuildInputs: true,
     artifactManifestPath: path.join(f.build, 'aily-artifact-manifest.json'),
-    preprocessResult: { success: true, preprocessTime: 0, arduinoConfig: f.parsed,
+    preprocessResult: { success: true, preprocessTime: 0, sketchSourceIdentity: await captureSketchSourceIdentity(path.join(f.source, 'sketch.ino')), arduinoConfig: f.parsed,
       compileConfig: { args: {}, compiler: {} }, dependencies: [] },
   });
   assert.equal(result.success, true, result.error);
@@ -200,7 +201,7 @@ test('ordinary compilation does not require complete simulation MCU facts or bui
     return { success: true, outFilePath: path.join(f.build, 'sketch.hex') };
   };
   const result = await compiler.compile({ sketchPath: path.join(f.source, 'sketch.ino'), buildPath: f.build,
-    board: f.parsed.fqbn, preprocessResult: { success: true, preprocessTime: 0, arduinoConfig: f.parsed,
+    board: f.parsed.fqbn, preprocessResult: { success: true, preprocessTime: 0, sketchSourceIdentity: await captureSketchSourceIdentity(path.join(f.source, 'sketch.ino')), arduinoConfig: f.parsed,
       compileConfig: { args: {}, compiler: {} }, dependencies: [] } });
   assert.equal(result.success, true, result.error);
   assert.equal(result.artifactManifest, undefined);

@@ -21,6 +21,7 @@ import {
   GENERATED_SKETCH_DEPENDENCY_NAME,
   getGeneratedSketchSourceRoot
 } from './GeneratedSketchSources';
+import { collectSketchFiles, collectUserSketchSources, USER_SKETCH_DEPENDENCY_NAME } from './SketchSources';
 import { getPathListDelimiter, toHostPathKey } from './utils/HostPlatform';
 
 export type { MacroDefinition } from './utils/PreprocessorExpression';
@@ -234,6 +235,14 @@ export class DependencyAnalyzer {
     // 4.5. 添加平台特定的必需库（如 STM32 SrcWrapper）
     await this.addPlatformSpecificLibraries(arduinoConfig);
 
+    const userSketchSources = await collectUserSketchSources(sketchPath);
+    if (userSketchSources.length > 0) {
+      this.dependencyList.set(USER_SKETCH_DEPENDENCY_NAME, {
+        name: USER_SKETCH_DEPENDENCY_NAME, path: path.dirname(path.resolve(sketchPath)),
+        type: 'sketch', includes: userSketchSources, others: []
+      });
+    }
+
     // Platform prebuild hooks may emit additional sketch translation units, for
     // example STM32's sketch/requiredLibraries.cpp. Persist them as a sketch
     // dependency so the compile phase consumes the exact files analyzed here.
@@ -255,23 +264,64 @@ export class DependencyAnalyzer {
     // Generated sources are separate translation units, so retain the platform
     // macro state from before the main sketch mutates its own analysis map.
     const generatedSourceMacros = new Map(this.macroDefinitions);
-    const mainIncludeFiles = await analyzeFile(sketchPath, this.macroDefinitions, {
-      hasInclude: includePath => this.canResolveKnownInclude(includePath, sketchPath)
-    });
+    const mainIncludeFiles = await this.analyzeSketchTranslationUnit(sketchPath, this.macroDefinitions);
 
     // 5. 递归分析依赖，resolveA用于确定是否处理预编译库
     let resolveA = arduinoConfig.platform['compiler.libraries.ldflags'] ? true : false;
     await this.resolveDependencies(mainIncludeFiles, resolveA);
 
-    for (const generatedSource of generatedSketchSources) {
+    for (const generatedSource of [...userSketchSources, ...generatedSketchSources]) {
       const translationUnitMacros = new Map(generatedSourceMacros);
-      const includeFiles = await analyzeFile(generatedSource, translationUnitMacros, {
-        hasInclude: includePath => this.canResolveKnownInclude(includePath, generatedSource)
-      });
+      const includeFiles = userSketchSources.includes(generatedSource)
+        ? await this.analyzeSketchTranslationUnit(generatedSource, translationUnitMacros)
+        : await analyzeFile(generatedSource, translationUnitMacros, {
+          hasInclude: includePath => this.canResolveKnownInclude(includePath, generatedSource)
+        });
       await this.resolveDependencies(includeFiles, resolveA, 0, 10, translationUnitMacros);
     }
 
     return Array.from(this.dependencyList.values());
+  }
+
+  /** Local headers execute in their translation unit, before library resolution. */
+  private async analyzeSketchTranslationUnit(sourceFile: string, macros: Map<string, MacroDefinition>): Promise<string[]> {
+    const root = path.dirname(path.resolve(process.env['SKETCH_PATH'] || sourceFile));
+    const generatedRoot = getGeneratedSketchSourceRoot();
+    const sourceRoot = generatedRoot && path.resolve(sourceFile).startsWith(`${generatedRoot}${path.sep}`) ? generatedRoot : root;
+    const allowed = new Set((await collectSketchFiles(sourceRoot)).map(filename => path.resolve(filename)));
+    allowed.add(path.resolve(sourceFile));
+    const includes: string[] = [], active = new Set<string>(), once = new Set<string>();
+    const localInclude = (include: string, file: string): string | undefined => {
+      const candidates = [path.resolve(path.dirname(file), include), path.resolve(sourceRoot, include)];
+      for (const candidate of candidates) {
+        if (!fs.existsSync(candidate) || !fs.statSync(candidate).isFile()) continue;
+        const relative = path.relative(sourceRoot, candidate);
+        if (relative.startsWith(`..${path.sep}`) || relative === '..' || path.isAbsolute(relative)) {
+          if (this.isPlatformHeaderPath(candidate)) return undefined;
+          throw new Error('Local sketch include escapes its source root; use a declared library instead.');
+        }
+        if (!allowed.has(candidate)) throw new Error(`Local sketch include is outside the supported source/header input boundary: ${relative}`);
+        if (fs.realpathSync(candidate) !== candidate) throw new Error(`Linked sketch include is not supported: ${relative}`);
+        return candidate;
+      }
+      return undefined;
+    };
+    const analyze = (filename: string): void => {
+      if (active.has(filename) || once.has(filename)) return;
+      active.add(filename);
+      try {
+        analyzeDirectiveTapeWithDefines(scanPreprocessorDirectives(fs.readFileSync(filename)), macros, {
+          onPragmaOnce: () => once.add(filename),
+          hasInclude: include => !!localInclude(include, filename) || this.canResolveKnownInclude(include, filename),
+          onInclude: include => {
+            const local = localInclude(include, filename);
+            if (local) analyze(local); else includes.push(include);
+          }
+        }, filename);
+      } finally { active.delete(filename); }
+    };
+    analyze(path.resolve(sourceFile));
+    return includes;
   }
 
   /**

@@ -1,3 +1,4 @@
+import { captureSketchSourceIdentity } from '../src/SketchSources';
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import { mkdir, mkdtemp, readFile, rm, stat, writeFile } from 'node:fs/promises';
@@ -188,14 +189,16 @@ test('fixed wrappers apply to a clone, preserve user flags, and cannot mix contr
 
 test('real Compiler reused preprocess is not polluted by simulation intent or injected dependencies', async t => {
   const directory = await fixture(t), compiler: any = new ArduinoCompiler(new Logger());
-  const preprocess = { success: true, preprocessTime: 0,
+  await mkdir(path.join(directory, 'source'));
+  await writeFile(path.join(directory, 'source/sketch.ino'), 'void setup() {}\nvoid loop() {}\n');
+  const preprocess = { success: true, preprocessTime: 0, sketchSourceIdentity: await captureSketchSourceIdentity(path.join(directory, 'source/sketch.ino')),
     arduinoConfig: { fqbn: 'esp32:esp32:esp32c3', board: { 'build.mcu': 'esp32c3' }, platform: { version: '3.3.10', 'compiler.c.elf.extra_flags': '-Wl,baseline' } },
     compileConfig: { args: { c: '-c -Os', cpp: '-c -Os', s: '-c', ld: '-Wl,baseline-link -o out' }, compiler: {} }, dependencies: [library('WiFi')] };
   const before = JSON.stringify(preprocess), observed: any[] = [];
   compiler.runGlobalPrebuild = async () => {}; compiler.prepareBuildDirectory = async () => {};
   compiler.ninjaPipeline.compile = async (value: any) => { observed.push(value); return { success: false, error: 'controlled stop before tool execution' }; };
   for (const simulationDebug of [true, false]) {
-    const result = await compiler.compile({ sketchPath: path.join(directory, 'sketch.ino'), buildPath: path.join(directory, 'build'),
+    const result = await compiler.compile({ sketchPath: path.join(directory, 'source/sketch.ino'), buildPath: path.join(directory, 'build'),
       board: 'esp32:esp32:esp32c3', simulationDebug, recordBuildInputs: true,
       artifactManifestPath: path.join(directory, 'build/aily-artifact-manifest.json'),
       toolVersions: { ...abi.toolVersions }, preprocessResult: preprocess });

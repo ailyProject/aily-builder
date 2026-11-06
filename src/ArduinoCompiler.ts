@@ -1,3 +1,4 @@
+import { captureSketchSourceIdentity, sameSketchSourceIdentity, type SketchSourceIdentity } from './SketchSources';
 import fs from 'fs-extra';
 import path from 'path';
 import { Logger } from './utils/Logger';
@@ -50,6 +51,7 @@ export interface PreprocessResult {
   dependencies?: any[];
   error?: string;
   cacheIdentity?: ArchiveCacheIdentity;
+  sketchSourceIdentity?: SketchSourceIdentity;
   // 保存编译所需的环境变量
   envVars?: Record<string, string>;
 }
@@ -170,6 +172,8 @@ export class ArduinoCompiler {
 
     try {
       this.logger.info(`Starting preprocessing...`);
+      process.env['SKETCH_PATH'] = path.resolve(options.sketchPath);
+      process.env['SKETCH_DIR_PATH'] = path.dirname(path.resolve(options.sketchPath));
 
       // 1. 验证sketch文件
       await this.validateSketch(options.sketchPath);
@@ -191,6 +195,8 @@ export class ArduinoCompiler {
       // Global prebuild hooks may generate response files, headers and source
       // files consumed by compile configuration and dependency analysis.
       await this.runGlobalPrebuild(arduinoConfig, options.buildPath);
+
+      const sketchSourceIdentity = await captureSketchSourceIdentity(options.sketchPath);
 
       // Preserve the fast analyzer: only the read-only work remains parallel,
       // after the mandatory prebuild barrier.
@@ -254,6 +260,9 @@ export class ArduinoCompiler {
 
       this.logger.verbose(`Saved ${Object.keys(envVars).length} environment variables for later compilation`);
 
+      if (!sameSketchSourceIdentity(sketchSourceIdentity, await captureSketchSourceIdentity(options.sketchPath))) {
+        throw new Error('Sketch inputs changed during preprocessing; retry with a stable sketch.');
+      }
       const cacheIdentity = this.createArchiveCacheIdentity(options, arduinoConfig, compileConfig);
       (compileConfig as any).cacheIdentity = cacheIdentity;
 
@@ -265,6 +274,7 @@ export class ArduinoCompiler {
         compileConfig,
         dependencies,
         cacheIdentity,
+        sketchSourceIdentity,
         toolVersions: { ...(options.toolVersions || {}) },
         envVars
       };
@@ -336,15 +346,21 @@ export class ArduinoCompiler {
     const toolVersions = resolveCompileToolVersions(options.toolVersions, options.preprocessResult);
 
     this.logger.info(`Starting compilation process...`);
+    // Preparation replaces SKETCH_PATH with a generated .cpp; every request
+    // must select its original entry again, including in-process retries.
+    process.env['SKETCH_PATH'] = path.resolve(options.sketchPath);
+    process.env['SKETCH_DIR_PATH'] = path.dirname(path.resolve(options.sketchPath));
 
     let preprocessTime: number;
     let arduinoConfig: any;
     let compileConfig: any;
     let dependencies: any[];
     let reusedPreprocessResult = false;
+    const sketchSourceIdentity = await captureSketchSourceIdentity(options.sketchPath);
 
     // 检查是否提供了预处理结果
-    if (options.preprocessResult && options.preprocessResult.success) {
+    if (options.preprocessResult && options.preprocessResult.success
+      && sameSketchSourceIdentity(options.preprocessResult.sketchSourceIdentity, sketchSourceIdentity)) {
       this.logger.info('Using provided preprocess result, skipping preprocessing...');
       preprocessTime = options.preprocessResult.preprocessTime;
       arduinoConfig = options.preprocessResult.arduinoConfig;
@@ -355,6 +371,7 @@ export class ArduinoCompiler {
         compileConfig.cacheIdentity = options.preprocessResult.cacheIdentity;
       }
     } else {
+      if (options.preprocessResult?.success) this.logger.info('Sketch inputs changed or lack an identity; refreshing preprocessing...');
       // 执行预处理
       const preprocessResult = await this.preprocess(options);
 
@@ -415,6 +432,8 @@ export class ArduinoCompiler {
         memoryType: arduinoConfig.platform?.['build.memory_type'] });
     arduinoConfig = applySimulationTransportPlatform(arduinoConfig, simulationRuntime.providers);
     compileConfig = { ...applySimulationTransportCompileConfig(compileConfig, simulationRuntime.providers), arduino: arduinoConfig,
+      sketchInputsDigest: sketchSourceIdentity.sketchInputs.digest,
+      sketchInputFingerprint: `${sketchSourceIdentity.entrySha256}:${sketchSourceIdentity.sketchInputs.digest}`,
       ...(simulationRuntime.providerSourceInputs ? { simulationProviderSourceInputs: simulationRuntime.providerSourceInputs } : {}) };
 
     // The resolved preprocess result and pipeline own these facts. Recording
@@ -442,6 +461,9 @@ export class ArduinoCompiler {
       };
     }
 
+    if (!sameSketchSourceIdentity(sketchSourceIdentity, await captureSketchSourceIdentity(options.sketchPath))) {
+      throw new Error('Sketch inputs changed during compilation; retry with a stable sketch.');
+    }
     await verifyPreparedSimulationProviderInputs(simulationRuntime.providerSourceInputs);
 
     // The pipeline now owns the complete hook/objcopy lifecycle and returns an
