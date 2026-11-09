@@ -1,5 +1,6 @@
 #!/usr/bin/env node
-import { Command } from 'commander';
+import { Command, Option } from 'commander';
+import { ESP32_SPP_TRANSPORT_PROFILE, ESP32_SPP_PROVIDER } from './src/SimulationTransportSources';
 import { ArduinoCompiler, PreprocessResult } from './src/ArduinoCompiler';
 import { ArduinoUploader } from './src/ArduinoUploader';
 import { Logger } from './src/utils/Logger';
@@ -258,6 +259,15 @@ program
           cliOption: '--simulation-debug',
           compileProfile: 'source-debug',
         },
+        simulationTransportProfile: {
+          schemaVersion: 1,
+          cliOption: '--simulation-transport-profile',
+          allowedValues: [ESP32_SPP_TRANSPORT_PROFILE],
+          providerByProfile: { [ESP32_SPP_TRANSPORT_PROFILE]: ESP32_SPP_PROVIDER },
+          requiresSimulationDebug: true,
+          requiresBuildInputRecord: true,
+          requiresArtifactManifest: true,
+        },
         debugInstrumentation: {
           schemaVersion: 1,
           detection: 'linked-symbol',
@@ -343,6 +353,8 @@ program
     'Compile source and library objects with source-level debug information',
     false
   )
+  .addOption(new Option('--simulation-transport-profile <profile>',
+    'Explicit admitted project simulation transport profile').choices([ESP32_SPP_TRANSPORT_PROFILE]))
   .action(async (sketch, options) => {
     // console.log('options:', options);
     logger.setVerbose(options.verbose);
@@ -576,6 +588,7 @@ program
         gpioDirections,
         gpioPulls,
         simulationDebug: options.simulationDebug,
+        simulationTransportProfile: options.simulationTransportProfile,
         recordBuildInputs: options.recordBuildInputs,
       };
 

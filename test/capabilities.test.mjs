@@ -38,6 +38,12 @@ assert.deepEqual(capabilities.capabilities.buildInputRecord, {
 });
 assert.equal(capabilities.schemaVersion, 1);
 assert.equal(capabilities.service, 'aily-builder');
+assert.deepEqual(capabilities.capabilities.simulationTransportProfile, {
+  schemaVersion: 1, cliOption: '--simulation-transport-profile',
+  allowedValues: ['esp32-classic-spp-ahc2-v2'],
+  providerByProfile: { 'esp32-classic-spp-ahc2-v2': 'aily.esp32-spp-vhci-v2' },
+  requiresSimulationDebug: true, requiresBuildInputRecord: true, requiresArtifactManifest: true,
+});
 assert.equal(capabilities.version, JSON.parse(readFileSync(path.join(repositoryRoot, 'package.json'), 'utf8')).version);
 assert.deepEqual(
   capabilities.capabilities.simulationArtifactManifest,

@@ -9,7 +9,8 @@ import { DependencyAnalyzer } from './DependencyAnalyzer';
 import { sanitizeNonAsciiPaths, sanitizeObjectPaths } from './utils/ShortPath';
 import { emitSimulationArtifactManifest, SimulationArtifactManifest } from './ArtifactManifest';
 import { applySimulationDebugProfile } from './SimulationDebugProfile';
-import { applySimulationTransportCompileConfig, applySimulationTransportPlatform, prepareSimulationTransportSources, verifyPreparedSimulationProviderInputs } from './SimulationTransportSources';
+import { applySimulationTransportCompileConfig, applySimulationTransportPlatform, prepareSimulationTransportSources, verifyPreparedSimulationProviderInputs,
+  validateSimulationTransportProfile, type SimulationTransportProfile } from './SimulationTransportSources';
 import { BuildInputRecording } from './BuildInputRecord';
 import { collectPackageIdentitiesFromPaths, extractPackageIdentityFromPath } from './utils/PackageIdentity';
 import { RecipeRunner, RecipeRunnerError } from './RecipeRunner';
@@ -76,6 +77,8 @@ export interface CompileOptions {
   gpioDirections?: Record<string, 'input' | 'output'>;
   gpioPulls?: Record<string, 'up' | 'down'>;
   simulationDebug?: boolean;
+  /** Explicit normal project/profile selection; no environment-based opt-in. */
+  simulationTransportProfile?: SimulationTransportProfile;
   recordBuildInputs?: boolean;
 }
 
@@ -343,6 +346,10 @@ export class ArduinoCompiler {
   }
 
   private async compileInternal(options: CompileOptions, startTime: number): Promise<CompileResult> {
+    const simulationTransportProfile = validateSimulationTransportProfile(options.simulationTransportProfile);
+    if (simulationTransportProfile && (!options.simulationDebug || !options.recordBuildInputs || !options.artifactManifestPath)) {
+      throw new Error('Explicit simulation transport profile requires simulation debug, recorded inputs and an Artifact manifest.');
+    }
     const toolVersions = resolveCompileToolVersions(options.toolVersions, options.preprocessResult);
 
     this.logger.info(`Starting compilation process...`);
@@ -427,11 +434,12 @@ export class ArduinoCompiler {
     }));
     const simulationRuntime = await prepareSimulationTransportSources(options.buildPath, !!options.simulationDebug,
       resolveArtifactTargetMarkers(options.board, arduinoConfig.board).mcu, dependencies,
-      { platformVersion: arduinoConfig.platform?.version, toolVersions,
+      { profile: simulationTransportProfile, platformVersion: arduinoConfig.platform?.version, toolVersions,
         sdkPath: arduinoConfig.platform?.['runtime.platform.path'], compilerSdkPath: arduinoConfig.platform?.['compiler.sdk.path'],
         memoryType: arduinoConfig.platform?.['build.memory_type'] });
     arduinoConfig = applySimulationTransportPlatform(arduinoConfig, simulationRuntime.providers);
     compileConfig = { ...applySimulationTransportCompileConfig(compileConfig, simulationRuntime.providers), arduino: arduinoConfig,
+      ...(simulationTransportProfile ? { simulationTransportProfile } : {}),
       sketchInputsDigest: sketchSourceIdentity.sketchInputs.digest,
       sketchInputFingerprint: `${sketchSourceIdentity.entrySha256}:${sketchSourceIdentity.sketchInputs.digest}`,
       ...(simulationRuntime.providerSourceInputs ? { simulationProviderSourceInputs: simulationRuntime.providerSourceInputs } : {}) };
@@ -497,6 +505,7 @@ export class ArduinoCompiler {
         manifestPath: options.artifactManifestPath,
         buildInputs,
         simulationProviders: simulationRuntime.providers,
+        simulationTransportProfile,
         simulationNetwork: simulationRuntime.network,
       });
       this.logger.info(`Simulation artifact manifest: ${options.artifactManifestPath}`);

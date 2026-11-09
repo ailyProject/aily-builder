@@ -4,6 +4,37 @@ import { createHash } from 'crypto';
 import type { Dependency } from './DependencyAnalyzer';
 
 export const ESP32_VHCI_PROVIDER = 'aily.esp32-vhci-v1';
+export const ESP32_SPP_PROVIDER = 'aily.esp32-spp-vhci-v2';
+/** Only the admitted normal project compilation may explicitly opt into AHC2.
+ * Undefined preserves historical AHC1 BluetoothSerial selection. */
+export const ESP32_SPP_TRANSPORT_PROFILE = 'esp32-classic-spp-ahc2-v2';
+export type SimulationTransportProfile = typeof ESP32_SPP_TRANSPORT_PROFILE;
+export function validateSimulationTransportProfile(value: unknown): SimulationTransportProfile | undefined {
+  if (value === undefined) return undefined;
+  if (value !== ESP32_SPP_TRANSPORT_PROFILE) throw new Error('Unknown explicit simulation transport profile.');
+  return value;
+}
+export const ESP32_SPP_LINKER_WRAPPERS = Object.freeze([
+  'esp_bt_controller_init', 'esp_bt_controller_enable', 'esp_bt_controller_disable', 'esp_bt_controller_deinit',
+  'esp_vhci_host_check_send_available', 'esp_vhci_host_register_callback', 'esp_vhci_host_send_packet',
+  'esp_bt_controller_get_status', 'controller_get_interface',
+] as const);
+/** Classic Bluedroid LE uses the common AHC2 packet transport, never SPP AHC1. */
+export const ESP32_BLE_PROVIDER = 'aily.esp32-ble-vhci-v1';
+export const ESP32_BLE_LINKER_WRAPPERS = Object.freeze([
+  'esp_bt_controller_init', 'esp_bt_controller_enable', 'esp_bt_controller_disable', 'esp_bt_controller_deinit',
+  'esp_vhci_host_check_send_available', 'esp_vhci_host_register_callback', 'esp_vhci_host_send_packet',
+  'esp_ble_tx_power_get', 'esp_bt_controller_get_status',
+  'esp_ble_gap_config_scan_rsp_data_raw',
+] as const);
+/** Preserve the SDK Arduino HAL release wrappers and their mode bookkeeping.
+ * Its __real calls resolve to these fixed provider functions even when libbt's
+ * whole bt.c object is linked for other selected Bluedroid APIs. */
+export const ESP32_BLE_LINKER_BINDINGS = Object.freeze([
+  'esp_bt_mem_release=aily_classic_bt_mem_release',
+  'esp_bt_controller_mem_release=aily_classic_bt_controller_mem_release',
+] as const);
+export const ESP32_SPP_LINKER_BINDINGS = ESP32_BLE_LINKER_BINDINGS;
 export const ESP32C3_BLE_PROVIDER = 'aily.esp32c3-ble-vhci-v1';
 export const ESP32C3_BLE_LINKER_WRAPPERS = Object.freeze([
   'esp_bt_controller_init', 'esp_bt_controller_enable', 'esp_bt_controller_disable', 'esp_bt_controller_deinit',
@@ -46,11 +77,19 @@ const C3_BLE_DEPENDENCY = '__simulation_transport_c3_ble__';
 const C6_BLE_IPC_DIRECTORY = 'aily-esp32c6-ble-nimble-v1';
 const C6_BLE_IPC_FILES = ['aily-c6-ble-hci-ipc-v1.c', 'aily_packet_abi.h'] as const;
 const C6_BLE_IPC_DEPENDENCY = '__simulation_transport_c6_ble_ipc__';
+const CLASSIC_BLE_DIRECTORY = 'aily-esp32-ble-vhci-v1';
+const CLASSIC_BLE_FILES = ['aily-classic-ble-vhci-v1.c', 'aily_packet_abi.h'] as const;
+const CLASSIC_BLE_DEPENDENCY = '__simulation_transport_classic_ble__';
+const CLASSIC_SPP_DIRECTORY = 'aily-esp32-spp-vhci-v2';
+const CLASSIC_SPP_FILES = ['aily-classic-spp-vhci-v2.c', 'aily-classic-vhci-ahc2.inc', 'aily_packet_abi.h',
+  'aily-classic-spp-controller-interface.h'] as const;
+const CLASSIC_SPP_DEPENDENCY = '__simulation_transport_classic_spp_v2__';
 const CLASSIC_WIFI_DIRECTORY = 'aily-esp32-wifi-openeth-v1';
 const CLASSIC_WIFI_FILES = ['aily-classic-wifi-driver-v1.c', 'aily-openeth.c',
   'aily-openeth.h', 'awf-control-v1.h'] as const;
 const CLASSIC_WIFI_DEPENDENCY = '__simulation_transport_classic_wifi__';
 export interface SimulationTransportAbi {
+  profile?: SimulationTransportProfile;
   platformVersion?: string;
   sdkPath?: string;
   compilerSdkPath?: string;
@@ -59,7 +98,7 @@ export interface SimulationTransportAbi {
 }
 export interface PreparedSimulationProviderInputs {
   schemaVersion: 1;
-  provider: typeof ESP32C3_BLE_PROVIDER | typeof ESP32C6_BLE_PROVIDER | typeof ESP32_WIFI_OPENETH_PROVIDER;
+  provider: typeof ESP32_SPP_PROVIDER | typeof ESP32_BLE_PROVIDER | typeof ESP32C3_BLE_PROVIDER | typeof ESP32C6_BLE_PROVIDER | typeof ESP32_WIFI_OPENETH_PROVIDER;
   scope: 'prepared-and-verified-sources-not-compiler-consumption';
   sources: Array<{ path: string; bytes: number; sha256: string }>;
   selectedSdk: Array<{ path: string; bytes: number; sha256: string }>;
@@ -71,12 +110,16 @@ export interface SimulationTransportSources {
 }
 
 function selectWrappedProvider(providers: readonly string[]) {
+  const classicSpp = providers.includes(ESP32_SPP_PROVIDER)
+    ? { name: 'Classic SPP AHC2', symbols: ESP32_SPP_LINKER_WRAPPERS, bindings: ESP32_SPP_LINKER_BINDINGS } : undefined;
+  const classicBle = providers.includes(ESP32_BLE_PROVIDER)
+    ? { name: 'Classic BLE VHCI', symbols: ESP32_BLE_LINKER_WRAPPERS, bindings: ESP32_BLE_LINKER_BINDINGS } : undefined;
   const c6BleIpc = providers.includes(ESP32C6_BLE_PROVIDER)
     ? { name: 'C6 BLE IPC', symbols: ESP32C6_BLE_LINKER_WRAPPERS }
     : undefined;
   const selected = providers.includes(ESP32_WIFI_OPENETH_PROVIDER)
     ? { name: 'Classic Wi-Fi OpenETH', symbols: ESP32C3_WIFI_LINKER_WRAPPERS }
-    : c6BleIpc ?? (providers.includes(ESP32C3_BLE_PROVIDER)
+    : classicSpp ?? classicBle ?? c6BleIpc ?? (providers.includes(ESP32C3_BLE_PROVIDER)
     ? { name: 'C3 BLE', symbols: ESP32C3_BLE_LINKER_WRAPPERS }
     : providers.includes(ESP32C3_WIFI_PROVIDER)
       ? { name: 'C3 Wi-Fi', symbols: ESP32C3_WIFI_LINKER_WRAPPERS }
@@ -100,7 +143,10 @@ export function applySimulationTransportPlatform<T>(configuration: T, providers:
   }
   const previous = record.platform['compiler.c.elf.extra_flags'];
   if (previous !== undefined && typeof previous !== 'string') throw new Error('Invalid resolved linker flags.');
-  const wraps = selected.symbols.map(symbol => `-Wl,--wrap,${symbol}`).join(' ');
+  if (providers.includes(ESP32_SPP_PROVIDER)) rejectMixedClassicSppLinkerIntent(previous ?? '');
+  const flags = selected.symbols.map(symbol => `-Wl,--wrap,${symbol}`);
+  if ('bindings' in selected) flags.push(...selected.bindings.map(binding => `-Wl,--defsym,${binding}`));
+  const wraps = flags.join(' ');
   return { ...record, platform: { ...record.platform,
     'compiler.c.elf.extra_flags': previous ? `${previous} ${wraps}` : wraps } } as T;
 }
@@ -115,8 +161,18 @@ export function applySimulationTransportCompileConfig<T>(configuration: T, provi
   if (!record || typeof record !== 'object' || !record.args || typeof record.args.ld !== 'string') {
     throw new Error(`${selected.name} provider requires resolved linker arguments.`);
   }
-  const wraps = selected.symbols.map(symbol => `-Wl,--wrap,${symbol}`).join(' ');
+  if (providers.includes(ESP32_SPP_PROVIDER)) rejectMixedClassicSppLinkerIntent(record.args.ld);
+  const flags = selected.symbols.map(symbol => `-Wl,--wrap,${symbol}`);
+  if ('bindings' in selected) flags.push(...selected.bindings.map(binding => `-Wl,--defsym,${binding}`));
+  const wraps = flags.join(' ');
   return { ...record, args: { ...record.args, ld: `${record.args.ld} ${wraps}` } } as T;
+}
+
+function rejectMixedClassicSppLinkerIntent(flags: string): void {
+  if (/--wrap(?:,|=)(?:esp_bt_controller_(?:init|enable|disable|deinit|get_status)|esp_vhci_host_|esp_ble_|controller_get_interface)/.test(flags)
+    || /aily_classic_bt_|aily-esp32-vhci-v1|aily-esp32-ble-vhci-v1/.test(flags)) {
+    throw new Error('Classic SPP AHC2 cannot mix or replay controller linker intent.');
+  }
 }
 
 function requireC3Abi(abi: SimulationTransportAbi | undefined, provider = 'C3 Wi-Fi'): void {
@@ -168,6 +224,30 @@ async function sourceIdentity(filename: string, maximum: number) {
  * bookend does not assert that a compiler executed or consumed any given byte. */
 export async function verifyPreparedSimulationProviderInputs(inputs?: PreparedSimulationProviderInputs): Promise<void> {
   if (!inputs) return;
+  if (inputs.provider === ESP32_SPP_PROVIDER) {
+    if (inputs.schemaVersion !== 1 || inputs.sources.length !== 4 || inputs.selectedSdk.length !== 21) {
+      throw new Error('Invalid prepared classic SPP AHC2 input identity.');
+    }
+    for (const expected of [...inputs.sources, ...inputs.selectedSdk]) {
+      const actual = await sourceIdentity(expected.path, 8 * 1024 * 1024);
+      if (actual.bytes !== expected.bytes || actual.sha256 !== expected.sha256) {
+        throw new Error('Prepared classic SPP AHC2 input changed before Artifact emission.');
+      }
+    }
+    return;
+  }
+  if (inputs.provider === ESP32_BLE_PROVIDER) {
+    if (inputs.schemaVersion !== 1 || inputs.sources.length !== 2 || inputs.selectedSdk.length !== 10) {
+      throw new Error('Invalid prepared classic BLE VHCI input identity.');
+    }
+    for (const expected of [...inputs.sources, ...inputs.selectedSdk]) {
+      const actual = await sourceIdentity(expected.path, 8 * 1024 * 1024);
+      if (actual.bytes !== expected.bytes || actual.sha256 !== expected.sha256) {
+        throw new Error('Prepared classic BLE VHCI input changed before Artifact emission.');
+      }
+    }
+    return;
+  }
   if (inputs.provider === ESP32_WIFI_OPENETH_PROVIDER) {
     if (inputs.schemaVersion !== 1 || inputs.sources.length !== 4 || inputs.selectedSdk.length !== 8) {
       throw new Error('Invalid prepared classic Wi-Fi OpenETH input identity.');
@@ -265,6 +345,91 @@ async function requireC6BleIpcSdk(abi: SimulationTransportAbi | undefined, depen
   }))];
 }
 
+async function requireClassicBleSdk(abi: SimulationTransportAbi | undefined, dependencies: Dependency[]) {
+  if (abi?.platformVersion !== '3.3.10' || abi.toolVersions?.['esp32-libs'] !== '3.3.10'
+    || abi.toolVersions?.['esp-x32'] !== '14.2.0' || !isC6WifiMemoryType(abi.memoryType)
+    || !abi.sdkPath || !abi.compilerSdkPath
+    || [abi.sdkPath, abi.compilerSdkPath].some(value => !path.isAbsolute(value) || /[{}\x00-\x1f]/.test(value))) {
+    throw new Error('Classic BLE VHCI requires Arduino 3.3.10, esp32-libs 3.3.10 dio_qspi/qio_qspi and esp-x32 14.2.0.');
+  }
+  const library = path.join(abi.sdkPath, 'libraries', 'BLE');
+  const expected = await fs.realpath(path.join(library, 'src'));
+  const selected = dependencies.filter(item => item.type === 'library' && item.name === 'BLE');
+  if (selected.length !== 1 || await fs.realpath(selected[0].path) !== expected) {
+    throw new Error('Classic BLE VHCI requires the selected Arduino SDK BLE library.');
+  }
+  // Exact public Bluedroid/VHCI ABI and host implementation. Preparation identity
+  // is separately bookended; normal build-input records bind actual compiler use.
+  const pins: Record<string, string> = {
+    [path.join(abi.compilerSdkPath, abi.memoryType, 'include/sdkconfig.h')]: abi.memoryType === 'dio_qspi'
+      ? '1ce600ddcbc213ab68d518f5150d99fa26a325e1992cfbcd521860de5e65dc72'
+      : 'd10e864388ee37191e43a605bef5b99033cc51e939aa5425169d231647735b6b',
+    [path.join(abi.compilerSdkPath, 'include/esp_common/include/esp_idf_version.h')]: 'da41e7251d748325eea76ae95f329f77434092afde399882dd9ee3d42ea68b20',
+    [path.join(abi.compilerSdkPath, 'include/bt/include/esp32/include/esp_bt.h')]: '91d438f659ddce5a13ef14568ca00e125537dd2a052059cf39ecb5235f18457f',
+    [path.join(abi.compilerSdkPath, 'include/bt/host/bluedroid/api/include/api/esp_bt_main.h')]: '592479eeafa1e64c0a59520e8a6e96b503a725aad6a0366e7c4916ec3207e277',
+    [path.join(abi.compilerSdkPath, 'include/bt/host/bluedroid/api/include/api/esp_gap_ble_api.h')]: '786d19364ef413f2b0ff895ef0f3c1e61b3c16453937580f7294460d38604be1',
+    [path.join(abi.compilerSdkPath, 'lib/libbt.a')]: 'd500529efd1d391492a4e5798f39f722e3bf0bbc359ff7c819bce56b1ca7141f',
+    [path.join(abi.compilerSdkPath, 'ld/libbtdm_app.a')]: 'bfa8a139b8c405090646e71914880d7979c876e9ade375f007f4bd2779c45007',
+    [path.join(library, 'library.properties')]: 'acee400594ae05f7d1f8a4fa4055efae3b507fd71fc7d3b78e436c6fb65a2f2c',
+    [path.join(expected, 'BLEDevice.cpp')]: 'ec3735051f3263fc0101986fe33602a2593c294c6ccbd9f7b1b416c15529c3c9',
+    [path.join(abi.sdkPath, 'cores/esp32/esp32-hal-bt.c')]: 'd5100e4fe91223162b45533c0a50dfadc4cce2a1b6c30372c31d54cada3f63c1',
+  };
+  return Promise.all(Object.entries(pins).map(async ([filename, sha256]) => {
+    const identity = await sourceIdentity(filename, 8 * 1024 * 1024);
+    if (identity.sha256 !== sha256) throw new Error(`Classic BLE VHCI SDK input differs: ${path.basename(filename)}`);
+    return identity;
+  }));
+}
+
+async function requireClassicSppSdk(abi: SimulationTransportAbi | undefined, dependencies: Dependency[]) {
+  if (abi?.platformVersion !== '3.3.10' || abi.toolVersions?.['esp32-libs'] !== '3.3.10'
+    || abi.toolVersions?.['esp-x32'] !== '14.2.0' || !isC6WifiMemoryType(abi.memoryType)
+    || !abi.sdkPath || !abi.compilerSdkPath
+    || [abi.sdkPath, abi.compilerSdkPath].some(value => !path.isAbsolute(value) || /[{}\x00-\x1f]/.test(value))) {
+    throw new Error('Classic SPP AHC2 requires Arduino 3.3.10, esp32-libs 3.3.10 dio_qspi/qio_qspi and esp-x32 14.2.0.');
+  }
+  const library = path.join(abi.sdkPath, 'libraries', 'BluetoothSerial');
+  const expected = await fs.realpath(path.join(library, 'src'));
+  const selected = dependencies.filter(item => item.type === 'library' && item.name === 'BluetoothSerial');
+  if (selected.length !== 1 || await fs.realpath(selected[0].path) !== expected) {
+    throw new Error('Classic SPP AHC2 requires the selected Arduino SDK BluetoothSerial library.');
+  }
+  const sourceNames = ['BTAddress.cpp', 'BTAddress.h', 'BTAdvertisedDevice.h', 'BTAdvertisedDeviceSet.cpp',
+    'BTScan.h', 'BTScanResultsSet.cpp', 'BluetoothSerial.cpp', 'BluetoothSerial.h'];
+  if (JSON.stringify((await fs.readdir(expected)).sort()) !== JSON.stringify(sourceNames.sort())) {
+    throw new Error('Classic SPP AHC2 BluetoothSerial source set differs.');
+  }
+  const pins: Record<string, string> = {
+    [path.join(abi.compilerSdkPath, abi.memoryType, 'include/sdkconfig.h')]: abi.memoryType === 'dio_qspi'
+      ? '1ce600ddcbc213ab68d518f5150d99fa26a325e1992cfbcd521860de5e65dc72' : 'd10e864388ee37191e43a605bef5b99033cc51e939aa5425169d231647735b6b',
+    [path.join(abi.compilerSdkPath, 'include/esp_common/include/esp_idf_version.h')]: 'da41e7251d748325eea76ae95f329f77434092afde399882dd9ee3d42ea68b20',
+    [path.join(abi.compilerSdkPath, 'include/bt/include/esp32/include/esp_bt.h')]: '91d438f659ddce5a13ef14568ca00e125537dd2a052059cf39ecb5235f18457f',
+    [path.join(abi.compilerSdkPath, 'include/bt/host/bluedroid/api/include/api/esp_bt_main.h')]: '592479eeafa1e64c0a59520e8a6e96b503a725aad6a0366e7c4916ec3207e277',
+    [path.join(abi.compilerSdkPath, 'include/bt/host/bluedroid/api/include/api/esp_gap_bt_api.h')]: '6dd231fc921617f86fc8df77b9704b8d9d2a4fced0ef6c3d69ce98c99c519f7a',
+    [path.join(abi.compilerSdkPath, 'include/bt/host/bluedroid/api/include/api/esp_spp_api.h')]: '598683eac2a0c6a97d5bffa1ad331e6478b64338aca280480f5691ae0d88ad3f',
+    [path.join(abi.compilerSdkPath, 'include/bt/host/bluedroid/api/include/api/esp_bt_device.h')]: 'f77ca8b17b081eb9e9f509082d4d29d63860440c127f9ab34c944b2b1c8e168d',
+    [path.join(abi.compilerSdkPath, 'lib/libbt.a')]: 'd500529efd1d391492a4e5798f39f722e3bf0bbc359ff7c819bce56b1ca7141f',
+    [path.join(abi.compilerSdkPath, 'ld/libbtdm_app.a')]: 'bfa8a139b8c405090646e71914880d7979c876e9ade375f007f4bd2779c45007',
+    [path.join(library, 'library.properties')]: 'efbc5369d6d52427361b9504fd1ad18c8958c30ad4985a88aa7d71b601449ef3',
+    [path.join(library, 'src/BluetoothSerial.cpp')]: '2d4639611e768738fc528e0f68999b028154b5a7f6db18485baac6a72037e188',
+    [path.join(library, 'src/BluetoothSerial.h')]: '8b697048f9904cd021433bf9bd07d1a857fc1066cd5025cbb8124f8548eaef14',
+    [path.join(library, 'src/BTAddress.cpp')]: 'dae8a3f97b6fea7f43b3c831ef0f7babdbb8f1cc8ac23ede684096aa0dc67863',
+    [path.join(library, 'src/BTAddress.h')]: 'a40ebb05a426ac1f9c6361c00e1121182ff7530d009207aab15e638da87695fc',
+    [path.join(library, 'src/BTAdvertisedDeviceSet.cpp')]: '26c685808058fe33cb2e78504cd54e182ee070ab0a3c2c594114f2861148ba61',
+    [path.join(library, 'src/BTAdvertisedDevice.h')]: '2ebb9dbbec68676f47fef5335bb0e62de3b4ad66a1570c27228e188f61559662',
+    [path.join(library, 'src/BTScanResultsSet.cpp')]: '101b31d29b17288cf92949b2da7be657e234d97d8c29bb53e7e0272b02e3eaf1',
+    [path.join(library, 'src/BTScan.h')]: '79cc82693edcfe9a6dea537f15adefbe581b8150f575d0c14c2f7eb3683026e2',
+    [path.join(abi.sdkPath, 'cores/esp32/esp32-hal-bt.c')]: 'd5100e4fe91223162b45533c0a50dfadc4cce2a1b6c30372c31d54cada3f63c1',
+    [path.join(abi.sdkPath, 'cores/esp32/esp32-hal-bt.h')]: '463ebab71f0d58224adaaa942e3ddebc5195097e40aaf4664cf4222d4e84c154',
+    [path.join(abi.sdkPath, 'cores/esp32/esp32-hal-alloc-bt-classic-mem.h')]: 'df258c9e0595928ceeef3d0e91749e00a846a3a3a7afada833d5a558b62ed807',
+  };
+  return Promise.all(Object.entries(pins).map(async ([filename, sha256]) => {
+    const identity = await sourceIdentity(filename, 8 * 1024 * 1024);
+    if (identity.sha256 !== sha256) throw new Error(`Classic SPP AHC2 SDK input differs: ${path.basename(filename)}`);
+    return identity;
+  }));
+}
+
 async function requireClassicWifiSdk(abi: SimulationTransportAbi | undefined, dependencies: Dependency[]) {
   if (abi?.platformVersion !== '3.3.10' || abi.toolVersions?.['esp32-libs'] !== '3.3.10'
     || abi.toolVersions?.['esp-x32'] !== '14.2.0'
@@ -326,8 +491,27 @@ export async function prepareSimulationTransportSources(
   const c6Directory = path.join(buildPath, 'sketch', C6_DIRECTORY);
   const c3BleDirectory = path.join(buildPath, 'sketch', C3_BLE_DIRECTORY);
   const c6BleIpcDirectory = path.join(buildPath, 'sketch', C6_BLE_IPC_DIRECTORY);
+  const classicBleDirectory = path.join(buildPath, 'sketch', CLASSIC_BLE_DIRECTORY);
+  const classicSppDirectory = path.join(buildPath, 'sketch', CLASSIC_SPP_DIRECTORY);
   const classicWifiDirectory = path.join(buildPath, 'sketch', CLASSIC_WIFI_DIRECTORY);
   const requestedLibrary = (name: string) => dependencies.some(item => item.type === 'library' && item.name === name);
+  const profile = validateSimulationTransportProfile(abi?.profile);
+  const classicSpp = profile === ESP32_SPP_TRANSPORT_PROFILE;
+  if (classicSpp && (!simulationDebug || mcu !== 'esp32' || !requestedLibrary('BluetoothSerial'))) {
+    throw new Error('Classic SPP AHC2 profile requires simulation ESP32 and the selected BluetoothSerial library.');
+  }
+  if (classicSpp && ['BLE', 'WiFi', 'NimBLE-Arduino'].some(requestedLibrary)) {
+    throw new Error('Classic SPP AHC2 cannot be mixed with BLE, Wi-Fi or third-party controller providers.');
+  }
+  const selectedClassicSppSdk = classicSpp ? await requireClassicSppSdk(abi, dependencies) : undefined;
+  const classicBle = simulationDebug && mcu === 'esp32' && requestedLibrary('BLE');
+  if (classicBle && ['WiFi', 'BluetoothSerial', 'NimBLE-Arduino'].some(requestedLibrary)) {
+    throw new Error('Classic BLE VHCI cannot be mixed with Wi-Fi, SPP or third-party controller providers.');
+  }
+  if (simulationDebug && mcu === 'esp32' && requestedLibrary('NimBLE-Arduino')) {
+    throw new Error('Classic BLE VHCI requires the selected Arduino SDK BLE library.');
+  }
+  const selectedClassicBleSdk = classicBle ? await requireClassicBleSdk(abi, dependencies) : undefined;
   const classicWifi = simulationDebug && mcu === 'esp32' && requestedLibrary('WiFi');
   if (classicWifi && ['BLE', 'BluetoothSerial', 'NimBLE-Arduino'].some(requestedLibrary)) {
     throw new Error('Classic Wi-Fi OpenETH cannot be mixed with an unverified Bluetooth controller provider.');
@@ -353,10 +537,12 @@ export async function prepareSimulationTransportSources(
   const ownedPaths = new Set([destination, ...C3_FILES.map(name => path.join(c3Directory, name)),
     ...C6_FILES.map(name => path.join(c6Directory, name)), ...C3_BLE_FILES.map(name => path.join(c3BleDirectory, name)),
     ...C6_BLE_IPC_FILES.map(name => path.join(c6BleIpcDirectory, name)),
+    ...CLASSIC_BLE_FILES.map(name => path.join(classicBleDirectory, name)),
+    ...CLASSIC_SPP_FILES.map(name => path.join(classicSppDirectory, name)),
     ...CLASSIC_WIFI_FILES.map(name => path.join(classicWifiDirectory, name))]
     .map(value => path.resolve(value)));
   for (let index = dependencies.length - 1; index >= 0; index--) {
-    if (['__simulation_transport__', C3_DEPENDENCY, C6_DEPENDENCY, C3_BLE_DEPENDENCY, C6_BLE_IPC_DEPENDENCY, CLASSIC_WIFI_DEPENDENCY].includes(dependencies[index].name)) dependencies.splice(index, 1);
+    if (['__simulation_transport__', C3_DEPENDENCY, C6_DEPENDENCY, C3_BLE_DEPENDENCY, C6_BLE_IPC_DEPENDENCY, CLASSIC_BLE_DEPENDENCY, CLASSIC_SPP_DEPENDENCY, CLASSIC_WIFI_DEPENDENCY].includes(dependencies[index].name)) dependencies.splice(index, 1);
   }
   for (const dependency of dependencies) {
     if (dependency.includes) dependency.includes = dependency.includes.filter(source => !ownedPaths.has(path.resolve(source)));
@@ -364,7 +550,7 @@ export async function prepareSimulationTransportSources(
   }
   const library = (name: string) => dependencies.some(dependency => dependency.type === 'library' && dependency.name === name);
   const classic = simulationDebug && mcu === 'esp32';
-  const classicBluetooth = classic && library('BluetoothSerial');
+  const classicBluetooth = classic && library('BluetoothSerial') && !classicSpp;
   const c3Wifi = simulationDebug && mcu === 'esp32c3' && library('WiFi');
   // Validate before publishing/copying any provider for a requested C3 ABI.
   if (c3Wifi) requireC3Abi(abi);
@@ -374,6 +560,44 @@ export async function prepareSimulationTransportSources(
   if (!c6BleIpc) await fs.remove(c6BleIpcDirectory);
   if (!classicBluetooth) await fs.remove(destination);
   if (!classicWifi) await fs.remove(classicWifiDirectory);
+  if (!classicBle) await fs.remove(classicBleDirectory);
+  if (!classicSpp) await fs.remove(classicSppDirectory);
+  if (selectedClassicSppSdk) {
+    const sources = await Promise.all([resource('esp32-spp-vhci-v2/aily-classic-spp-vhci-v2.c'),
+      resource('esp32-ble-vhci-v1/aily-classic-ble-vhci-v1.c'), resource('esp32-ble-vhci-v1/aily_packet_abi.h'),
+      resource('esp32-spp-vhci-v2/aily-classic-spp-controller-interface.h')]);
+    await fs.ensureDir(classicSppDirectory);
+    const staged = await Promise.all(CLASSIC_SPP_FILES.map(async (name, index) => {
+      const target = path.join(classicSppDirectory, name);
+      await fs.copyFile(sources[index], target);
+      const before = await sourceIdentity(sources[index], 64 * 1024);
+      const after = await sourceIdentity(target, 64 * 1024);
+      if (before.bytes !== after.bytes || before.sha256 !== after.sha256) throw new Error('Classic SPP AHC2 copied source changed.');
+      return after;
+    }));
+    dependencies.push({ name: CLASSIC_SPP_DEPENDENCY, path: classicSppDirectory, type: 'sketch',
+      includes: [staged[0].path], others: staged.slice(1).map(item => item.path) });
+    return { providers: [ESP32_SPP_PROVIDER], providerSourceInputs: { schemaVersion: 1,
+      provider: ESP32_SPP_PROVIDER, scope: 'prepared-and-verified-sources-not-compiler-consumption',
+      sources: staged, selectedSdk: selectedClassicSppSdk } };
+  }
+  if (selectedClassicBleSdk) {
+    const sources = await Promise.all(CLASSIC_BLE_FILES.map(name => resource(`esp32-ble-vhci-v1/${name}`)));
+    await fs.ensureDir(classicBleDirectory);
+    const staged = await Promise.all(CLASSIC_BLE_FILES.map(async (name, index) => {
+      const target = path.join(classicBleDirectory, name);
+      await fs.copyFile(sources[index], target);
+      const before = await sourceIdentity(sources[index], 64 * 1024);
+      const after = await sourceIdentity(target, 64 * 1024);
+      if (before.bytes !== after.bytes || before.sha256 !== after.sha256) throw new Error('Classic BLE VHCI copied source changed.');
+      return after;
+    }));
+    dependencies.push({ name: CLASSIC_BLE_DEPENDENCY, path: classicBleDirectory, type: 'sketch',
+      includes: [staged[0].path], others: [staged[1].path] });
+    return { providers: [ESP32_BLE_PROVIDER], providerSourceInputs: { schemaVersion: 1,
+      provider: ESP32_BLE_PROVIDER, scope: 'prepared-and-verified-sources-not-compiler-consumption',
+      sources: staged, selectedSdk: selectedClassicBleSdk } };
+  }
   if (selectedClassicWifiSdk) {
     const originals = await Promise.all(CLASSIC_WIFI_FILES.map(name => resource(name === 'awf-control-v1.h'
       ? `esp32c3-wifi-sdk-driver-v1/${name}` : `esp32-wifi-openeth-v1/${name}`)));
