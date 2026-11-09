@@ -10,7 +10,8 @@ import fs from 'fs-extra';
 import { ArduinoCompiler } from '../src/ArduinoCompiler';
 import { Logger } from '../src/utils/Logger';
 import { applySimulationTransportCompileConfig, applySimulationTransportPlatform, prepareSimulationTransportSources,
-  ESP32C3_WIFI_PROVIDER, ESP32C3_WIFI_LINKER_WRAPPERS, ESP32C6_WIFI_PROVIDER, ESP32_VHCI_PROVIDER,
+  ESP32C3_WIFI_PROVIDER, ESP32C3_WIFI_LINKER_WRAPPERS, ESP32C6_WIFI_PROVIDER, ESP32S3_WIFI_PROVIDER, ESP32_VHCI_PROVIDER,
+  verifyPreparedSimulationProviderInputs,
   ESP32C6_BLE_PROVIDER, ESP32C6_BLE_LINKER_WRAPPERS } from '../src/SimulationTransportSources';
 import type { Dependency } from '../src/DependencyAnalyzer';
 const abi = { platformVersion: '3.3.10', toolVersions: { 'esp32c3-libs': '3.3.10', 'esp-rv32': '14.2.0' } };
@@ -40,6 +41,28 @@ async function c6Fixture(t: any) {
   return { build, context, config, dependencies: [{ ...library('WiFi'), path: wifiPath }] };
 }
 
+async function s3Fixture(t: any, memoryType: 'qio_qspi' | 'qio_opi' = 'qio_qspi', sdkVersion: '5.4.1' | '3.3.10' = '5.4.1') {
+  const build = await fixture(t), sdkPath = path.join(build, 'arduino-sdk');
+  const compilerSdkPath = path.join(build, 'esp32s3-libs');
+  const wifiPath = path.join(sdkPath, 'libraries/WiFi/src');
+  const config = path.join(compilerSdkPath, memoryType, 'include/sdkconfig.h');
+  const idf = path.join(compilerSdkPath, 'include/esp_common/include/esp_idf_version.h');
+  const selected = [config, idf, path.join(compilerSdkPath, 'include/esp_netif/include/esp_netif_types.h'),
+    path.join(compilerSdkPath, 'lib/libesp_netif.a'), path.join(compilerSdkPath, 'lib/libesp_wifi.a'),
+    path.join(sdkPath, 'libraries/WiFi/library.properties'), path.join(wifiPath, 'WiFiGeneric.cpp'), path.join(wifiPath, 'STA.cpp')];
+  for (const file of selected) { await mkdir(path.dirname(file), { recursive: true }); await writeFile(file, 'controlled SDK input ' + path.basename(file)); }
+  await writeFile(config, '#define CONFIG_IDF_TARGET_ESP32S3 1\n#define CONFIG_IDF_TARGET "esp32s3"\n'
+    + `#define CONFIG_IDF_INIT_VERSION "${sdkVersion === '3.3.10' ? '5.5.4' : '5.4.2'}"\n`
+    + '#define CONFIG_IDF_TARGET_ARCH_XTENSA 1\n#define CONFIG_LIB_BUILDER_FLASHMODE "qio"\n'
+    + (memoryType === 'qio_opi' ? '#define CONFIG_SPIRAM 1\n#define CONFIG_SPIRAM_MODE_OCT 1\n#define CONFIG_SPIRAM_BOOT_INIT 1\n' : ''));
+  await writeFile(idf, '#define ESP_IDF_VERSION_MAJOR 5\n' + (sdkVersion === '3.3.10'
+    ? '#define ESP_IDF_VERSION_MINOR 5\n#define ESP_IDF_VERSION_PATCH 4\n'
+    : '#define ESP_IDF_VERSION_MINOR 4\n#define ESP_IDF_VERSION_PATCH 2\n'));
+  const context = { platformVersion: '3.3.10', sdkPath, compilerSdkPath, memoryType,
+    toolVersions: { 'esp32s3-libs': sdkVersion, 'esp-x32': '14.2.0' } };
+  return { build, context, config, idf, dependencies: [{ ...library('WiFi'), path: wifiPath }] };
+}
+
 test('normal C3 provider discovery copies exact package-owned C and headers without legacy network metadata', async t => {
   const build = await fixture(t), dependencies = [library('WiFi'), library('HTTPClient')];
   const result = await prepareSimulationTransportSources(build, true, 'esp32c3', dependencies, abi);
@@ -60,7 +83,8 @@ test('provider fixed wrap table exactly matches actual compiled driver exports',
 test('hardware, other targets and no-WiFi builds never select the Wi-Fi provider', async t => {
   const build = await fixture(t);
   for (const [simulation, mcu, deps] of [[false, 'esp32c3', [library('WiFi')]], [false, 'esp32c6', [library('WiFi')]],
-    [true, 'esp32c3', [library('Network')]], [true, 'esp32c6', [library('Network')]], [true, 'esp32s3', [library('WiFi')]]] as const) {
+    [true, 'esp32c3', [library('Network')]], [true, 'esp32c6', [library('Network')]],
+    [false, 'esp32s3', [library('WiFi')]], [true, 'esp32s3', [library('Network')]], [true, 'esp32s2', [library('WiFi')]]] as const) {
     assert.deepEqual(await prepareSimulationTransportSources(build, simulation, mcu, [...deps]), { providers: [] });
   }
 });
@@ -101,6 +125,102 @@ test('C6 Wi-Fi rejects a mismatched SDK, nonselected WiFi library or Bluetooth m
   await assert.rejects(prepareSimulationTransportSources(build, true, 'esp32c6', dependencies, context), /selected ESP32-C6 SDK configuration/);
   assert.equal(dependencies.length, 1);
   await assert.rejects(stat(path.join(build, 'sketch/aily-esp32c6-wifi-sdk-driver-v1')), { code: 'ENOENT' });
+});
+
+test('S3 simulation selects the same AWF1 driver with its own exact SDK leaf and input bookends', async t => {
+  const { build, context, dependencies } = await s3Fixture(t);
+  const result = await prepareSimulationTransportSources(build, true, 'esp32s3', dependencies, context);
+  assert.deepEqual(result.providers, [ESP32S3_WIFI_PROVIDER]);
+  assert.equal(result.network, undefined);
+  assert.equal(result.providerSourceInputs?.provider, ESP32S3_WIFI_PROVIDER);
+  assert.equal(result.providerSourceInputs?.sources.length, 3);
+  assert.equal(result.providerSourceInputs?.selectedSdk.length, 8);
+  const dependency = dependencies.find(item => item.name === '__simulation_transport_s3_wifi__')!;
+  assert.equal(path.basename(dependency.includes![0]), 'aily-s3-wifi-driver-v1.c');
+  assert.equal(sha(await readFile(dependency.includes![0])), sha(await readFile(path.join(resourceRoot, files[0]))));
+  for (const name of files.slice(1)) assert.equal(sha(await readFile(path.join(dependency.path, name))), sha(await readFile(path.join(resourceRoot, name))));
+  const cached = { args: { ld: '-Wl,base' }, platform: { 'compiler.c.elf.extra_flags': '-Wl,user' } };
+  assert.deepEqual(applySimulationTransportCompileConfig(cached, [ESP32S3_WIFI_PROVIDER]),
+    applySimulationTransportCompileConfig(cached, [ESP32C3_WIFI_PROVIDER]));
+  assert.deepEqual(applySimulationTransportPlatform(cached, [ESP32S3_WIFI_PROVIDER]),
+    applySimulationTransportPlatform(cached, [ESP32C6_WIFI_PROVIDER]));
+  assert.throws(() => applySimulationTransportCompileConfig(cached, [ESP32S3_WIFI_PROVIDER, ESP32C3_WIFI_PROVIDER]), /cannot be mixed/);
+  await verifyPreparedSimulationProviderInputs(result.providerSourceInputs);
+  await writeFile(path.join(context.sdkPath, 'libraries/WiFi/src/WiFiGeneric.cpp'), 'changed after preparation');
+  await assert.rejects(verifyPreparedSimulationProviderInputs(result.providerSourceInputs), /S3 Wi-Fi input changed/);
+  await writeFile(path.join(build, 'sketch/user-code.c'), 'user');
+  assert.deepEqual(await prepareSimulationTransportSources(build, false, 'esp32s3', dependencies, context), { providers: [] });
+  assert.equal(dependencies.length, 1);
+  await assert.rejects(stat(dependency.path), { code: 'ENOENT' });
+  assert.equal(await readFile(path.join(build, 'sketch/user-code.c'), 'utf8'), 'user');
+});
+
+test('S3 qio_opi uses the same driver and requires actual octal PSRAM boot configuration', async t => {
+  const { build, context, config, dependencies } = await s3Fixture(t, 'qio_opi');
+  const result = await prepareSimulationTransportSources(build, true, 'esp32s3', dependencies, context);
+  assert.deepEqual(result.providers, [ESP32S3_WIFI_PROVIDER]);
+  assert.equal(result.providerSourceInputs?.sources.length, 3);
+  assert.equal(result.providerSourceInputs?.selectedSdk.length, 8);
+  assert.equal(result.providerSourceInputs?.selectedSdk[0].path, config);
+  assert.equal(result.providerSourceInputs?.selectedSdk[0].sha256, sha(await readFile(config)));
+  await verifyPreparedSimulationProviderInputs(result.providerSourceInputs);
+  const selected = await readFile(config, 'utf8');
+  for (const required of ['CONFIG_SPIRAM', 'CONFIG_SPIRAM_MODE_OCT', 'CONFIG_SPIRAM_BOOT_INIT']) {
+    await writeFile(config, selected.replace(new RegExp(`^#define ${required} 1\\n`, 'm'), ''));
+    await assert.rejects(prepareSimulationTransportSources(build, true, 'esp32s3', [...dependencies], context), /selected ESP32-S3/);
+  }
+  await writeFile(config, selected + '#define CONFIG_SPIRAM_MODE_QUAD 1\n');
+  await assert.rejects(prepareSimulationTransportSources(build, true, 'esp32s3', [...dependencies], context), /selected ESP32-S3/);
+  await writeFile(config, selected);
+  await verifyPreparedSimulationProviderInputs(result.providerSourceInputs);
+  const dependency = dependencies.find(item => item.name === '__simulation_transport_s3_wifi__')!;
+  assert.equal(sha(await readFile(dependency.includes![0])), sha(await readFile(path.join(resourceRoot, files[0]))));
+});
+
+test('S3 normal registry SDK selects only libs3.3.10/IDF5.5.4 qio_opi and rejects cross-pairs', async t => {
+  const normal = await s3Fixture(t, 'qio_opi', '3.3.10');
+  const result = await prepareSimulationTransportSources(normal.build, true, 'esp32s3', normal.dependencies, normal.context);
+  assert.deepEqual(result.providers, [ESP32S3_WIFI_PROVIDER]);
+  assert.equal(result.providerSourceInputs?.selectedSdk.length, 8);
+  assert.equal(result.providerSourceInputs?.sources.length, 3);
+  assert.equal(result.providerSourceInputs?.selectedSdk[0].path, normal.config);
+  await verifyPreparedSimulationProviderInputs(result.providerSourceInputs);
+  for (const context of [
+    { ...normal.context, memoryType: 'qio_qspi' },
+    { ...normal.context, toolVersions: { ...normal.context.toolVersions, 'esp32s3-libs': '5.4.1' } },
+  ]) await assert.rejects(prepareSimulationTransportSources(normal.build, true, 'esp32s3', [...normal.dependencies], context), /S3 Wi-Fi/);
+  const legacy = await s3Fixture(t, 'qio_opi');
+  await assert.rejects(prepareSimulationTransportSources(legacy.build, true, 'esp32s3', legacy.dependencies,
+    { ...legacy.context, toolVersions: { ...legacy.context.toolVersions, 'esp32s3-libs': '3.3.10' } }), /ESP-IDF 5.5.4/);
+  const config = await readFile(normal.config, 'utf8');
+  await writeFile(normal.config, config.replace('CONFIG_IDF_INIT_VERSION "5.5.4"', 'CONFIG_IDF_INIT_VERSION "5.4.2"'));
+  await assert.rejects(prepareSimulationTransportSources(normal.build, true, 'esp32s3', [...normal.dependencies], normal.context), /selected ESP32-S3/);
+  await writeFile(normal.config, config.replace('#define CONFIG_SPIRAM_MODE_OCT 1', ''));
+  await assert.rejects(prepareSimulationTransportSources(normal.build, true, 'esp32s3', [...normal.dependencies], normal.context), /selected ESP32-S3/);
+  await assert.rejects(verifyPreparedSimulationProviderInputs(result.providerSourceInputs), /input changed/);
+  await writeFile(normal.config, config);
+  await verifyPreparedSimulationProviderInputs(result.providerSourceInputs);
+});
+
+test('S3 rejects wrong ABI, foreign WiFi, Bluetooth mix and changed target before publication', async t => {
+  const { build, context, config, idf, dependencies } = await s3Fixture(t);
+  for (const candidate of [undefined, { ...context, platformVersion: '3.3.12' },
+    { ...context, memoryType: 'dio_qspi' }, { ...context, memoryType: 'opi_opi' },
+    { ...context, toolVersions: { ...context.toolVersions, 'esp32s3-libs': '3.3.10' } },
+    { ...context, toolVersions: { ...context.toolVersions, 'esp-x32': '13.2.0' } },
+    { ...context, toolVersions: { ...context.toolVersions, 'esp-rv32': '14.2.0' } }]) {
+    await assert.rejects(prepareSimulationTransportSources(build, true, 'esp32s3', [...dependencies], candidate), /S3 Wi-Fi/);
+  }
+  await assert.rejects(prepareSimulationTransportSources(build, true, 'esp32s3', [{ ...library('WiFi'), path: context.sdkPath }], context), /selected Arduino SDK WiFi library/);
+  for (const name of ['BLE', 'BluetoothSerial', 'NimBLE-Arduino']) {
+    await assert.rejects(prepareSimulationTransportSources(build, true, 'esp32s3', [...dependencies, library(name)], context), /cannot be mixed/);
+  }
+  await writeFile(idf, '#define ESP_IDF_VERSION_MAJOR 5\n#define ESP_IDF_VERSION_MINOR 5\n#define ESP_IDF_VERSION_PATCH 4\n');
+  await assert.rejects(prepareSimulationTransportSources(build, true, 'esp32s3', [...dependencies], context), /ESP-IDF 5.4.2/);
+  await writeFile(config, '#define CONFIG_IDF_TARGET_ESP32C6 1\n');
+  await assert.rejects(prepareSimulationTransportSources(build, true, 'esp32s3', [...dependencies], context), /selected ESP32-S3/);
+  await assert.rejects(stat(path.join(build, 'sketch/aily-esp32s3-wifi-sdk-driver-v1')), { code: 'ENOENT' });
+  assert.equal(dependencies.length, 1);
 });
 
 test('normal C6 BLE IPC selection requires simulation, real selected BLE and exact ABI', async t => {

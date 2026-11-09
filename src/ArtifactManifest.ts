@@ -3,7 +3,7 @@ import { createReadStream } from 'fs';
 import fs from 'fs-extra';
 import path from 'path';
 import { normalizeBuildTargetSelection, type BuildInputRecord } from './BuildInputRecord';
-import { ESP32_SPP_PROVIDER, ESP32_SPP_TRANSPORT_PROFILE, ESP32_BLE_PROVIDER, ESP32C3_WIFI_PROVIDER, ESP32C3_BLE_PROVIDER, ESP32C6_WIFI_PROVIDER, ESP32C6_BLE_PROVIDER, ESP32_WIFI_OPENETH_PROVIDER,
+import { ESP32_SPP_PROVIDER, ESP32_SPP_TRANSPORT_PROFILE, ESP32_BLE_PROVIDER, ESP32C3_WIFI_PROVIDER, ESP32C3_BLE_PROVIDER, ESP32C6_WIFI_PROVIDER, ESP32S3_WIFI_PROVIDER, ESP32C6_BLE_PROVIDER, ESP32_WIFI_OPENETH_PROVIDER,
   isC6WifiMemoryType, validateSimulationTransportProfile, type SimulationTransportProfile } from './SimulationTransportSources';
 
 export type ArtifactFileRole =
@@ -1237,6 +1237,33 @@ export async function emitSimulationArtifactManifest(
     throw new Error(c6BleIpc
       ? 'C6 BLE IPC Artifact requires its exact SDK/IDF/tool ABI and recorded build inputs.'
       : 'C6 Wi-Fi simulation Artifact requires its exact SDK/IDF/tool ABI and recorded build inputs.');
+  }
+  // USB menu results already live in the bounded, actually consumed extra
+  // flags. Do not expand the public build-input property schema for this leaf.
+  const s3ExtraFlags = recordedBuildProperties?.['build.extra_flags'];
+  const s3Uart0Flags = typeof s3ExtraFlags === 'string' && [
+    ['ARDUINO_USB_MODE', '1'], ['ARDUINO_USB_CDC_ON_BOOT', '0'],
+    ['ARDUINO_USB_MSC_ON_BOOT', '0'], ['ARDUINO_USB_DFU_ON_BOOT', '0'],
+  ].every(([name, expected]) => {
+    const values = [...s3ExtraFlags.matchAll(new RegExp(`(?:^|\\s)-D${name}=([^\\s]+)`, 'g'))];
+    return values.length === 1 && values[0][1] === expected;
+  });
+  const s3MemoryType = recordedBuildProperties?.['build.memory_type'];
+  const s3PsramDefines = recordedBuildProperties?.['build.defines'];
+  const s3MemoryProfile = s3MemoryType === 'qio_qspi' && s3PsramDefines === ''
+    || s3MemoryType === 'qio_opi' && s3PsramDefines === '-DBOARD_HAS_PSRAM';
+  const s3SdkVersion = options.toolVersions?.['esp32s3-libs'];
+  const s3SdkPair = s3SdkVersion === '5.4.1' && buildEnvironment?.espIdf.version === '5.4.2'
+    || s3SdkVersion === '3.3.10' && buildEnvironment?.espIdf.version === '5.5.4' && s3MemoryType === 'qio_opi';
+  if (options.simulationProviders?.includes(ESP32S3_WIFI_PROVIDER)
+    && (options.simulationProviders.length !== 1 || target.mcu !== 'esp32s3'
+      || target.architecture !== 'esp32' || options.simulationNetwork !== undefined
+      || buildEnvironment?.arduinoCore.version !== '3.3.10' || !s3SdkPair
+      || buildEnvironment.toolchain.name !== 'esp-x32' || buildEnvironment.toolchain.version !== '14.2.0'
+      || recordedBuildProperties?.['build.mcu'] !== 'esp32s3'
+      || !s3MemoryProfile
+      || !s3Uart0Flags || !options.buildInputs)) {
+    throw new Error('S3 Wi-Fi simulation Artifact requires its exact SDK/IDF/tool ABI, qio_qspi/PSRAM-disabled or qio_opi/PSRAM-enabled UART0 profile and recorded build inputs.');
   }
   const elf = files.find((file) => file.role === 'elf');
   const linkerMap = files.find((file) => file.role === 'map');

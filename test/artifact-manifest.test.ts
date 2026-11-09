@@ -9,7 +9,7 @@ import {
 } from '../src/ArduinoCompiler';
 import { emitSimulationArtifactManifest, type EmitArtifactManifestOptions } from '../src/ArtifactManifest';
 import type { BuildInputRecord } from '../src/BuildInputRecord';
-import { ESP32_SPP_PROVIDER, ESP32_SPP_TRANSPORT_PROFILE, ESP32_BLE_PROVIDER, ESP32C3_WIFI_PROVIDER, ESP32C6_WIFI_PROVIDER, ESP32C6_BLE_PROVIDER, ESP32_WIFI_OPENETH_PROVIDER } from '../src/SimulationTransportSources';
+import { ESP32_SPP_PROVIDER, ESP32_SPP_TRANSPORT_PROFILE, ESP32_BLE_PROVIDER, ESP32C3_WIFI_PROVIDER, ESP32C6_WIFI_PROVIDER, ESP32S3_WIFI_PROVIDER, ESP32C6_BLE_PROVIDER, ESP32_WIFI_OPENETH_PROVIDER } from '../src/SimulationTransportSources';
 import { applySimulationDebugProfile } from '../src/SimulationDebugProfile';
 import { projectPlatformBuildProperties } from '../src/PlatformPropertyProjector';
 
@@ -457,14 +457,14 @@ async function main(): Promise<void> {
       },
     });
 
-    const buildInputsFor = (mcu: string, memoryType = 'qio_qspi'): BuildInputRecord => {
+    const buildInputsFor = (mcu: string, memoryType = 'qio_qspi', properties: Record<string, string> = {}): BuildInputRecord => {
       const fqbn = `esp32:esp32:${mcu}`;
       const facts: Omit<BuildInputRecord, 'digest'> = {
         schemaVersion: 1, kind: 'aily-build-input-record', scope: 'build-graph-facts',
         configurationSha256: 'a'.repeat(64), steps: [],
         targetSelection: { schemaVersion: 1, requestedFqbn: fqbn, effectiveFqbn: fqbn,
           menuOptions: {}, platform: { package: 'esp32', architecture: 'esp32', version: '3.3.10' },
-          resolvedBuildProperties: { 'build.mcu': mcu, 'build.memory_type': memoryType } },
+          resolvedBuildProperties: { 'build.mcu': mcu, 'build.memory_type': memoryType, ...properties } },
       };
       return { ...facts, digest: createHash('sha256').update(JSON.stringify(facts)).digest('hex') };
     };
@@ -495,6 +495,84 @@ async function main(): Promise<void> {
     ]) {
       await assert.rejects(emitSimulationArtifactManifest({ ...c6Options, ...changes }), /requires its exact SDK\/IDF\/tool ABI/);
     }
+    const s3SdkPath = path.join(root, 's3-wifi-sdk');
+    const s3IdfPath = path.join(s3SdkPath, 'include/esp_common/include/esp_idf_version.h');
+    await mkdir(path.dirname(s3IdfPath), { recursive: true });
+    await writeFile(s3IdfPath, '#define ESP_IDF_VERSION_MAJOR 5\n#define ESP_IDF_VERSION_MINOR 4\n#define ESP_IDF_VERSION_PATCH 2\n');
+    const s3ExtraFlags = '-DARDUINO_USB_MODE=1 -DARDUINO_USB_CDC_ON_BOOT=0 -DARDUINO_USB_MSC_ON_BOOT=0 -DARDUINO_USB_DFU_ON_BOOT=0';
+    const s3BoardProperties = { 'build.defines': '', 'build.extra_flags': s3ExtraFlags };
+    const s3Options: EmitArtifactManifestOptions = { ...emitOptions,
+      board: 'esp32:esp32:esp32s3', mcu: 'esp32s3',
+      manifestPath: path.join(root, 'aily-artifact-manifest-s3-wifi.json'),
+      toolVersions: { 'esp-x32': '14.2.0', 'esp32s3-libs': '5.4.1' },
+      platformProperties: { ...emitOptions.platformProperties, version: '3.3.10', 'compiler.sdk.path': s3SdkPath },
+      simulationProviders: [ESP32S3_WIFI_PROVIDER],
+      buildInputs: buildInputsFor('esp32s3', 'qio_qspi', s3BoardProperties) };
+    const s3Manifest = await emitSimulationArtifactManifest(s3Options);
+    assert.deepEqual(s3Manifest.build.simulationProviders, [ESP32S3_WIFI_PROVIDER]);
+    assert.equal(s3Manifest.build.environment?.espIdf.version, '5.4.2');
+    assert.equal(s3Manifest.build.environment?.toolchain.name, 'esp-x32');
+    assert.equal(s3Manifest.build.simulationNetwork, undefined);
+    const s3OpiManifest = await emitSimulationArtifactManifest({ ...s3Options,
+      manifestPath: path.join(root, 'aily-artifact-manifest-s3-wifi-opi.json'),
+      buildInputs: buildInputsFor('esp32s3', 'qio_opi', { ...s3BoardProperties, 'build.defines': '-DBOARD_HAS_PSRAM' }) });
+    assert.deepEqual(s3OpiManifest.build.simulationProviders, [ESP32S3_WIFI_PROVIDER]);
+    assert.equal(s3OpiManifest.build.environment?.espIdf.version, '5.4.2');
+    assert.equal(s3OpiManifest.build.environment?.toolchain.name, 'esp-x32');
+    for (const invalidDefines of ['', '-DBOARD_HAS_PSRAM -DBOARD_HAS_PSRAM', '-DBOARD_HAS_PSRAM=0']) {
+      await assert.rejects(emitSimulationArtifactManifest({ ...s3Options,
+        buildInputs: buildInputsFor('esp32s3', 'qio_opi', { ...s3BoardProperties, 'build.defines': invalidDefines }) }),
+        /S3 Wi-Fi simulation Artifact requires its exact SDK\/IDF\/tool ABI/);
+    }
+    await assert.rejects(emitSimulationArtifactManifest({ ...s3Options,
+      buildInputs: buildInputsFor('esp32s3', 'qio_opi', { ...s3BoardProperties, 'build.defines': '-DBOARD_HAS_PSRAM',
+        'build.extra_flags': s3ExtraFlags.replace('CDC_ON_BOOT=0', 'CDC_ON_BOOT=1') }) }),
+      /S3 Wi-Fi simulation Artifact requires its exact SDK\/IDF\/tool ABI/);
+    for (const changes of [
+      { buildInputs: undefined },
+      { buildInputs: buildInputsFor('esp32s3', 'dio_qspi', s3BoardProperties) },
+      { buildInputs: buildInputsFor('esp32s3', 'qio_opi', s3BoardProperties) },
+      { buildInputs: buildInputsFor('esp32s3', 'qio_qspi', { ...s3BoardProperties, 'build.defines': '-DBOARD_HAS_PSRAM' }) },
+      ...['-DARDUINO_USB_MODE=1', '-DARDUINO_USB_CDC_ON_BOOT=0', '-DARDUINO_USB_MSC_ON_BOOT=0', '-DARDUINO_USB_DFU_ON_BOOT=0'].map(flag =>
+        ({ buildInputs: buildInputsFor('esp32s3', 'qio_qspi', { ...s3BoardProperties,
+          'build.extra_flags': s3ExtraFlags.replace(flag, flag.endsWith('0') ? flag.slice(0, -1) + '1' : flag.slice(0, -1) + '0') }) })),
+      { buildInputs: buildInputsFor('esp32s3', 'qio_qspi', { ...s3BoardProperties, 'build.extra_flags': s3ExtraFlags + ' -DARDUINO_USB_CDC_ON_BOOT=1' }) },
+      { toolVersions: { 'esp-x32': '14.2.0', 'esp32s3-libs': '3.3.10' } },
+      { toolVersions: { 'esp-rv32': '14.2.0', 'esp32s3-libs': '5.4.1' } },
+      { platformProperties: { ...s3Options.platformProperties, 'compiler.sdk.path': chipSdkPath } },
+      { simulationProviders: [ESP32S3_WIFI_PROVIDER, ESP32C3_WIFI_PROVIDER] },
+      { simulationNetwork: { wifi: true as const } },
+    ]) await assert.rejects(emitSimulationArtifactManifest({ ...s3Options, ...changes }),
+      /(?:C3|S3) Wi-Fi simulation Artifact requires its exact SDK\/IDF\/tool ABI/);
+    // Legacy S3 still requires its own pair; C6 retains its exact existing5.5.4 rules.
+    await assert.rejects(emitSimulationArtifactManifest({ ...c6Options,
+      platformProperties: { ...c6Options.platformProperties, 'compiler.sdk.path': s3SdkPath } }),
+      /C6 Wi-Fi simulation Artifact requires its exact SDK\/IDF\/tool ABI/);
+    const ordinaryS3 = await emitSimulationArtifactManifest({ ...s3Options, simulationProviders: undefined,
+      buildInputs: buildInputsFor('esp32s3', 'qio_opi', { ...s3BoardProperties, 'build.defines': '-DBOARD_HAS_PSRAM', 'build.extra_flags': s3ExtraFlags.replace('CDC_ON_BOOT=0', 'CDC_ON_BOOT=1') }) });
+    assert.equal(ordinaryS3.build.simulationProviders, undefined);
+
+    const normalS3SdkPath = path.join(root, 's3-normal-wifi-sdk');
+    const normalS3IdfPath = path.join(normalS3SdkPath, 'include/esp_common/include/esp_idf_version.h');
+    await mkdir(path.dirname(normalS3IdfPath), { recursive: true });
+    await writeFile(normalS3IdfPath, '#define ESP_IDF_VERSION_MAJOR 5\n#define ESP_IDF_VERSION_MINOR 5\n#define ESP_IDF_VERSION_PATCH 4\n');
+    const normalS3Options: EmitArtifactManifestOptions = { ...s3Options,
+      manifestPath: path.join(root, 'aily-artifact-manifest-s3-normal-wifi.json'),
+      toolVersions: { 'esp-x32': '14.2.0', 'esp32s3-libs': '3.3.10' },
+      platformProperties: { ...s3Options.platformProperties, 'compiler.sdk.path': normalS3SdkPath },
+      buildInputs: buildInputsFor('esp32s3', 'qio_opi', { ...s3BoardProperties, 'build.defines': '-DBOARD_HAS_PSRAM' }) };
+    const normalS3Manifest = await emitSimulationArtifactManifest(normalS3Options);
+    assert.deepEqual(normalS3Manifest.build.simulationProviders, [ESP32S3_WIFI_PROVIDER]);
+    assert.equal(normalS3Manifest.build.environment?.espIdf.version, '5.5.4');
+    assert.equal(normalS3Manifest.build.toolVersions['esp32s3-libs'], '3.3.10');
+    for (const changes of [
+      { toolVersions: { 'esp-x32': '14.2.0', 'esp32s3-libs': '5.4.1' } },
+      { buildInputs: buildInputsFor('esp32s3', 'qio_qspi', s3BoardProperties) },
+      { buildInputs: buildInputsFor('esp32s3', 'qio_opi', { ...s3BoardProperties, 'build.defines': '-DBOARD_HAS_PSRAM',
+        'build.extra_flags': s3ExtraFlags.replace('CDC_ON_BOOT=0', 'CDC_ON_BOOT=1') }) },
+      { mcu: 'esp32c3', board: 'esp32:esp32:esp32c3' },
+    ]) await assert.rejects(emitSimulationArtifactManifest({ ...normalS3Options, ...changes }));
+
     const c6BleOptions: EmitArtifactManifestOptions = { ...c6Options,
       manifestPath: path.join(root, 'aily-artifact-manifest-c6-ble-probe.json'),
       simulationProviders: [ESP32C6_BLE_PROVIDER] };

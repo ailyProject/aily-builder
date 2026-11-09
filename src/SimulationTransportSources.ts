@@ -50,6 +50,7 @@ export const ESP32C6_BLE_LINKER_WRAPPERS = Object.freeze([
 ] as const);
 export const ESP32C3_WIFI_PROVIDER = 'aily.esp32c3-wifi-sdk-driver-v1';
 export const ESP32C6_WIFI_PROVIDER = 'aily.esp32c6-wifi-sdk-driver-v1';
+export const ESP32S3_WIFI_PROVIDER = 'aily.esp32s3-wifi-sdk-driver-v1';
 /** Ordinary classic STA uses a versioned SDK driver over the actual OpenETH
  * device, separate from the historical split-radio simulationNetwork path. */
 export const ESP32_WIFI_OPENETH_PROVIDER = 'aily.esp32-wifi-openeth-v1';
@@ -71,6 +72,9 @@ const C3_DEPENDENCY = '__simulation_transport_c3_wifi__';
 const C6_DIRECTORY = 'aily-esp32c6-wifi-sdk-driver-v1';
 const C6_FILES = ['aily-c6-wifi-driver-v1.c', C3_FILES[1], C3_FILES[2]] as const;
 const C6_DEPENDENCY = '__simulation_transport_c6_wifi__';
+const S3_DIRECTORY = 'aily-esp32s3-wifi-sdk-driver-v1';
+const S3_FILES = ['aily-s3-wifi-driver-v1.c', C3_FILES[1], C3_FILES[2]] as const;
+const S3_DEPENDENCY = '__simulation_transport_s3_wifi__';
 const C3_BLE_DIRECTORY = 'aily-esp32c3-ble-vhci-v1';
 const C3_BLE_FILES = ['aily-c3-ble-vhci-v1.c', 'aily_packet_abi.h'] as const;
 const C3_BLE_DEPENDENCY = '__simulation_transport_c3_ble__';
@@ -98,7 +102,7 @@ export interface SimulationTransportAbi {
 }
 export interface PreparedSimulationProviderInputs {
   schemaVersion: 1;
-  provider: typeof ESP32_SPP_PROVIDER | typeof ESP32_BLE_PROVIDER | typeof ESP32C3_BLE_PROVIDER | typeof ESP32C6_BLE_PROVIDER | typeof ESP32_WIFI_OPENETH_PROVIDER;
+  provider: typeof ESP32_SPP_PROVIDER | typeof ESP32_BLE_PROVIDER | typeof ESP32C3_BLE_PROVIDER | typeof ESP32C6_BLE_PROVIDER | typeof ESP32_WIFI_OPENETH_PROVIDER | typeof ESP32S3_WIFI_PROVIDER;
   scope: 'prepared-and-verified-sources-not-compiler-consumption';
   sources: Array<{ path: string; bytes: number; sha256: string }>;
   selectedSdk: Array<{ path: string; bytes: number; sha256: string }>;
@@ -125,7 +129,9 @@ function selectWrappedProvider(providers: readonly string[]) {
       ? { name: 'C3 Wi-Fi', symbols: ESP32C3_WIFI_LINKER_WRAPPERS }
       : providers.includes(ESP32C6_WIFI_PROVIDER)
         ? { name: 'C6 Wi-Fi', symbols: ESP32C3_WIFI_LINKER_WRAPPERS }
-        : undefined);
+        : providers.includes(ESP32S3_WIFI_PROVIDER)
+          ? { name: 'S3 Wi-Fi', symbols: ESP32C3_WIFI_LINKER_WRAPPERS }
+          : undefined);
   if (selected && providers.length !== 1) {
     throw new Error(`${selected.name} provider cannot be mixed with another controller provider.`);
   }
@@ -213,6 +219,54 @@ async function requireC6WifiSdk(abi: SimulationTransportAbi | undefined, depende
     throw new Error('C6 Wi-Fi requires its selected ESP32-C6 SDK configuration and ESP-IDF 5.5.4.');
   }
 }
+/** S3 uses its own selected IDF5.4.2 leaf, not a relaxed C3/C6 5.5.4 ABI. */
+async function requireS3WifiSdk(abi: SimulationTransportAbi | undefined, dependencies: Dependency[]) {
+  const sdkVersion = abi?.toolVersions?.['esp32s3-libs'];
+  const idfVersion = sdkVersion === '5.4.1' ? '5.4.2' : sdkVersion === '3.3.10' ? '5.5.4' : null;
+  const normalSdk = sdkVersion === '3.3.10';
+  if (abi?.platformVersion !== '3.3.10' || !idfVersion
+    || abi.toolVersions?.['esp-x32'] !== '14.2.0' || abi.toolVersions?.['esp-rv32'] !== undefined) {
+    throw new Error('S3 Wi-Fi simulation requires exact Arduino 3.3.10, esp32s3-libs 5.4.1/IDF 5.4.2 or 3.3.10/IDF 5.5.4 and esp-x32 14.2.0.');
+  }
+  if ((abi.memoryType !== 'qio_opi' && (normalSdk || abi.memoryType !== 'qio_qspi')) || !abi.sdkPath || !abi.compilerSdkPath
+    || [abi.sdkPath, abi.compilerSdkPath].some(value => !path.isAbsolute(value) || /[{}\x00-\x1f]/.test(value))) {
+    throw new Error('S3 Wi-Fi requires resolved SDK paths and the selected qio_qspi or qio_opi memory profile.');
+  }
+  const selected = dependencies.filter(item => item.type === 'library' && item.name === 'WiFi');
+  const library = path.join(abi.sdkPath, 'libraries', 'WiFi');
+  if (selected.length !== 1 || await fs.realpath(selected[0].path) !== await fs.realpath(path.join(library, 'src'))) {
+    throw new Error('S3 Wi-Fi requires the selected Arduino SDK WiFi library.');
+  }
+  const configurationPath = path.join(abi.compilerSdkPath, abi.memoryType, 'include', 'sdkconfig.h');
+  const idfPath = path.join(abi.compilerSdkPath, 'include', 'esp_common', 'include', 'esp_idf_version.h');
+  const [configuration, idf] = await Promise.all([fs.readFile(configurationPath, 'utf8'), fs.readFile(idfPath, 'utf8')]);
+  const octalPsram = abi.memoryType === 'qio_opi';
+  const idfParts = normalSdk ? [['MAJOR', 5], ['MINOR', 5], ['PATCH', 4]] : [['MAJOR', 5], ['MINOR', 4], ['PATCH', 2]];
+  if (!/^#define\s+CONFIG_IDF_TARGET_ESP32S3\s+1\s*$/m.test(configuration)
+    || !/^#define\s+CONFIG_IDF_TARGET\s+"esp32s3"\s*$/m.test(configuration)
+    || !/^#define\s+CONFIG_IDF_TARGET_ARCH_XTENSA\s+1\s*$/m.test(configuration)
+    || !new RegExp(`^#define\\s+CONFIG_IDF_INIT_VERSION\\s+"${idfVersion.replace(/\./g, '\\.')}"\\s*$`, 'm').test(configuration)
+    || !/^#define\s+CONFIG_LIB_BUILDER_FLASHMODE\s+"qio"\s*$/m.test(configuration)
+    || octalPsram && (!/^#define\s+CONFIG_SPIRAM\s+1\s*$/m.test(configuration)
+      || !/^#define\s+CONFIG_SPIRAM_MODE_OCT\s+1\s*$/m.test(configuration)
+      || !/^#define\s+CONFIG_SPIRAM_BOOT_INIT\s+1\s*$/m.test(configuration)
+      || /^#define\s+CONFIG_SPIRAM_MODE_QUAD\s+1\s*$/m.test(configuration))
+    || !idfParts.every(([part, value]) =>
+      new RegExp(`^#define\\s+ESP_IDF_VERSION_${part}\\s+${value}\\s*$`, 'm').test(idf))) {
+    throw new Error(`S3 Wi-Fi requires its selected ESP32-S3 Xtensa memory profile and ESP-IDF ${idfVersion}.`);
+  }
+  // Record the actual selected ABI and host sources. This preparation bookend
+  // does not replace the successful compiler/link input evidence.
+  const selectedSdk = await Promise.all([configurationPath, idfPath,
+    path.join(abi.compilerSdkPath, 'include', 'esp_netif', 'include', 'esp_netif_types.h'),
+    path.join(abi.compilerSdkPath, 'lib', 'libesp_netif.a'), path.join(abi.compilerSdkPath, 'lib', 'libesp_wifi.a'),
+    path.join(library, 'library.properties'), path.join(library, 'src', 'WiFiGeneric.cpp'), path.join(library, 'src', 'STA.cpp'),
+  ].map(filename => sourceIdentity(filename, 8 * 1024 * 1024)));
+  if ([configuration, idf].some((content, index) => createHash('sha256').update(content).digest('hex') !== selectedSdk[index].sha256)) {
+    throw new Error('S3 Wi-Fi selected SDK configuration changed during validation.');
+  }
+  return selectedSdk;
+}
 async function sourceIdentity(filename: string, maximum: number) {
   const stat = await fs.stat(filename);
   if (!stat.isFile() || stat.size > maximum) throw new Error('Invalid bounded C3 BLE provider input.');
@@ -244,6 +298,18 @@ export async function verifyPreparedSimulationProviderInputs(inputs?: PreparedSi
       const actual = await sourceIdentity(expected.path, 8 * 1024 * 1024);
       if (actual.bytes !== expected.bytes || actual.sha256 !== expected.sha256) {
         throw new Error('Prepared classic BLE VHCI input changed before Artifact emission.');
+      }
+    }
+    return;
+  }
+  if (inputs.provider === ESP32S3_WIFI_PROVIDER) {
+    if (inputs.schemaVersion !== 1 || inputs.sources.length !== 3 || inputs.selectedSdk.length !== 8) {
+      throw new Error('Invalid prepared S3 Wi-Fi input identity.');
+    }
+    for (const expected of [...inputs.sources, ...inputs.selectedSdk]) {
+      const actual = await sourceIdentity(expected.path, 8 * 1024 * 1024);
+      if (actual.bytes !== expected.bytes || actual.sha256 !== expected.sha256) {
+        throw new Error('Prepared S3 Wi-Fi input changed before Artifact emission.');
       }
     }
     return;
@@ -489,6 +555,7 @@ export async function prepareSimulationTransportSources(
   const destination = path.join(buildPath, 'sketch', 'aily-esp32-vhci-v1.c');
   const c3Directory = path.join(buildPath, 'sketch', C3_DIRECTORY);
   const c6Directory = path.join(buildPath, 'sketch', C6_DIRECTORY);
+  const s3Directory = path.join(buildPath, 'sketch', S3_DIRECTORY);
   const c3BleDirectory = path.join(buildPath, 'sketch', C3_BLE_DIRECTORY);
   const c6BleIpcDirectory = path.join(buildPath, 'sketch', C6_BLE_IPC_DIRECTORY);
   const classicBleDirectory = path.join(buildPath, 'sketch', CLASSIC_BLE_DIRECTORY);
@@ -528,6 +595,11 @@ export async function prepareSimulationTransportSources(
     }
     await requireC6WifiSdk(abi, dependencies);
   }
+  const s3Wifi = simulationDebug && mcu === 'esp32s3' && requestedLibrary('WiFi');
+  if (s3Wifi && ['BLE', 'BluetoothSerial', 'NimBLE-Arduino'].some(requestedLibrary)) {
+    throw new Error('S3 Wi-Fi simulation cannot be mixed with a Bluetooth controller provider.');
+  }
+  const selectedS3WifiSdk = s3Wifi ? await requireS3WifiSdk(abi, dependencies) : undefined;
   if (c6Simulation && ['BluetoothSerial', 'NimBLE-Arduino'].some(requestedLibrary)) {
     throw new Error('C6 BLE requires the selected Arduino SDK BLE library.');
   }
@@ -535,14 +607,15 @@ export async function prepareSimulationTransportSources(
   const selectedBleSdk = c3Ble ? await requireC3BleSdk(abi, dependencies) : undefined;
   const selectedC6BleSdk = c6BleIpc ? await requireC6BleIpcSdk(abi, dependencies) : undefined;
   const ownedPaths = new Set([destination, ...C3_FILES.map(name => path.join(c3Directory, name)),
-    ...C6_FILES.map(name => path.join(c6Directory, name)), ...C3_BLE_FILES.map(name => path.join(c3BleDirectory, name)),
+    ...C6_FILES.map(name => path.join(c6Directory, name)), ...S3_FILES.map(name => path.join(s3Directory, name)),
+    ...C3_BLE_FILES.map(name => path.join(c3BleDirectory, name)),
     ...C6_BLE_IPC_FILES.map(name => path.join(c6BleIpcDirectory, name)),
     ...CLASSIC_BLE_FILES.map(name => path.join(classicBleDirectory, name)),
     ...CLASSIC_SPP_FILES.map(name => path.join(classicSppDirectory, name)),
     ...CLASSIC_WIFI_FILES.map(name => path.join(classicWifiDirectory, name))]
     .map(value => path.resolve(value)));
   for (let index = dependencies.length - 1; index >= 0; index--) {
-    if (['__simulation_transport__', C3_DEPENDENCY, C6_DEPENDENCY, C3_BLE_DEPENDENCY, C6_BLE_IPC_DEPENDENCY, CLASSIC_BLE_DEPENDENCY, CLASSIC_SPP_DEPENDENCY, CLASSIC_WIFI_DEPENDENCY].includes(dependencies[index].name)) dependencies.splice(index, 1);
+    if (['__simulation_transport__', C3_DEPENDENCY, C6_DEPENDENCY, S3_DEPENDENCY, C3_BLE_DEPENDENCY, C6_BLE_IPC_DEPENDENCY, CLASSIC_BLE_DEPENDENCY, CLASSIC_SPP_DEPENDENCY, CLASSIC_WIFI_DEPENDENCY].includes(dependencies[index].name)) dependencies.splice(index, 1);
   }
   for (const dependency of dependencies) {
     if (dependency.includes) dependency.includes = dependency.includes.filter(source => !ownedPaths.has(path.resolve(source)));
@@ -556,6 +629,7 @@ export async function prepareSimulationTransportSources(
   if (c3Wifi) requireC3Abi(abi);
   if (!c3Wifi) await fs.remove(c3Directory);
   if (!c6Wifi) await fs.remove(c6Directory);
+  if (!s3Wifi) await fs.remove(s3Directory);
   if (!c3Ble) await fs.remove(c3BleDirectory);
   if (!c6BleIpc) await fs.remove(c6BleIpcDirectory);
   if (!classicBluetooth) await fs.remove(destination);
@@ -647,16 +721,25 @@ export async function prepareSimulationTransportSources(
     return { providers: [ESP32C3_BLE_PROVIDER], providerSourceInputs: { schemaVersion: 1, provider: ESP32C3_BLE_PROVIDER,
       scope: 'prepared-and-verified-sources-not-compiler-consumption', sources: identities, selectedSdk: selectedBleSdk } };
   }
-  if (c3Wifi || c6Wifi) {
-    const directory = c6Wifi ? c6Directory : c3Directory;
-    const filenames = c6Wifi ? C6_FILES : C3_FILES;
+  if (c3Wifi || c6Wifi || s3Wifi) {
+    const directory = s3Wifi ? s3Directory : c6Wifi ? c6Directory : c3Directory;
+    const filenames = s3Wifi ? S3_FILES : c6Wifi ? C6_FILES : C3_FILES;
     const sources = await Promise.all(C3_FILES.map(name => resource(`esp32c3-wifi-sdk-driver-v1/${name}`)));
     await fs.ensureDir(directory);
     for (let index = 0; index < filenames.length; index++) await fs.copyFile(sources[index], path.join(directory, filenames[index]));
-    dependencies.push({ name: c6Wifi ? C6_DEPENDENCY : C3_DEPENDENCY, path: directory, type: 'sketch',
+    dependencies.push({ name: s3Wifi ? S3_DEPENDENCY : c6Wifi ? C6_DEPENDENCY : C3_DEPENDENCY, path: directory, type: 'sketch',
       includes: [path.join(directory, filenames[0])], others: filenames.slice(1).map(name => path.join(directory, name)) });
     // STA-client uses AWF1/ANP1 from its exact provider. Do not label it as the
     // legacy classic network or allocate an unnecessary Guest HTTP route.
+    if (s3Wifi) {
+      const identities = await Promise.all(filenames.map(name => sourceIdentity(path.join(directory, name), 64 * 1024)));
+      const originals = await Promise.all(sources.map(filename => sourceIdentity(filename, 64 * 1024)));
+      if (identities.some((value, index) => value.bytes !== originals[index].bytes || value.sha256 !== originals[index].sha256)) {
+        throw new Error('S3 Wi-Fi copied provider input changed.');
+      }
+      return { providers: [ESP32S3_WIFI_PROVIDER], providerSourceInputs: { schemaVersion: 1, provider: ESP32S3_WIFI_PROVIDER,
+        scope: 'prepared-and-verified-sources-not-compiler-consumption', sources: identities, selectedSdk: selectedS3WifiSdk! } };
+    }
     return { providers: [c6Wifi ? ESP32C6_WIFI_PROVIDER : ESP32C3_WIFI_PROVIDER] };
   }
   if (!classicBluetooth) return { providers: [] };

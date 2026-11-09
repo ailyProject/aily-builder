@@ -1,4 +1,4 @@
-/* ESP32-C3/C6 Wi-Fi simulation provider, AWF1 control-v1.
+/* ESP32-C3/C6/S3 Wi-Fi simulation provider, AWF1 control-v1.
  * Explicit SDK driver/controller seam; not RF/802.11/WPA/MMIO fidelity.
  * Original Arduino WiFi/Network/HTTPClient and ESP-IDF esp_netif/lwIP remain.
  * JOIN_REPLY only associates; IP/DNS/TCP/HTTP are never returned by this shim.
@@ -29,8 +29,14 @@
 #define AILY_WIFI_TASK_NAME "aily-c6-net"
 #define AILY_WIFI_PROVIDER_NAME "aily.esp32c6-wifi-sdk-driver-v1/AWF1-open-sta"
 #define AILY_WIFI_PROVIDER_FUNCTION aily_c6_wifi_provider
+#elif CONFIG_IDF_TARGET_ESP32S3
+#define AILY_NETWORK_MMIO_BASE UINT32_C(0x600f1000)
+#define AILY_WIFI_TARGET_OCTET 0x53
+#define AILY_WIFI_TASK_NAME "aily-s3-net"
+#define AILY_WIFI_PROVIDER_NAME "aily.esp32s3-wifi-sdk-driver-v1/AWF1-open-sta"
+#define AILY_WIFI_PROVIDER_FUNCTION aily_s3_wifi_provider
 #else
-#error This simulation provider requires the selected ESP32-C3 or ESP32-C6 SDK.
+#error This simulation provider requires the selected ESP32-C3, ESP32-C6 or ESP32-S3 SDK.
 #endif
 #define REG(offset) (*(volatile uint32_t *)(AILY_NETWORK_MMIO_BASE+(offset)))
 #define MAX_FRAME AILY_NETWORK_MAX_PACKET
