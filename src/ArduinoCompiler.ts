@@ -424,7 +424,7 @@ export class ArduinoCompiler {
 
     // 准备构建目录（将 sketch.ino 转换为 sketch.cpp）
     // 每次编译都需要执行，确保源文件变化能被检测到
-    await this.prepareBuildDirectory(options.buildPath);
+    await this.prepareBuildDirectory(options.buildPath, options.simulationDebug);
 
     // Provider discovery owns only this compile's dependency arrays and effective
     // platform; the saved preprocess input remains valid for hardware builds.
@@ -504,6 +504,7 @@ export class ArduinoCompiler {
         primaryOutputPath: finalOutputPath,
         manifestPath: options.artifactManifestPath,
         buildInputs,
+        sketchSourceIdentity: options.simulationDebug ? sketchSourceIdentity : undefined,
         simulationProviders: simulationRuntime.providers,
         simulationTransportProfile,
         simulationNetwork: simulationRuntime.network,
@@ -601,7 +602,7 @@ export class ArduinoCompiler {
   /*
   准备构建目录
   */
-  private async prepareBuildDirectory(buildPath: string): Promise<void> {
+  private async prepareBuildDirectory(buildPath: string, simulationDebug = false): Promise<void> {
     try {
       // 创建构建目录
       await fs.ensureDir(buildPath);
@@ -663,7 +664,18 @@ export class ArduinoCompiler {
 
       if (isCppSource && forwardDeclarations.length === 0) {
         if (path.resolve(sourcePath) !== path.resolve(targetPath)) {
-          await fs.copyFile(sourcePath, targetPath);
+          if (simulationDebug) {
+            // Ninja compiles this staged copy relative to the build directory.
+            // Give the exact Artifact entry its original line numbers in DWARF.
+            const bytes = await fs.readFile(sourcePath);
+            const bom = bytes.subarray(0, 3).equals(Buffer.from([0xef, 0xbb, 0xbf])) ? 3 : 0;
+            const logicalPath = JSON.stringify(`/source/${path.basename(sourcePath)}`);
+            await fs.writeFile(targetPath, Buffer.concat([
+              bytes.subarray(0, bom), Buffer.from(`#line 1 ${logicalPath}\n`), bytes.subarray(bom),
+            ]));
+          } else {
+            await fs.copyFile(sourcePath, targetPath);
+          }
         }
         this.logger.verbose(`Copied .cpp source to build directory: ${targetPath}`);
         process.env['SKETCH_PATH'] = targetPath;

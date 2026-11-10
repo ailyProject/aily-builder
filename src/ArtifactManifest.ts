@@ -3,6 +3,7 @@ import { createReadStream } from 'fs';
 import fs from 'fs-extra';
 import path from 'path';
 import { normalizeBuildTargetSelection, type BuildInputRecord } from './BuildInputRecord';
+import { normalizeSketchInputs, readSketchInput, type SketchSourceIdentity } from './SketchSources';
 import { ESP32_SPP_PROVIDER, ESP32_SPP_TRANSPORT_PROFILE, ESP32_BLE_PROVIDER, ESP32C3_WIFI_PROVIDER, ESP32C3_BLE_PROVIDER, ESP32C6_WIFI_PROVIDER, ESP32S3_WIFI_PROVIDER, ESP32S3_BLE_PROVIDER, ESP32C6_BLE_PROVIDER, ESP32_WIFI_OPENETH_PROVIDER,
   isC6WifiMemoryType, validateSimulationTransportProfile, type SimulationTransportProfile } from './SimulationTransportSources';
 
@@ -28,6 +29,11 @@ export interface ArtifactFile {
   path: string;
   sizeBytes: number;
   sha256: string;
+}
+
+interface AdditionalDebugSourceSnapshot {
+  sourcePath: string;
+  snapshotPath: string;
 }
 
 export type Esp32FlashSegmentRole =
@@ -149,6 +155,7 @@ export interface SimulationArtifactManifest {
     mapPath?: string;
     sourceMapPath?: string;
     sourceSnapshotPath?: string;
+    additionalSourceSnapshots?: AdditionalDebugSourceSnapshot[];
     memoryMapPath?: string;
     instrumentationPath?: string;
   };
@@ -191,14 +198,23 @@ export interface EmitArtifactManifestOptions {
   primaryOutputPath?: string;
   manifestPath: string;
   buildInputs?: BuildInputRecord;
+  sketchSourceIdentity?: SketchSourceIdentity;
   simulationProviders?: string[];
   simulationNetwork?: { wifi: true; httpPort?: number };
 }
+
+const DEBUG_SOURCE_SNAPSHOT = 'aily-debug-source.txt';
+const ADDITIONAL_DEBUG_SOURCE_FILE = /^aily-debug-source-[a-f0-9]{64}\.txt$/i;
+const DEBUG_SOURCE_MAX_BYTES = 2 * 1024 * 1024;
+const DEBUG_SOURCE_MAX_FILES = 64;
+const DEBUG_SOURCE_TOTAL_MAX_BYTES = 8 * 1024 * 1024;
+const BROWSER_ARTIFACT_MAX_FILES = 64;
 
 const ARTIFACT_FILE_NAMES = [
   /^aily-build-inputs\.json$/i,
   /^aily-block-source-map\.json$/i,
   /^aily-debug-source\.txt$/i,
+  ADDITIONAL_DEBUG_SOURCE_FILE,
   /^aily-debug-memory-map\.json$/i,
   /^aily-debug-instrumentation\.json$/i,
   /^aily-boot-app0\.bin$/i,
@@ -236,7 +252,7 @@ function classifyArtifact(fileName: string): ArtifactFileRole | null {
   const lowerName = fileName.toLowerCase();
   if (lowerName === 'aily-build-inputs.json') return 'build-inputs';
   if (lowerName === 'aily-block-source-map.json') return 'source-map';
-  if (lowerName === 'aily-debug-source.txt') return 'debug-source';
+  if (lowerName === DEBUG_SOURCE_SNAPSHOT || ADDITIONAL_DEBUG_SOURCE_FILE.test(lowerName)) return 'debug-source';
   if (lowerName === 'aily-debug-memory-map.json') return 'memory-map';
   if (lowerName === 'aily-debug-instrumentation.json') {
     return 'debug-instrumentation';
@@ -577,6 +593,48 @@ async function collectArtifactFiles(buildRoot: string): Promise<ArtifactFile[]> 
   return Promise.all(
     candidates.map(({ name, role }) => inspectFile(buildRoot, path.join(buildRoot, name), role)),
   );
+}
+
+async function captureAdditionalDebugSources(
+  sketchPath: string,
+  primary: { sizeBytes: number; sha256: string },
+  identity?: SketchSourceIdentity,
+): Promise<Array<{ snapshot: AdditionalDebugSourceSnapshot; bytes: Buffer }>> {
+  if (!identity) return [];
+  if (identity.entryPath !== sketchPath || identity.entrySha256 !== primary.sha256) {
+    throw new Error('Debug source snapshot does not match the exact source being compiled.');
+  }
+  const { files } = normalizeSketchInputs(identity.sketchInputs);
+  if (files.length >= DEBUG_SOURCE_MAX_FILES
+    || files.some(file => file.sizeBytes > DEBUG_SOURCE_MAX_BYTES)
+    || files.reduce((total, file) => total + file.sizeBytes, primary.sizeBytes) > DEBUG_SOURCE_TOTAL_MAX_BYTES) {
+    throw new Error('Debug source snapshots exceed the 64-file, 2 MiB per-file or 8 MiB total build limit.');
+  }
+  const sourceRoot = path.dirname(sketchPath);
+  const primaryPath = path.basename(sketchPath);
+  const sourcePaths = new Set([primaryPath, ...files.map(file => file.path)]);
+  if (sourcePaths.size !== files.length + 1 || [...sourcePaths].some(sourcePath => {
+    for (let parent = path.posix.dirname(sourcePath); parent !== '.'; parent = path.posix.dirname(parent)) {
+      if (sourcePaths.has(parent)) return true;
+    }
+    return false;
+  })) throw new Error('Debug source snapshot paths conflict.');
+
+  const captured: Array<{ snapshot: AdditionalDebugSourceSnapshot; bytes: Buffer }> = [];
+  for (const file of files) {
+    const sourcePath = path.join(sourceRoot, file.path);
+    if (await fs.realpath(sourcePath) !== sourcePath) {
+      throw new Error(`Debug source snapshot is linked: ${file.path}`);
+    }
+    const bytes = await readSketchInput(sourcePath, DEBUG_SOURCE_MAX_BYTES);
+    if (bytes.length !== file.sizeBytes || createHash('sha256').update(bytes).digest('hex') !== file.sha256) {
+      throw new Error(`Debug source snapshot does not match the exact source being compiled: ${file.path}`);
+    }
+    const pathHash = createHash('sha256').update(file.path).digest('hex');
+    const snapshotPath = `aily-debug-source-${pathHash}.txt`;
+    captured.push({ snapshot: { sourcePath: file.path, snapshotPath }, bytes });
+  }
+  return captured;
 }
 
 function parseTarget(
@@ -1089,7 +1147,7 @@ export async function emitSimulationArtifactManifest(
   );
   const sourceSnapshotPath = path.join(
     buildRoot,
-    'aily-debug-source.txt',
+    DEBUG_SOURCE_SNAPSHOT,
   );
   const instrumentationManifestPath = path.join(
     buildRoot,
@@ -1097,16 +1155,22 @@ export async function emitSimulationArtifactManifest(
   );
   const bootApp0ArtifactPath = path.join(buildRoot, 'aily-boot-app0.bin');
   const buildInputsPath = path.join(buildRoot, 'aily-build-inputs.json');
-  if (sketchStat.size > 2 * 1024 * 1024) {
+  if (sketchStat.size > DEBUG_SOURCE_MAX_BYTES) {
     throw new Error('Debug source snapshot exceeds the 2 MiB build limit.');
   }
   const sourceSha256 = await hashFile(sketchPath);
+  const capturedSources = await captureAdditionalDebugSources(
+    sketchPath, { sizeBytes: sketchStat.size, sha256: sourceSha256 }, options.sketchSourceIdentity,
+  );
+  const previousNames = await fs.readdir(buildRoot);
   await Promise.all([
     fs.remove(generatedMemoryMapPath),
     fs.remove(sourceSnapshotPath),
     fs.remove(instrumentationManifestPath),
     fs.remove(bootApp0ArtifactPath),
     fs.remove(buildInputsPath),
+    ...previousNames.filter(name => ADDITIONAL_DEBUG_SOURCE_FILE.test(name))
+      .map(name => fs.unlink(path.join(buildRoot, name))),
   ]);
   // Evidence is a sidecar, never firmware/source content or a compiler input.
   if (options.buildInputs) {
@@ -1121,7 +1185,12 @@ export async function emitSimulationArtifactManifest(
     }
     await fs.writeJson(buildInputsPath, options.buildInputs, { spaces: 2 });
   }
-  await fs.copyFile(sketchPath, sourceSnapshotPath);
+  await Promise.all([
+    fs.copyFile(sketchPath, sourceSnapshotPath),
+    ...capturedSources.map(({ snapshot, bytes }) =>
+      fs.writeFile(path.join(buildRoot, snapshot.snapshotPath), bytes, { flag: 'wx' })),
+  ]);
+  const additionalSourceSnapshots = capturedSources.map(({ snapshot }) => snapshot);
   if (target.architecture === 'esp32') {
     await copyEsp32BootApp0(buildRoot, options.sdkPath);
   }
@@ -1130,9 +1199,7 @@ export async function emitSimulationArtifactManifest(
     throw new Error(`No firmware artifacts found in build directory: ${buildRoot}`);
   }
 
-  const sourceSnapshot = files.find(
-    (file) => file.role === 'debug-source',
-  );
+  const sourceSnapshot = files.find(file => file.path === DEBUG_SOURCE_SNAPSHOT);
   if (
     !sourceSnapshot
     || sourceSnapshot.sizeBytes !== sketchStat.size
@@ -1170,6 +1237,9 @@ export async function emitSimulationArtifactManifest(
   );
   if (memoryMapPath || instrumentationPath) {
     files = await collectArtifactFiles(buildRoot);
+  }
+  if (additionalSourceSnapshots.length > 0 && files.length > BROWSER_ARTIFACT_MAX_FILES) {
+    throw new Error('Simulation Artifact exceeds the 64-file browser transport limit.');
   }
 
   const primaryFile = choosePrimaryFile(buildRoot, files, options.primaryOutputPath);
@@ -1337,6 +1407,7 @@ export async function emitSimulationArtifactManifest(
           ...(sourceSnapshot
             ? { sourceSnapshotPath: sourceSnapshot.path }
             : {}),
+          ...(additionalSourceSnapshots.length ? { additionalSourceSnapshots } : {}),
           ...(memoryMap ? { memoryMapPath: memoryMap.path } : {}),
           ...(instrumentation
             ? { instrumentationPath: instrumentation.path }

@@ -1,19 +1,105 @@
 import assert from 'node:assert/strict';
 import { createHash } from 'node:crypto';
-import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, readFile, realpath, rm, writeFile } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import {
+  ArduinoCompiler,
   resolveArtifactTargetMarkers,
   resolveCompileToolVersions,
 } from '../src/ArduinoCompiler';
+import { Logger } from '../src/utils/Logger';
 import { emitSimulationArtifactManifest, type EmitArtifactManifestOptions } from '../src/ArtifactManifest';
 import type { BuildInputRecord } from '../src/BuildInputRecord';
 import { ESP32_SPP_PROVIDER, ESP32_SPP_TRANSPORT_PROFILE, ESP32_BLE_PROVIDER, ESP32C3_WIFI_PROVIDER, ESP32C6_WIFI_PROVIDER, ESP32S3_WIFI_PROVIDER, ESP32S3_BLE_PROVIDER, ESP32C6_BLE_PROVIDER, ESP32_WIFI_OPENETH_PROVIDER } from '../src/SimulationTransportSources';
 import { applySimulationDebugProfile } from '../src/SimulationDebugProfile';
 import { projectPlatformBuildProperties } from '../src/PlatformPropertyProjector';
+import { captureSketchSourceIdentity } from '../src/SketchSources';
+
+async function checkStagedCppDebugIdentity(): Promise<void> {
+  const root = await mkdtemp(path.join(await realpath(os.tmpdir()), 'aily-cpp-debug-identity-'));
+  const source = path.join(root, 'a project.cpp');
+  const build = path.join(root, 'build');
+  const staged = path.join(build, 'a project.cpp');
+  const bom = Buffer.from([0xef, 0xbb, 0xbf]);
+  const body = Buffer.from('void setup() {}\r\nvoid loop() {}\r\n');
+  const original = Buffer.concat([bom, body]);
+  const envKeys = ['SKETCH_PATH', 'SKETCH_NAME', 'BUILD_PATH'] as const;
+  const saved = Object.fromEntries(envKeys.map(key => [key, process.env[key]]));
+  try {
+    await writeFile(source, original);
+    Object.assign(process.env, { SKETCH_NAME: 'a project', SKETCH_PATH: source, BUILD_PATH: build });
+    const compiler = new ArduinoCompiler(new Logger());
+    await compiler['prepareBuildDirectory'](build, true);
+    assert.deepEqual(await readFile(staged), Buffer.concat([bom, Buffer.from('#line 1 "/source/a project.cpp"\n'), body]));
+    assert.deepEqual(await readFile(source), original);
+    process.env['SKETCH_PATH'] = source;
+    await compiler['prepareBuildDirectory'](build, false);
+    assert.deepEqual(await readFile(staged), original);
+  } finally {
+    for (const key of envKeys) {
+      if (saved[key] === undefined) delete process.env[key];
+      else process.env[key] = saved[key];
+    }
+    await rm(root, { recursive: true, force: true });
+  }
+}
+
+async function checkMultiFileSourceSnapshots(): Promise<void> {
+  const root = await mkdtemp(path.join(await realpath(os.tmpdir()), 'aily-multi-source-artifact-'));
+  try {
+    const sketchRoot = path.join(root, 'sketch');
+    const buildPath = path.join(root, 'build');
+    const sketchPath = path.join(sketchRoot, 'main.cpp');
+    const nestedSource = path.join(sketchRoot, 'src', 'probe.cpp');
+    const siblingSource = path.join(sketchRoot, 'probe.cpp');
+    await mkdir(path.dirname(nestedSource), { recursive: true });
+    await mkdir(buildPath);
+    await Promise.all([
+      writeFile(sketchPath, 'void setup() {}\nvoid loop() {}\n'),
+      writeFile(siblingSource, 'int direct() { return 1; }\n'),
+      writeFile(nestedSource, 'int nested() { return 2; }\n'),
+      writeFile(path.join(buildPath, 'main.hex'), ':00000001FF\n'),
+    ]);
+    const options = { board: 'arduino:avr:uno', buildPath, sketchPath,
+      manifestPath: path.join(buildPath, 'aily-artifact-manifest.json') };
+    const identity = await captureSketchSourceIdentity(sketchPath);
+    const manifest = await emitSimulationArtifactManifest({ ...options, sketchSourceIdentity: identity });
+    assert.equal(manifest.debug?.sourceSnapshotPath, 'aily-debug-source.txt');
+    const snapshots = manifest.debug?.additionalSourceSnapshots;
+    assert.ok(snapshots);
+    assert.deepEqual(snapshots.map(file => file.sourcePath), ['probe.cpp', 'src/probe.cpp']);
+    for (const { sourcePath, snapshotPath } of snapshots) {
+      const bytes = await readFile(path.join(sketchRoot, sourcePath));
+      assert.deepEqual(await readFile(path.join(buildPath, snapshotPath)), bytes);
+      assert.deepEqual(manifest.files.find(file => file.path === snapshotPath), {
+        path: snapshotPath, role: 'debug-source', sizeBytes: bytes.length,
+        sha256: createHash('sha256').update(bytes).digest('hex'),
+      });
+    }
+
+    await writeFile(nestedSource, 'int nested() { return 3; }\n');
+    await assert.rejects(emitSimulationArtifactManifest({ ...options, sketchSourceIdentity: identity }),
+      /does not match the exact source being compiled: src\/probe\.cpp/u);
+    assert.equal(await readFile(path.join(buildPath, snapshots[1].snapshotPath), 'utf8'), 'int nested() { return 2; }\n');
+    const rebuilt = await emitSimulationArtifactManifest({ ...options,
+      sketchSourceIdentity: await captureSketchSourceIdentity(sketchPath) });
+    assert.notEqual(rebuilt.artifactId, manifest.artifactId);
+    const legacy = await emitSimulationArtifactManifest(options);
+    assert.equal(legacy.debug?.additionalSourceSnapshots, undefined);
+    assert.deepEqual(legacy.files.filter(file => file.role === 'debug-source').map(file => file.path),
+      ['aily-debug-source.txt']);
+    for (const { snapshotPath } of snapshots) {
+      await assert.rejects(readFile(path.join(buildPath, snapshotPath)), { code: 'ENOENT' });
+    }
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+}
 
 async function main(): Promise<void> {
+  await checkStagedCppDebugIdentity();
+  await checkMultiFileSourceSnapshots();
   assert.deepEqual(projectPlatformBuildProperties({ version: '3.3.1', 'runtime.platform.path': '/sdk', unused: 'discard' }),
     { version: '3.3.1', 'runtime.platform.path': '/sdk' });
   assert.deepEqual(projectPlatformBuildProperties({ 'compiler.sdk.path': '/resolved/chip-sdk', unused: 'discard' }),
