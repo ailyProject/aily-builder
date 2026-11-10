@@ -92,7 +92,7 @@ test('classic BLE rejects mixed or substituted SDK intent before mutating depend
 
 test('hardware, other targets and no-BLE builds preserve their existing provider selection', async t => {
   const build = await fixture(t);
-  for (const [debug, target, deps] of [[false, 'esp32', [library('BLE')]], [true, 'esp32s3', [library('BLE')]],
+  for (const [debug, target, deps] of [[false, 'esp32', [library('BLE')]], [true, 'esp32s2', [library('BLE')]],
     [true, 'esp32', []]] as const) assert.deepEqual(await prepareSimulationTransportSources(build, debug, target, [...deps]), { providers: [] });
   assert.deepEqual((await prepareSimulationTransportSources(build, true, 'esp32', [library('BluetoothSerial')])).providers, [ESP32_VHCI_PROVIDER]);
 });

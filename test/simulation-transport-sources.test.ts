@@ -12,7 +12,7 @@ import { Logger } from '../src/utils/Logger';
 import { applySimulationTransportCompileConfig, applySimulationTransportPlatform, prepareSimulationTransportSources,
   ESP32C3_WIFI_PROVIDER, ESP32C3_WIFI_LINKER_WRAPPERS, ESP32C6_WIFI_PROVIDER, ESP32S3_WIFI_PROVIDER, ESP32_VHCI_PROVIDER,
   verifyPreparedSimulationProviderInputs,
-  ESP32C6_BLE_PROVIDER, ESP32C6_BLE_LINKER_WRAPPERS } from '../src/SimulationTransportSources';
+  ESP32C6_BLE_PROVIDER, ESP32C6_BLE_LINKER_WRAPPERS, ESP32S3_BLE_PROVIDER, ESP32C3_BLE_LINKER_WRAPPERS } from '../src/SimulationTransportSources';
 import type { Dependency } from '../src/DependencyAnalyzer';
 const abi = { platformVersion: '3.3.10', toolVersions: { 'esp32c3-libs': '3.3.10', 'esp-rv32': '14.2.0' } };
 const root = path.resolve(__dirname, '..');
@@ -227,7 +227,7 @@ test('normal C6 BLE IPC selection requires simulation, real selected BLE and exa
   const { build, context, dependencies } = await c6Fixture(t);
   const ble = library('BLE');
   for (const [debug, mcu, libs] of [[false, 'esp32c6', [ble]], [false, 'esp32c6', [library('NimBLE-Arduino')]],
-    [true, 'esp32s3', [ble]], [true, 'esp32c6', []]] as const) {
+    [true, 'esp32s2', [ble]], [true, 'esp32c6', []]] as const) {
     assert.deepEqual(await prepareSimulationTransportSources(build, debug, mcu, [...libs], context), { providers: [] });
   }
   await assert.rejects(prepareSimulationTransportSources(build, true, 'esp32c6', [...dependencies, ble], context), /cannot be mixed/);
@@ -256,6 +256,60 @@ test('normal C6 BLE IPC selection requires simulation, real selected BLE and exa
   assert.equal(config.args.ld, '-Wl,base');
   assert.throws(() => applySimulationTransportCompileConfig(config, [ESP32C6_BLE_PROVIDER, ESP32C6_WIFI_PROVIDER]),
     /cannot be mixed/);
+});
+
+test('S3 BLE stages the sole normal SDK VHCI leaf and reuses the packet contract', async t => {
+  const { build, context, config } = await s3Fixture(t, 'qio_opi', '3.3.10');
+  const blePath = path.join(context.sdkPath, 'libraries/BLE/src');
+  const libBt = path.join(context.compilerSdkPath, 'lib/libbt.a');
+  const btHeader = path.join(context.compilerSdkPath, 'include/bt/include/esp32c3/include/esp_bt.h');
+  const configBase = await readFile(config, 'utf8');
+  const configBle = configBase + '#define CONFIG_BT_CONTROLLER_ENABLED 1\n#define CONFIG_BT_NIMBLE_ENABLED 1\n'
+    + '#define CONFIG_BT_NIMBLE_LEGACY_VHCI_ENABLE 1\n';
+  await writeFile(config, configBle);
+  for (const file of [libBt, btHeader, path.join(blePath, 'BLEDevice.cpp')]) {
+    await mkdir(path.dirname(file), { recursive: true });
+    await writeFile(file, 'controlled SDK input ' + path.basename(file));
+  }
+  await writeFile(path.join(blePath, '..', 'library.properties'), 'name=BLE\nversion=3.3.10\n');
+  const host = { ...library('BLE'), path: blePath };
+  const dependencies = [host];
+  const result = await prepareSimulationTransportSources(build, true, 'esp32s3', dependencies, context);
+  assert.deepEqual(result.providers, [ESP32S3_BLE_PROVIDER]);
+  assert.equal(result.network, undefined);
+  assert.equal(dependencies[0], host);
+  const sourceInputs = result.providerSourceInputs!;
+  assert.deepEqual(sourceInputs.sources.map(input => path.basename(input.path)), ['aily-s3-ble-vhci-v1.c', 'aily_packet_abi.h']);
+  assert.equal(sourceInputs.selectedSdk.length, 6);
+  assert(sourceInputs.selectedSdk.some(input => input.path === libBt));
+  const source = await readFile(sourceInputs.sources[0].path, 'utf8');
+  const wrapperNames = [...source.matchAll(/__wrap_([a-zA-Z0-9_]+)\(/g)].map(match => match[1]);
+  assert.deepEqual(wrapperNames.sort(), [...ESP32C3_BLE_LINKER_WRAPPERS].sort());
+  assert.match(source, /sizeof\(esp_bt_controller_config_t\) == 72/);
+  assert.match(source, /AILY_HCI_S3_BASE UINT32_C\(0x600f0000\)/);
+  assert.deepEqual(await readFile(sourceInputs.sources[1].path), await readFile(path.join(resourceRoot, 'aily_packet_abi.h')));
+  const compileConfig = { args: { ld: '-Wl,base' } };
+  assert.equal(applySimulationTransportCompileConfig(compileConfig, result.providers).args.ld,
+    '-Wl,base ' + ESP32C3_BLE_LINKER_WRAPPERS.map(name => '-Wl,--wrap,' + name).join(' '));
+  assert.throws(() => applySimulationTransportCompileConfig(compileConfig, [ESP32S3_BLE_PROVIDER, ESP32S3_WIFI_PROVIDER]), /cannot be mixed/);
+  await verifyPreparedSimulationProviderInputs(sourceInputs);
+  await writeFile(libBt, 'changed SDK archive');
+  await assert.rejects(verifyPreparedSimulationProviderInputs(sourceInputs), /S3 BLE input changed/);
+  for (const configuration of [configBase, configBle + '#define CONFIG_BT_BLUEDROID_ENABLED 1\n']) {
+    await writeFile(config, configuration);
+    await assert.rejects(prepareSimulationTransportSources(build, true, 'esp32s3', [host], context), /NimBLE legacy VHCI/);
+  }
+  await writeFile(config, configBle);
+  await assert.rejects(prepareSimulationTransportSources(build, true, 'esp32s3', [{ ...host, path: build }], context),
+    /selected Arduino SDK BLE library/);
+  await assert.rejects(prepareSimulationTransportSources(build, true, 'esp32s3', [host],
+    { ...context, toolVersions: { ...context.toolVersions, 'esp32s3-libs': '5.4.1' } }), /requires exact Arduino/);
+  for (const name of ['WiFi', 'BluetoothSerial', 'NimBLE-Arduino']) {
+    await assert.rejects(prepareSimulationTransportSources(build, true, 'esp32s3', [host, library(name)], context), /S3 (?:Wi-Fi|BLE)/);
+  }
+  assert.deepEqual(await prepareSimulationTransportSources(build, false, 'esp32s3', dependencies), { providers: [] });
+  assert.deepEqual(dependencies, [host]);
+  await assert.rejects(stat(path.dirname(sourceInputs.sources[0].path)), { code: 'ENOENT' });
 });
 
 test('requested C3 simulation rejects absent, changed or incomplete exact ABI before provider publication', async t => {

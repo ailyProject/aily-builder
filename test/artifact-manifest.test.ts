@@ -9,7 +9,7 @@ import {
 } from '../src/ArduinoCompiler';
 import { emitSimulationArtifactManifest, type EmitArtifactManifestOptions } from '../src/ArtifactManifest';
 import type { BuildInputRecord } from '../src/BuildInputRecord';
-import { ESP32_SPP_PROVIDER, ESP32_SPP_TRANSPORT_PROFILE, ESP32_BLE_PROVIDER, ESP32C3_WIFI_PROVIDER, ESP32C6_WIFI_PROVIDER, ESP32S3_WIFI_PROVIDER, ESP32C6_BLE_PROVIDER, ESP32_WIFI_OPENETH_PROVIDER } from '../src/SimulationTransportSources';
+import { ESP32_SPP_PROVIDER, ESP32_SPP_TRANSPORT_PROFILE, ESP32_BLE_PROVIDER, ESP32C3_WIFI_PROVIDER, ESP32C6_WIFI_PROVIDER, ESP32S3_WIFI_PROVIDER, ESP32S3_BLE_PROVIDER, ESP32C6_BLE_PROVIDER, ESP32_WIFI_OPENETH_PROVIDER } from '../src/SimulationTransportSources';
 import { applySimulationDebugProfile } from '../src/SimulationDebugProfile';
 import { projectPlatformBuildProperties } from '../src/PlatformPropertyProjector';
 
@@ -572,6 +572,23 @@ async function main(): Promise<void> {
         'build.extra_flags': s3ExtraFlags.replace('CDC_ON_BOOT=0', 'CDC_ON_BOOT=1') }) },
       { mcu: 'esp32c3', board: 'esp32:esp32:esp32c3' },
     ]) await assert.rejects(emitSimulationArtifactManifest({ ...normalS3Options, ...changes }));
+
+    const s3BleOptions: EmitArtifactManifestOptions = { ...normalS3Options,
+      manifestPath: path.join(root, 'aily-artifact-manifest-s3-normal-ble.json'),
+      simulationProviders: [ESP32S3_BLE_PROVIDER] };
+    const s3BleManifest = await emitSimulationArtifactManifest(s3BleOptions);
+    assert.deepEqual(s3BleManifest.build.simulationProviders, [ESP32S3_BLE_PROVIDER]);
+    assert.equal(s3BleManifest.build.environment?.espIdf.version, '5.5.4');
+    assert.equal(s3BleManifest.build.environment?.toolchain.name, 'esp-x32');
+    assert.equal(s3BleManifest.build.inputs?.digest, s3BleOptions.buildInputs?.digest);
+    for (const changes of [
+      { simulationProviders: [ESP32S3_BLE_PROVIDER, ESP32S3_WIFI_PROVIDER] },
+      { simulationNetwork: { wifi: true as const } },
+      { buildInputs: undefined },
+      { buildInputs: buildInputsFor('esp32s3', 'qio_qspi', s3BoardProperties) },
+      { toolVersions: s3Options.toolVersions, platformProperties: s3Options.platformProperties },
+    ]) await assert.rejects(emitSimulationArtifactManifest({ ...s3BleOptions, ...changes }),
+      /S3 BLE simulation Artifact requires its exact SDK\/IDF\/tool ABI/);
 
     const c6BleOptions: EmitArtifactManifestOptions = { ...c6Options,
       manifestPath: path.join(root, 'aily-artifact-manifest-c6-ble-probe.json'),
