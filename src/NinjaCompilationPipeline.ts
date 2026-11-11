@@ -72,9 +72,12 @@ export class NinjaCompilationPipeline {
     this.ninjaGenerator = new NinjaGenerator(logger);
   }
 
+  private storeOrdinaryObjects = true;
+
   async compile({ dependencies, compileConfig }: NinjaPipelineOptions): Promise<NinjaCompilationResult> {
     this.dependencies = dependencies;
     this.compileConfig = compileConfig;
+    this.storeOrdinaryObjects = true;
     let remoteFetches = new Map<string, Promise<ArchiveCacheFetchResult>>();
     let archiveCacheHits = new Map<string, ArchiveCacheHit>();
 
@@ -150,6 +153,7 @@ export class NinjaCompilationPipeline {
           const verifiedInputs = verifiedLocalArchive && !dynamicLibrariesPrebuild && !dynamicCorePrebuild
             ? await this.archiveCloudCacheManager.prepareVerifiedBuild(dependencies, compileConfig)
             : undefined;
+          this.storeOrdinaryObjects = !verifiedInputs;
           // A cache miss alone does not invalidate old objects already in this
           // build directory, especially when a header's timestamp was retained.
           await this.refreshCacheContextFingerprint(verifiedInputs?.fingerprint);
@@ -946,8 +950,8 @@ export class NinjaCompilationPipeline {
               isInFailureMode = false;
               this.logger.info(line.trim());
               this.reportNinjaProgress(line.trim(), progressRange);
-              // 检查是否是编译完成的消息，立即存储到缓存
-              this.handleCompilationProgress(line.trim(), buildDir);
+              // Verified objects use a private context and bypass ordinary restores.
+              if (this.storeOrdinaryObjects) void this.handleCompilationProgress(line.trim(), buildDir);
             } else if (line.startsWith('FAILED:')) {
               // 编译失败信息，进入失败模式
               isInFailureMode = true;

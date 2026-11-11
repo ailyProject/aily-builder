@@ -10,6 +10,18 @@ const MAX_INPUT_BYTES = 512 * 1024 * 1024;
 const MAX_RESPONSE_FILES = 64;
 const MAX_RESPONSE_BYTES = 4 * 1024 * 1024;
 const ARCHIVE_SOURCE = /\.(?:c|cc|cpp|cxx|s)$/i;
+const COMPILER_WORD = /(?:[^\s"']|"(?:\\["]|[^"])*"|'[^']*')+/g;
+
+/** Strip only a standalone driver option. Preserve literals and options passed
+ * through to the preprocessor, which verified preparation rejects if unsafe. */
+export function withoutUserHeaderDepfileOption(command: string): string {
+  let forwarded = false;
+  return command.replace(COMPILER_WORD, word => {
+    const remove = !forwarded && /^(?:-MMD|"-MMD"|'-MMD')$/.test(word);
+    forwarded = /^(?:-Xpreprocessor|"-Xpreprocessor"|'-Xpreprocessor')$/.test(word);
+    return remove ? '' : word;
+  });
+}
 
 export function usesVerifiedLocalArchiveCache(): boolean {
   return process.env.AILY_BUILDER_VERIFIED_LOCAL_ARCHIVE_CACHE === '1';
@@ -82,7 +94,7 @@ async function readCompilerPathMap(cwd: string): Promise<CompilerPathMap | undef
 // Split the already expanded compiler recipe for a direct process invocation.
 // A recipe whose quoting we cannot interpret is ineligible for this cache.
 function compilerWords(command: string): string[] {
-  const tokens = command.match(/(?:[^\s"']|"(?:\\["]|[^"])*"|'[^']*')+/g) || [];
+  const tokens = command.match(COMPILER_WORD) || [];
   if (tokens.join(' ').replace(/\s+/g, ' ') !== command.trim().replace(/\s+/g, ' ')) {
     throw new Error('Unsupported compiler recipe quoting');
   }
@@ -137,9 +149,8 @@ async function compilerSearchRoots(
 ): Promise<{ roots: string[]; compilerArguments: string[][] }> {
   const dependencyRoots = [process.env.SKETCH_DIR_PATH, ...dependencies.map(dep => dep.path)].filter(Boolean) as string[];
   const roots = [...dependencyRoots];
-  const sources = dependencies.filter(dep => mapping || dep.type === 'library' || dep.type === 'core')
-    .flatMap(archiveObjectSources);
-  if (mapping && process.env.SKETCH_PATH) sources.push(process.env.SKETCH_PATH);
+  const sources = dependencies.flatMap(archiveObjectSources);
+  if (process.env.SKETCH_PATH) sources.push(process.env.SKETCH_PATH);
   const recipes = [
     { key: 'c', compiler: 'c', language: 'c', needed: sources.some(source => /\.c$/i.test(source)) },
     { key: 'cpp', compiler: 'cpp', language: 'c++', needed: sources.some(source => /\.(?:cc|cpp|cxx|ino)$/i.test(source)) },
@@ -155,7 +166,14 @@ async function compilerSearchRoots(
     if (typeof template !== 'string' || typeof compiler !== 'string' || !compiler) {
       throw new Error('Native compiler search paths are unavailable');
     }
-    const args = (await expandResponses(compilerWords(template), cwd, responses)).flatMap(arg =>
+    const expanded = await expandResponses(compilerWords(withoutUserHeaderDepfileOption(template)), cwd, responses);
+    const conflictingMode = (arg: string) => /^(?:-M|-MM|-MMD|--write-user-dependencies)$/.test(arg);
+    if (expanded.some(arg => conflictingMode(arg) ||
+      (arg.startsWith('-Wp,') && arg.split(',').slice(1).some(option => conflictingMode(option) || option.startsWith('@')))
+    )) {
+      throw new Error('Compiler recipe contains an indirect dependency option incompatible with full archive receipts');
+    }
+    const args = expanded.flatMap(arg =>
       arg === '%INCLUDE_PATHS%' ? dependencyRoots.map(root => `-I${root}`) : [arg]
     );
     const probeArgs: string[] = [];
@@ -236,6 +254,7 @@ export async function captureVerifiedArchiveInputs(
     return relative ? mapping.logicalRoot + '/' + relative : mapping.logicalRoot;
   }
 
+  add('receipt-policy', 'full-gcc-deps-v2');
   add('path-policy', mapping ? 'mapped-project-paths-v1' : 'physical-paths-v1');
   add('working-directory', pathIdentity(cwd));
   for (const args of compilerArguments) {

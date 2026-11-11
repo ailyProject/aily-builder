@@ -5,7 +5,7 @@ import path from 'node:path';
 import { test } from 'node:test';
 import { ArchiveCloudCacheManager, getArchiveDependencyKey } from '../src/ArchiveCloudCacheManager';
 import type { Dependency } from '../src/DependencyAnalyzer';
-import { parseNinjaArchiveDependencies } from '../src/VerifiedArchiveInputs';
+import { parseNinjaArchiveDependencies, withoutUserHeaderDepfileOption } from '../src/VerifiedArchiveInputs';
 import { Logger } from '../src/utils/Logger';
 
 test('verified archives move across frozen roots and reject changed or uncovered native inputs', async t => {
@@ -79,7 +79,7 @@ test('verified archives move across frozen roots and reject changed or uncovered
     ];
     const compileConfig = {
       compiler: { cpp: process.execPath, ar: archiver },
-      args: { cpp: `"${compilerProbe}" -c %INCLUDE_PATHS% @outer.rsp "%SOURCE_FILE_PATH%" -o "%OBJECT_FILE_PATH%"` }
+      args: { cpp: `"${compilerProbe}" -MMD -c %INCLUDE_PATHS% @outer.rsp "%SOURCE_FILE_PATH%" -o "%OBJECT_FILE_PATH%"` }
     };
     process.env.BUILD_PATH = build;
     process.env.SKETCH_DIR_PATH = sketch;
@@ -162,6 +162,12 @@ test('verified archives move across frozen roots and reject changed or uncovered
   assert.equal(samePath.hits.get(key)?.source, 'local');
   const otherPath = await prepare('other-physical', '#define SPI_MODE 0', '#define PANEL_IO 1', '', null);
   assert.equal(otherPath.hits.size, 0);
+  await fs.writeFile(path.join(otherPath.build, 'include.rsp'), '"-Igenerated" -MMD');
+  assert.equal(await otherPath.manager.prepareVerifiedBuild(otherPath.dependencies, otherPath.compileConfig), undefined);
+  await fs.writeFile(path.join(otherPath.build, 'include.rsp'), '"-Igenerated"');
+  const forwarded = { ...otherPath.compileConfig,
+    args: { cpp: otherPath.compileConfig.args.cpp + ' -Xpreprocessor "-MMD"' } };
+  assert.equal(await otherPath.manager.prepareVerifiedBuild(otherPath.dependencies, forwarded), undefined);
   process.env.AILY_BUILDER_VERIFIED_ARCHIVE_PATH_MAP = JSON.stringify({
     physicalRoot: path.dirname(otherPath.build), logicalRoot: path.join(root, 'unsafe%path')
   });
@@ -171,6 +177,13 @@ test('verified archives move across frozen roots and reject changed or uncovered
   const legacy = new ArchiveCloudCacheManager(new Logger());
   assert.equal(legacy.shouldGenerate(), false);
   assert.equal(path.basename(path.dirname(path.dirname(path.dirname(legacy.getEntryDir('abcde'))))), 'v2');
+});
+
+test('full GCC receipts remove only the standalone user header mode', () => {
+  assert.equal(
+    withoutUserHeaderDepfileOption('g++ -MMD "-MMD" -DNOTE="literal -MMD text" -Xpreprocessor "-MMD" @flags'),
+    'g++   -DNOTE="literal -MMD text" -Xpreprocessor "-MMD" @flags'
+  );
 });
 
 test('only complete valid native receipts can attest archive inputs', () => {

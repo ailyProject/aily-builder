@@ -5,7 +5,7 @@ import { Dependency } from './DependencyAnalyzer';
 import { CompileConfigManager } from './CompileConfigManager';
 import { ArchiveCacheHit, getArchiveDependencyKey } from './ArchiveCloudCacheManager';
 import { commandHasIncludePath, dedupeCompileIncludePaths } from './utils/CompileIncludePaths';
-import { archiveObjectSources } from './VerifiedArchiveInputs';
+import { archiveObjectSources, withoutUserHeaderDepfileOption } from './VerifiedArchiveInputs';
 
 export interface NinjaRule {
   name: string;
@@ -686,9 +686,8 @@ export class NinjaGenerator {
   private withNinjaDepfile(command: string): string {
     let result = command;
     if (this.verifiedArchiveReceipts) {
-      // The ordinary -MMD excludes system headers. An archive proof needs
-      // every file seen by the compiler, including -isystem and SDK headers.
-      result += ' -MD';
+      // GCC passes -MMD after -MD when both are present, regardless of argv order.
+      result = withoutUserHeaderDepfileOption(result) + ' -MD';
       for (const flag of this.verifiedArchivePathMapFlags) result += ' "' + flag + '"';
     } else if (!/(?:^|\s)-M(?:MD|D)(?=\s|$)/.test(result)) {
       result += ' -MMD';
