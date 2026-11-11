@@ -92,7 +92,7 @@ export class LibraryIndexCache {
     libraryName: string,
     libraryPath: string,
     macroDefinitions: Map<string, MacroDefinition>,
-    builder: () => Promise<LibraryIndexBuildResult>,
+    builder: (sourceHash: string) => Promise<LibraryIndexBuildResult>,
     analysisContext: string = ''
   ): Promise<LibraryIndexResult> {
     const startedAt = Date.now();
@@ -190,7 +190,7 @@ export class LibraryIndexCache {
     pathStatePath: string,
     macroDefinitions: Map<string, MacroDefinition>,
     macroKey: string,
-    builder: () => Promise<LibraryIndexBuildResult>,
+    builder: (sourceHash: string) => Promise<LibraryIndexBuildResult>,
     fileCount: number,
     fastFingerprint: string,
     sourceHash: string,
@@ -199,7 +199,7 @@ export class LibraryIndexCache {
     startedAt: number
   ): Promise<LibraryIndexResult> {
     this.logger.debug(`[LIB_INDEX] rebuild ${libraryName}: ${fileCount} files`);
-    const built = await builder();
+    const built = await builder(sourceHash);
     const sourceFiles = this.toRelativePaths(libraryPath, built.sourceFiles);
 
     const nextPathState = this.createPathState(
@@ -235,7 +235,8 @@ export class LibraryIndexCache {
       ? `[LIB_INDEX] skipped macro cache ${libraryName}: sensitive macro state changed, ${Date.now() - startedAt}ms`
       : `[LIB_INDEX] stored ${libraryName}: sources=${built.sourceFiles.length}, includes=${built.includeFiles.length}, ${Date.now() - startedAt}ms`);
     return {
-      sourceFiles: built.sourceFiles,
+      // Ninja's archive member order must agree with cache-hit builds.
+      sourceFiles: this.toAbsolutePaths(libraryPath, sourceFiles),
       includeFiles: built.includeFiles,
       macroDefinitions: built.macroDefinitions || macroDefinitions,
       cacheHit: false,

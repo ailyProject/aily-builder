@@ -57,6 +57,55 @@ export interface ConditionalInclude {
 
 type DirectiveTapeProvider = (filePath: string) => PreprocessorDirectiveTape;
 
+interface LibraryUnitAnalysis {
+  includes: string[];
+  macroChanges: Array<[string, MacroDefinition]>;
+}
+
+type LibraryPathObserver = (file: string, check: 'exists' | 'isFile', result: boolean) => void;
+
+interface LibraryIndexWork {
+  sourceHash: string;
+  tapes: Map<string, PreprocessorDirectiveTape>;
+  units: Map<string, LibraryUnitAnalysis>;
+  externalHeaders: Map<string, string | undefined>;
+  observedPaths: Map<string, boolean>;
+  observedFiles: Map<string, boolean>;
+  lookupChanged: boolean;
+  sourceFiles?: string[];
+}
+
+function isRegularFile(file: string): boolean {
+  try {
+    return fs.statSync(file).isFile();
+  } catch {
+    return false;
+  }
+}
+
+function fileIdentity(filePath: string): string | undefined {
+  try {
+    const stat = fs.statSync(filePath);
+    return `${stat.dev}:${stat.ino}:${stat.size}:${stat.mtimeMs}:${stat.ctimeMs}`;
+  } catch {
+    return undefined;
+  }
+}
+
+function canReuseLibraryIndexWork(work: LibraryIndexWork): boolean {
+  if (work.lookupChanged) return false;
+  for (const [header, identity] of work.externalHeaders) {
+    if (!identity || fileIdentity(header) !== identity) return false;
+  }
+  for (const [file, exists] of work.observedPaths) {
+    if (fs.existsSync(file) !== exists) return false;
+  }
+  for (const [file, isFile] of work.observedFiles) {
+    if (isRegularFile(file) !== isFile) return false;
+  }
+  return true;
+}
+
 function stripMacroValueComment(value: string): string {
   let quote: string | null = null;
   let escaped = false;
@@ -439,7 +488,7 @@ export class DependencyAnalyzer {
   }
 
   /** Resolve only headers that stay inside the active platform search roots. */
-  private resolvePlatformHeader(includePath: string, includingFilePath: string): string | undefined {
+  private resolvePlatformHeader(includePath: string, includingFilePath: string, observeLookup?: LibraryPathObserver): string | undefined {
     if (!includePath || this.platformHeaderRoots.length === 0) return undefined;
 
     const candidates: string[] = [];
@@ -452,11 +501,9 @@ export class DependencyAnalyzer {
 
     for (const candidate of candidates) {
       if (!this.isPlatformHeaderPath(candidate)) continue;
-      try {
-        if (fs.statSync(candidate).isFile()) return candidate;
-      } catch {
-        // Continue with the remaining platform include roots.
-      }
+      const found = isRegularFile(candidate);
+      observeLookup?.(candidate, 'isFile', found);
+      if (found) return candidate;
     }
     return undefined;
   }
@@ -629,6 +676,19 @@ export class DependencyAnalyzer {
       return;
     }
 
+    // Sibling includes have the same incoming macros. Nested walks have their
+    // own state because their parent library can have changed those macros.
+    const repeatedLibraries = new Set<Dependency>();
+    const seenLibraries = new Set<Dependency>();
+    for (const includeFile of includeFiles) {
+      const library = this.libraryMap.get(includeFile);
+      if (library) {
+        if (seenLibraries.has(library)) repeatedLibraries.add(library);
+        seenLibraries.add(library);
+      }
+    }
+    const sharedWork = new Map<Dependency, LibraryIndexWork>();
+
     for (const includeFile of includeFiles) {
       // 跳过系统头文件
       if (this.isSystemHeader(includeFile)) {
@@ -649,7 +709,8 @@ export class DependencyAnalyzer {
         this.libraryEntryPoints.set(libraryKey, entries);
         activeEntries.add(entryKey);
         try {
-          const libraryIndex = await this.applyLibraryIndex(libraryObject, macroDefinitions, [...entries]);
+          const work = repeatedLibraries.has(libraryObject) ? sharedWork : undefined;
+          const libraryIndex = await this.applyLibraryIndex(libraryObject, macroDefinitions, [...entries], work);
           this.dependencyList.set(libraryObject.name, libraryObject);
 
           // Keep precompiled archives associated with the selected library.
@@ -672,7 +733,12 @@ export class DependencyAnalyzer {
     }
   }
 
-  private async applyLibraryIndex(libraryObject: Dependency, macroDefinitions: Map<string, MacroDefinition>, entryPoints: string[] = []): Promise<LibraryIndexResult> {
+  private async applyLibraryIndex(
+    libraryObject: Dependency,
+    macroDefinitions: Map<string, MacroDefinition>,
+    entryPoints: string[] = [],
+    sharedWork?: Map<Dependency, LibraryIndexWork>
+  ): Promise<LibraryIndexResult> {
     const entries = [...new Set(entryPoints.map(entry =>
       toHostPathKey(path.relative(libraryObject.path, path.resolve(libraryObject.path, entry)).replace(/\\/g, '/'))
     ))].sort();
@@ -680,7 +746,18 @@ export class DependencyAnalyzer {
       libraryObject.name,
       libraryObject.path,
       macroDefinitions,
-      () => this.buildLibraryIndex(libraryObject, macroDefinitions, entries),
+      sourceHash => {
+        if (!sharedWork) return this.buildLibraryIndex(libraryObject, macroDefinitions, entries);
+        let work = sharedWork.get(libraryObject);
+        if (work?.sourceHash !== sourceHash || !canReuseLibraryIndexWork(work)) {
+          work = {
+            sourceHash, tapes: new Map(), units: new Map(), externalHeaders: new Map(),
+            observedPaths: new Map(), observedFiles: new Map(), lookupChanged: false
+          };
+          sharedWork.set(libraryObject, work);
+        }
+        return this.buildLibraryIndex(libraryObject, macroDefinitions, entries, work);
+      },
       JSON.stringify([this.platformContextKey, entries])
     );
 
@@ -688,29 +765,50 @@ export class DependencyAnalyzer {
     return index;
   }
 
-  private async buildLibraryIndex(libraryObject: Dependency, macroDefinitions: Map<string, MacroDefinition>, entryPoints: string[] = []): Promise<LibraryIndexBuildResult> {
+  private async buildLibraryIndex(
+    libraryObject: Dependency,
+    macroDefinitions: Map<string, MacroDefinition>,
+    entryPoints: string[] = [],
+    work?: LibraryIndexWork
+  ): Promise<LibraryIndexBuildResult> {
     const macroDefinitionsCopy = new Map(macroDefinitions);
-    const directiveTapeCache = new Map<string, PreprocessorDirectiveTape>();
+    const directiveTapeCache = work?.tapes ?? new Map<string, PreprocessorDirectiveTape>();
+    // Negative lookups matter too: a newly created optional header can
+    // change __has_include or take priority over an already-read header.
+    const observeLookup: LibraryPathObserver | undefined = work ? (file, check, found) => {
+      const observations = check === 'isFile' ? work.observedFiles : work.observedPaths;
+      const previous = observations.get(file);
+      if (previous === undefined) observations.set(file, found);
+      else if (previous !== found) work.lookupChanged = true;
+    } : undefined;
     const getTape: DirectiveTapeProvider = (filePath: string) => {
       const cacheKey = this.normalizeAnalysisPath(filePath);
       let tape = directiveTapeCache.get(cacheKey);
       if (!tape) {
+        // The library hash does not cover SDK or relative sibling headers.
+        if (work && !this.isPathWithinRoot(filePath, libraryObject.path)) {
+          work.externalHeaders.set(filePath, fileIdentity(filePath));
+        }
         tape = scanPreprocessorDirectives(fs.readFileSync(filePath));
         directiveTapeCache.set(cacheKey, tape);
       }
       return tape;
     };
-    const sourceFiles = await this.computeLibrarySourceFiles(
+    const sourceFiles = work?.sourceFiles ?? await this.computeLibrarySourceFiles(
       libraryObject,
       macroDefinitions,
-      getTape
+      getTape,
+      observeLookup
     );
+    if (work) work.sourceFiles = sourceFiles;
     const includeFiles = await this.analyzeLibraryIncludes(
       libraryObject.path,
       macroDefinitionsCopy,
       sourceFiles,
       getTape,
-      entryPoints
+      entryPoints,
+      work?.units,
+      observeLookup
     );
 
     return {
@@ -725,7 +823,9 @@ export class DependencyAnalyzer {
     macroDefinitions: Map<string, MacroDefinition>,
     sourceFiles: string[],
     getTape: DirectiveTapeProvider,
-    entryPoints: string[]
+    entryPoints: string[],
+    analyzedUnits?: Map<string, LibraryUnitAnalysis>,
+    observeLookup?: LibraryPathObserver
   ): Promise<string[]> {
     let includeFilePaths: string[] = [];
     try {
@@ -807,14 +907,13 @@ export class DependencyAnalyzer {
     });
     const initialMacroDefinitions = new Map(macroDefinitions);
     const mergedMacroDefinitions = new Map(macroDefinitions);
-    const externalIncludes = new Set<string>();
-
     // Each source/public header is an independent translation unit. Local includes share
     // that unit's macro state and are analyzed synchronously at their include location.
-    for (const rootFilePath of rootFiles) {
+    const analyzeUnit = (rootFilePath: string): LibraryUnitAnalysis => {
       const translationUnitMacros = new Map(initialMacroDefinitions);
       const activeIncludeStack = new Set<string>();
       const onceFiles = new Set<string>();
+      const externalIncludes = new Set<string>();
 
       const analyzeLocalFile = (filePath: string): void => {
         const normalizedFilePath = normalizeAbsolutePath(filePath);
@@ -829,12 +928,12 @@ export class DependencyAnalyzer {
             allowIndeterminate: this.isPlatformHeaderPath(filePath),
             hasInclude: includePath => {
               return !!resolveLocalInclude(includePath, filePath)
-                || !!this.resolvePlatformHeader(includePath, filePath)
-                || this.canResolveKnownInclude(includePath, filePath);
+                || !!this.resolvePlatformHeader(includePath, filePath, observeLookup)
+                || this.canResolveKnownInclude(includePath, filePath, observeLookup);
             },
             onInclude: includePath => {
               const localIncludePath = resolveLocalInclude(includePath, filePath);
-              const resolvedPath = localIncludePath || this.resolvePlatformHeader(includePath, filePath);
+              const resolvedPath = localIncludePath || this.resolvePlatformHeader(includePath, filePath, observeLookup);
               if (resolvedPath) {
                 analyzeLocalFile(resolvedPath);
               } else if (!this.isPlatformHeaderPath(filePath)) {
@@ -848,9 +947,31 @@ export class DependencyAnalyzer {
       };
 
       analyzeLocalFile(rootFilePath);
+      const macroChanges: LibraryUnitAnalysis['macroChanges'] = [];
       for (const [name, macroDefinition] of translationUnitMacros) {
-        mergedMacroDefinitions.set(name, macroDefinition);
+        if (initialMacroDefinitions.get(name) !== macroDefinition) macroChanges.push([name, macroDefinition]);
       }
+      return { includes: [...externalIncludes], macroChanges };
+    };
+
+    const externalIncludes = new Set<string>();
+    let previousChanges: LibraryUnitAnalysis['macroChanges'] = [];
+    for (const rootFilePath of rootFiles) {
+      let unit = analyzedUnits?.get(rootFilePath);
+      if (!unit) {
+        unit = analyzeUnit(rootFilePath);
+        analyzedUnits?.set(rootFilePath, unit);
+      }
+      // The executor represents #undef as a definition with isDefined=false.
+      // Each independent unit therefore carries every base name. Replay those
+      // base values and retain names introduced by earlier units.
+      for (const [name] of previousChanges) {
+        const initial = initialMacroDefinitions.get(name);
+        if (initial) mergedMacroDefinitions.set(name, initial);
+      }
+      for (const [name, definition] of unit.macroChanges) mergedMacroDefinitions.set(name, definition);
+      for (const include of unit.includes) externalIncludes.add(include);
+      previousChanges = unit.macroChanges;
     }
 
     macroDefinitions.clear();
@@ -872,7 +993,7 @@ export class DependencyAnalyzer {
     return 2;
   }
 
-  private canResolveKnownInclude(includePath: string, includingFilePath?: string): boolean {
+  private canResolveKnownInclude(includePath: string, includingFilePath?: string, observeLookup?: LibraryPathObserver): boolean {
     if (!includePath) return false;
     if (this.libraryMap.has(includePath) || this.libraryMap.has(path.basename(includePath))) {
       return true;
@@ -883,7 +1004,10 @@ export class DependencyAnalyzer {
       ...this.platformHeaderRoots
     ].filter((root): root is string => !!root);
     for (const root of roots) {
-      if (fs.existsSync(path.resolve(root, includePath))) {
+      const candidate = path.resolve(root, includePath);
+      const found = fs.existsSync(candidate);
+      observeLookup?.(candidate, 'exists', found);
+      if (found) {
         return true;
       }
     }
@@ -992,7 +1116,8 @@ export class DependencyAnalyzer {
   private async computeLibrarySourceFiles(
     libraryObject: Dependency,
     macroDefinitions: Map<string, MacroDefinition>,
-    getTape: DirectiveTapeProvider
+    getTape: DirectiveTapeProvider,
+    observeLookup?: LibraryPathObserver
   ): Promise<string[]> {
     const extensions = ['.cpp', '.c', '.S', '.s'];
     // 直接扫描传入的路径（可能是库根目录或src目录）
@@ -1012,7 +1137,11 @@ export class DependencyAnalyzer {
         && includePath.replace(/\\/g, '/').startsWith('src/')) {
         candidates.push(path.resolve(libraryObject.path, includePath.slice(4)));
       }
-      return candidates.find(candidate => fs.existsSync(candidate));
+      return candidates.find(candidate => {
+        const found = fs.existsSync(candidate);
+        observeLookup?.(candidate, 'exists', found);
+        return found;
+      });
     };
 
     // Local headers execute synchronously so their macros can control a later
@@ -1053,12 +1182,12 @@ export class DependencyAnalyzer {
             allowIndeterminate: this.isPlatformHeaderPath(filePath),
             hasInclude: includePath => {
               return !!resolveLocalInclude(includePath, filePath)
-                || !!this.resolvePlatformHeader(includePath, filePath)
-                || this.canResolveKnownInclude(includePath, filePath);
+                || !!this.resolvePlatformHeader(includePath, filePath, observeLookup)
+                || this.canResolveKnownInclude(includePath, filePath, observeLookup);
             },
             onInclude: includePath => {
               const localPath = resolveLocalInclude(includePath, filePath);
-              const resolvedPath = localPath || this.resolvePlatformHeader(includePath, filePath);
+              const resolvedPath = localPath || this.resolvePlatformHeader(includePath, filePath, observeLookup);
               if (!resolvedPath) return;
               if (localPath && /\.(?:c|cpp)$/i.test(localPath)) {
                 includedFiles.add(normalizeFileKey(localPath));

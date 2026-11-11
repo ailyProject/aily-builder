@@ -1,6 +1,7 @@
 import fs from 'fs-extra';
 import path from 'path';
-import { spawn } from 'child_process';
+import { execFile, spawn } from 'child_process';
+import { promisify } from 'util';
 import { createHash } from 'crypto';
 import { glob } from 'glob';
 import {
@@ -13,6 +14,7 @@ import { CacheManager, CacheKey } from './CacheManager';
 import { NinjaGenerator, NinjaOptions } from './NinjaGenerator';
 import { commandHasIncludePath, dedupeCompileIncludePaths } from './utils/CompileIncludePaths';
 import { ArchiveCacheFetchResult, ArchiveCacheHit, ArchiveCloudCacheManager, getArchiveDependencyKey } from './ArchiveCloudCacheManager';
+import { parseNinjaArchiveDependencies, usesVerifiedLocalArchiveCache } from './VerifiedArchiveInputs';
 import { sanitizeNonAsciiPaths } from './utils/ShortPath';
 import { isMacOSHost, isWindowsHost, toHostPathKey } from './utils/HostPlatform';
 import { RecipeExecutionResult, RecipeRunner, RecipeRunnerError } from './RecipeRunner';
@@ -121,6 +123,7 @@ export class NinjaCompilationPipeline {
       const hasLinkPrebuild = this.hasRecipeGroup(recipeRunner, 'recipe.hooks.linking.prelink');
       const dynamicLibrariesPrebuild = hasLibrariesPrebuild;
       const dynamicCorePrebuild = hasCorePrebuild && !this.isKnownArduinoCoreBuildHook(recipeRunner);
+      const verifiedLocalArchive = usesVerifiedLocalArchiveCache();
 
       let ninjaFilePath = '';
       // Snapshot before entering the phase because the generic phase runner
@@ -142,24 +145,30 @@ export class NinjaCompilationPipeline {
             await this.invalidatePhaseOutputs('sketch');
           }
 
-          // Invalidate build-local objects when generated configuration changes.
-          // Cache-key misses alone are insufficient because an old object may
-          // already be present in this build directory.
-          await this.refreshCacheContextFingerprint();
+          // A phase hook can create headers used by either archive after the
+          // initial input snapshot. Leave those platforms on native builds.
+          const verifiedInputs = verifiedLocalArchive && !dynamicLibrariesPrebuild && !dynamicCorePrebuild
+            ? await this.archiveCloudCacheManager.prepareVerifiedBuild(dependencies, compileConfig)
+            : undefined;
+          // A cache miss alone does not invalidate old objects already in this
+          // build directory, especially when a header's timestamp was retained.
+          await this.refreshCacheContextFingerprint(verifiedInputs?.fingerprint);
           await this.invalidateLocalOutputsForChangedContext();
 
           this.logger.verbose('Checking archive cloud cache for compiled archives...');
-          archiveCacheHits = await this.archiveCloudCacheManager.restoreArchives(dependencies, compileConfig);
+          archiveCacheHits = await this.archiveCloudCacheManager.restoreArchives(dependencies, compileConfig, verifiedInputs);
           this.dropUnsafePhaseArchiveHits(
             archiveCacheHits,
             dynamicLibrariesPrebuild,
             dynamicCorePrebuild
           );
           ninjaOptions.archiveCacheHits = archiveCacheHits;
+          ninjaOptions.verifiedArchiveReceipts = !!verifiedInputs;
+          ninjaOptions.verifiedArchivePathMapFlags = verifiedInputs?.compilerPathMapFlags;
           remoteFetches = this.archiveCloudCacheManager.startRemoteFetches(archiveCacheHits);
 
           this.logger.verbose('Checking cache for compiled objects...');
-          await this.restoreFromCache(dependencies, archiveCacheHits);
+          if (!verifiedInputs) await this.restoreFromCache(dependencies, archiveCacheHits);
 
           ninjaFilePath = await this.ninjaGenerator.generateNinjaFile(ninjaOptions);
           this.logger.verbose(`Ninja file generated: ${ninjaFilePath}`);
@@ -314,10 +323,25 @@ export class NinjaCompilationPipeline {
         !(dynamicLibrariesPrebuild && dependency.type === 'library')
         && !(dynamicCorePrebuild && dependency.type === 'core')
       );
+      const needsArchiveReceipts = verifiedLocalArchive && this.archiveCloudCacheManager.needsVerifiedArchiveReceipts();
+      const verifiedInputsUnchanged = verifiedLocalArchive && (archiveCacheHits.size > 0 || needsArchiveReceipts)
+        ? await this.archiveCloudCacheManager.verifyBuildInputs(cacheableArchiveDependencies, compileConfig)
+        : undefined;
+      if (verifiedInputsUnchanged === false && archiveCacheHits.size > 0) {
+        return {
+          success: false,
+          warnings,
+          error: 'BUILD_ARCHIVE_INPUT_CHANGED: verified local archive inputs changed during compilation'
+        };
+      }
       await this.archiveCloudCacheManager.storeArchives(
         cacheableArchiveDependencies,
         compileConfig,
-        archiveCacheHits
+        archiveCacheHits,
+        verifiedInputsUnchanged && needsArchiveReceipts
+          ? await this.readVerifiedArchiveReceipts(ninjaFilePath, cacheableArchiveDependencies, archiveCacheHits)
+          : undefined,
+        verifiedInputsUnchanged
       );
 
       const outFilePath = await this.getExistingOutputFilePath(recipeRunner, artifactSnapshot);
@@ -1144,6 +1168,36 @@ export class NinjaCompilationPipeline {
     );
   }
 
+  private async readVerifiedArchiveReceipts(
+    ninjaFilePath: string,
+    dependencies: Dependency[],
+    archiveHits: Map<string, ArchiveCacheHit>
+  ): Promise<Map<string, string[]> | undefined> {
+    try {
+      const { stdout } = await promisify(execFile)(this.getNinjaExecutablePath(), [
+        '-f', path.basename(ninjaFilePath), '-t', 'deps'
+      ], {
+        cwd: path.dirname(ninjaFilePath),
+        windowsHide: true,
+        timeout: 10000,
+        maxBuffer: 24 * 1024 * 1024
+      });
+      const native = parseNinjaArchiveDependencies(stdout);
+      const receipts = new Map<string, string[]>();
+      for (const dependency of dependencies) {
+        const key = getArchiveDependencyKey(dependency.type, dependency.name);
+        if (archiveHits.has(key)) continue;
+        const objects = this.ninjaGenerator.getArchiveObjectFiles(dependency);
+        const paths = objects.map(object => native.get(object));
+        if (paths.length && paths.every(entry => entry?.length)) receipts.set(key, [...new Set(paths.flat())]);
+      }
+      return receipts;
+    } catch (error) {
+      this.logger.debug(`[ARCHIVE_CLOUD_CACHE] compiler dependency receipts unavailable: ${error}`);
+      return undefined;
+    }
+  }
+
   private getNinjaExecutableName(): string {
     if (isWindowsHost()) {
       return 'ninja.exe';
@@ -1224,9 +1278,10 @@ export class NinjaCompilationPipeline {
   /**
    * 从缓存中恢复对象文件
    */
-  private async refreshCacheContextFingerprint(): Promise<void> {
+  private async refreshCacheContextFingerprint(verifiedArchiveFingerprint?: string): Promise<void> {
     const buildPath = process.env['BUILD_PATH'] || '';
     const hash = createHash('sha256');
+    if (verifiedArchiveFingerprint) hash.update('verified-archive\0').update(verifiedArchiveFingerprint).update('\0');
     const files = new Set<string>();
 
     for (const filePath of await this.collectReferencedBuildInputFiles()) {

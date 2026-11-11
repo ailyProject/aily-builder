@@ -3,8 +3,10 @@ import fs from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import test, { TestContext } from 'node:test';
+import { getArchiveDependencyKey } from '../src/ArchiveCloudCacheManager';
 import { Dependency, DependencyAnalyzer } from '../src/DependencyAnalyzer';
 import { LibraryIndexCache } from '../src/LibraryIndexCache';
+import { NinjaGenerator } from '../src/NinjaGenerator';
 import { Logger } from '../src/utils/Logger';
 
 class QuietLogger extends Logger {
@@ -71,6 +73,7 @@ async function fixture(t: TestContext) {
   });
 
   return {
+    root,
     analyzer,
     logger,
     cacheReads,
@@ -83,7 +86,7 @@ async function fixture(t: TestContext) {
       }
       return sourceRoot;
     },
-    async read(includes: string, extraDefines = '') {
+    async preprocess(includes: string, extraDefines = '', platformOverrides: Record<string, string> = {}) {
       // Exactly one ino and no companion C/C++ files: exercise the production
       // directive/index route, not the separate native-compiler sketch route.
       await fs.writeFile(sketch, `${includes}\nvoid setup() {}\nvoid loop() {}\n`);
@@ -92,11 +95,14 @@ async function fixture(t: TestContext) {
       const result: Dependency[] = await analyzer.preprocess({
         fqbn: 'fixture:fixture:board',
         fqbnParsed: { package: 'fixture', platform: 'fixture', boardId: 'board' },
-        platform: { 'recipe.cpp.o.pattern': `g++ -DARDUINO_ARCH_FIXTURE=1 ${extraDefines}` },
+        platform: { 'recipe.cpp.o.pattern': `g++ -DARDUINO_ARCH_FIXTURE=1 ${extraDefines}`, ...platformOverrides },
         board: {},
       });
       assert.equal(result.some(dependency => dependency.type === 'sketch'), false);
-      return result.filter(dependency => dependency.type === 'library').map(dependency => dependency.name).sort();
+      return result.filter(dependency => dependency.type === 'library');
+    },
+    async read(includes: string, extraDefines = '', platformOverrides: Record<string, string> = {}) {
+      return (await this.preprocess(includes, extraDefines, platformOverrides)).map(dependency => dependency.name).sort();
     },
   };
 }
@@ -122,6 +128,155 @@ test('two requested public entries of one library both contribute dependencies',
   const f = await fixture(t);
   await selectableLibrary(f);
   assert.deepEqual(await f.read('#include <Local.h>\n#include <Cloud.h>'), ['CloudClient', 'LocalClient', 'Selectable']);
+});
+
+test('cold and cached library indexes and archives preserve Ninja input ordering', async t => {
+  const f = await fixture(t);
+  const sourceRoot = await f.library('Display', {
+    'Display.h': '#include <Zeta.h>\n#include <Alpha.h>\n',
+    'panel3c/Tri.cpp': 'void tri() {}\n',
+    'panel/Mono.cpp': 'void mono() {}\n',
+  });
+  await f.library('Zeta', { 'Zeta.h': '#pragma once\n', 'Zeta.cpp': 'void zeta() {}\n' });
+  await f.library('Alpha', { 'Alpha.h': '#pragma once\n', 'Alpha.cpp': 'void alpha() {}\n' });
+  const args = '%INCLUDE_PATHS% "%SOURCE_FILE_PATH%" -o "%OBJECT_FILE_PATH%"';
+  const config = {
+    compiler: { cpp: 'g++', c: 'gcc', ar: 'ar', ld: 'g++', objcopy: 'objcopy' },
+    args: { cpp: args, c: args, s: args, ld: '%OBJECT_FILE_PATHS% -o "%OBJECT_FILE_PATH%"' },
+  };
+  const readGraph = async (mode: string, restoreAlpha = false) => {
+    const dependencies = await f.preprocess('#include <Display.h>');
+    assert.deepEqual(dependencies.map(dependency => dependency.name), ['Display', 'Zeta', 'Alpha']);
+    assert.deepEqual(dependencies[0].includes, [path.join(sourceRoot, 'panel/Mono.cpp'), path.join(sourceRoot, 'panel3c/Tri.cpp')]);
+    const buildPath = path.join(f.root, mode);
+    await fs.mkdir(buildPath);
+    const buildArchivePath = path.join(buildPath, 'Alpha.a');
+    const file = await new NinjaGenerator(f.logger).generateNinjaFile({
+      dependencies, compileConfig: config, buildPath, jobs: 1,
+      archiveCacheHits: restoreAlpha ? new Map([[getArchiveDependencyKey('library', 'Alpha'), {
+        dependencyName: 'Alpha', dependencyType: 'library', archiveName: 'Alpha.a',
+        buildArchivePath, cacheKey: 'test', source: 'local'
+      }]]) : undefined,
+    });
+    const lines = (await fs.readFile(file, 'utf8')).split(/\r?\n/);
+    return {
+      archive: lines.find(line => line.startsWith('build Display.a: archive ')),
+      link: lines.find(line => /^build [^ ]+\.elf: link /.test(line)),
+      includeOrder: lines.find(line => line.includes('"-I$Display_path" "-I$Zeta_path" "-I$Alpha_path"')),
+    };
+  };
+  const cold = await readGraph('cold');
+  assert.ok(f.cacheReads.length > 0 && f.cacheReads.every(read => !read.hit));
+  assert.match(cold.archive, /Mono\.cpp\.o .*Tri\.cpp\.o$/);
+  assert.match(cold.link, /Display\.a Zeta\.a Alpha\.a/);
+  assert.ok(cold.includeOrder);
+  const warm = await readGraph('warm');
+  assert.ok(f.cacheReads.length > 0 && f.cacheReads.every(read => read.hit));
+  assert.deepEqual(warm, cold);
+  assert.deepEqual(await readGraph('restored-archive', true), cold);
+});
+
+test('sibling public entries reuse source selection and compiled units with their original macro merge order', async t => {
+  const f = await fixture(t);
+  await f.library('Selectable', {
+    'Local.h': '#define ENTRY_MODE 1\n#define FROM_LOCAL 1\n#include <Child.h>\n',
+    'Cloud.h': '#include <CloudClient.h>\n',
+    'actual.cpp': '#undef REMOVED\n#include <Required.h>\nvoid implementation() {}\n',
+  });
+  await f.library('Child', {
+    'Child.h': '#if ENTRY_MODE == 0 && FROM_LOCAL && !defined(REMOVED)\n#include <Expected.h>\n#else\n#include <Wrong.h>\n#endif\n',
+  });
+  for (const client of ['CloudClient', 'Required', 'Expected', 'Wrong']) {
+    await f.library(client, { [client + '.h']: '#pragma once\n' });
+  }
+
+  const analyzer = f.analyzer as any;
+  let sourceScans = 0;
+  let sourceUnitReads = 0;
+  const selectSources = analyzer.computeLibrarySourceFiles.bind(analyzer);
+  analyzer.computeLibrarySourceFiles = (dependency: Dependency, ...args: any[]) => {
+    if (dependency.name === 'Selectable') sourceScans++;
+    return selectSources(dependency, ...args);
+  };
+  const analyzeIncludes = analyzer.analyzeLibraryIncludes.bind(analyzer);
+  analyzer.analyzeLibraryIncludes = (libraryPath: string, macros: unknown, sources: string[], getTape: (file: string) => unknown, ...args: any[]) =>
+    analyzeIncludes(libraryPath, macros, sources, (file: string) => {
+      if (path.basename(file) === 'actual.cpp') sourceUnitReads++;
+      return getTape(file);
+    }, ...args);
+
+  assert.deepEqual(await f.read('#include <Local.h>\n#include <Cloud.h>', '-DENTRY_MODE=0 -DREMOVED=1'),
+    ['Child', 'CloudClient', 'Expected', 'Required', 'Selectable']);
+  assert.equal(sourceScans, 1);
+  assert.equal(sourceUnitReads, 1);
+});
+
+test('sibling reuse is discarded if the library fingerprint changes during the walk', async t => {
+  const f = await fixture(t);
+  await selectableLibrary(f);
+  await f.library('Added', { 'Added.h': '#pragma once\n' });
+  const cache: LibraryIndexCache = (f.analyzer as any).libraryIndexCache;
+  const getOrCreate = cache.getOrCreate.bind(cache);
+  let edited = false;
+  cache.getOrCreate = async (...args: Parameters<LibraryIndexCache['getOrCreate']>) => {
+    const result = await getOrCreate(...args);
+    if (args[0] === 'Selectable' && !edited) {
+      edited = true;
+      await f.library('Selectable', { 'added.cpp': '#include <Added.h>\nvoid added() {}\n' });
+    }
+    return result;
+  };
+  assert.deepEqual(await f.read('#include <Local.h>\n#include <Cloud.h>'), ['Added', 'CloudClient', 'LocalClient', 'Selectable']);
+});
+
+for (const change of ['changed', 'appeared', 'higher-priority']) {
+  test(`sibling reuse rechecks ${change} platform headers outside the indexed library`, async t => {
+    const f = await fixture(t);
+    const sdk = path.join(f.root, 'sdk');
+    const core = path.join(f.root, 'core');
+    await fs.mkdir(sdk);
+    await fs.mkdir(core);
+    const header = path.join(sdk, 'PlatformFlag.h');
+    if (change !== 'appeared') await fs.writeFile(header, '#define PLATFORM_FEATURE 0\n');
+    await f.library('Selectable', {
+      'Local.h': '#pragma once\n',
+      'Cloud.h': '#pragma once\n',
+      'actual.cpp': '#if __has_include(<PlatformFlag.h>)\n#include <PlatformFlag.h>\n#endif\n#if PLATFORM_FEATURE\n#include <Enabled.h>\n#else\n#include <Disabled.h>\n#endif\n',
+    });
+    await f.library('Enabled', { 'Enabled.h': '#pragma once\n' });
+    await f.library('Disabled', { 'Disabled.h': '#pragma once\n' });
+
+    const cache: LibraryIndexCache = (f.analyzer as any).libraryIndexCache;
+    const getOrCreate = cache.getOrCreate.bind(cache);
+    let edited = false;
+    cache.getOrCreate = async (...args: Parameters<LibraryIndexCache['getOrCreate']>) => {
+      const result = await getOrCreate(...args);
+      if (args[0] === 'Selectable' && !edited) {
+        edited = true;
+        const changedHeader = change === 'higher-priority' ? path.join(core, 'PlatformFlag.h') : header;
+        await fs.writeFile(changedHeader, '#define PLATFORM_FEATURE (1)\n');
+      }
+      return result;
+    };
+
+    assert.deepEqual(await f.read('#include <Local.h>\n#include <Cloud.h>', '', {
+      'build.core.path': core,
+      'compiler.sdk.path': sdk,
+    }), ['Disabled', 'Enabled', 'Selectable']);
+  });
+}
+
+test('nested sibling entries use the macros of their own parent library', async t => {
+  const f = await fixture(t);
+  await f.library('Left', { 'Left.h': '#define ENTRY_MODE 1\n#include <SharedOne.h>\n#include <SharedTwo.h>\n' });
+  await f.library('Right', { 'Right.h': '#define ENTRY_MODE 0\n#include <SharedOne.h>\n#include <SharedTwo.h>\n' });
+  await f.library('Shared', {
+    'SharedOne.h': '#if ENTRY_MODE\n#include <Enabled.h>\n#else\n#include <Disabled.h>\n#endif\n',
+    'SharedTwo.h': '#pragma once\n',
+  });
+  await f.library('Enabled', { 'Enabled.h': '#pragma once\n' });
+  await f.library('Disabled', { 'Disabled.h': '#pragma once\n' });
+  assert.deepEqual(await f.read('#include <Left.h>\n#include <Right.h>'), ['Disabled', 'Enabled', 'Left', 'Right', 'Shared']);
 });
 
 test('real compiled translation units retain private dependencies without selecting unrelated headers', async t => {

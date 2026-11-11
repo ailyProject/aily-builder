@@ -5,6 +5,7 @@ import { Dependency } from './DependencyAnalyzer';
 import { CompileConfigManager } from './CompileConfigManager';
 import { ArchiveCacheHit, getArchiveDependencyKey } from './ArchiveCloudCacheManager';
 import { commandHasIncludePath, dedupeCompileIncludePaths } from './utils/CompileIncludePaths';
+import { archiveObjectSources } from './VerifiedArchiveInputs';
 
 export interface NinjaRule {
   name: string;
@@ -38,6 +39,8 @@ export interface NinjaOptions {
   buildPath: string;
   jobs: number;
   archiveCacheHits?: Map<string, ArchiveCacheHit>;
+  verifiedArchiveReceipts?: boolean;
+  verifiedArchivePathMapFlags?: string[];
 }
 
 export class NinjaGenerator {
@@ -52,6 +55,8 @@ export class NinjaGenerator {
   private libraryStageInputs: string[] = [];
   private coreStageInputs: string[] = [];
   private archiveCacheHits: Map<string, ArchiveCacheHit> = new Map();
+  private verifiedArchiveReceipts = false;
+  private verifiedArchivePathMapFlags: string[] = [];
   private readonly arduinoCoreBuildFlag = '-DARDUINO_CORE_BUILD';
   static readonly SKETCH_TARGET = '__aily_sketch_ready';
   static readonly LIBRARIES_TARGET = '__aily_libraries_ready';
@@ -76,6 +81,8 @@ export class NinjaGenerator {
       this.compileConfig = options.compileConfig;
       this.buildPath = options.buildPath;
       this.archiveCacheHits = options.archiveCacheHits || new Map();
+      this.verifiedArchiveReceipts = options.verifiedArchiveReceipts === true;
+      this.verifiedArchivePathMapFlags = options.verifiedArchivePathMapFlags || [];
       this.objectFiles = [];
       this.prelinkInputs = [];
       this.sketchStageInputs = [];
@@ -387,12 +394,8 @@ export class NinjaGenerator {
 
       const archiveHit = this.getArchiveCacheHit(dependency);
       if (archiveHit) {
-        if (dependency.type === 'library') {
-          this.objectFiles.push(archiveHit.archiveName);
-          this.libraryStageInputs.push(archiveHit.archiveName);
-        } else if (dependency.type === 'core') {
-          this.coreStageInputs.push(archiveHit.archiveName);
-        }
+        // Restored and newly built libraries occupy the same link positions.
+        archiveGroups.set(dependency.name, { objects: [], needsRebuild: false });
         this.logger.debug(`generateBuilds: archive cache hit '${dependency.name}', using ${archiveHit.archiveName}`);
         continue;
       }
@@ -547,6 +550,14 @@ export class NinjaGenerator {
     }
   }
 
+  getArchiveObjectFiles(dependency: Dependency): string[] {
+    if (dependency.type !== 'library' && dependency.type !== 'core') return [];
+    const type = dependency.type;
+    return archiveObjectSources(dependency).map(source =>
+      this.calculateObjectFilePath(source, type, dependency.name).replace(/\\/g, '/')
+    );
+  }
+
   private async createCompileBuild(
     sourceFile: string,
     type: 'sketch' | 'library' | 'core' | 'variant',
@@ -674,7 +685,12 @@ export class NinjaGenerator {
 
   private withNinjaDepfile(command: string): string {
     let result = command;
-    if (!/(?:^|\s)-M(?:MD|D)(?=\s|$)/.test(result)) {
+    if (this.verifiedArchiveReceipts) {
+      // The ordinary -MMD excludes system headers. An archive proof needs
+      // every file seen by the compiler, including -isystem and SDK headers.
+      result += ' -MD';
+      for (const flag of this.verifiedArchivePathMapFlags) result += ' "' + flag + '"';
+    } else if (!/(?:^|\s)-M(?:MD|D)(?=\s|$)/.test(result)) {
       result += ' -MMD';
     }
     if (!/(?:^|\s)-MF(?:\s|$)/.test(result)) {

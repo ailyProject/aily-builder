@@ -15,6 +15,7 @@ import packageJson from './package.json';
 
 const program = new Command();
 const logger = new Logger();
+const verifiedLocalArchiveCacheOption = '--verified-local-archive-cache';
 
 function isTruthyEnv(name: string): boolean {
   const value = process.env[name];
@@ -111,6 +112,19 @@ program
   .version(packageJson.version);
 
 program
+  .command('capabilities')
+  .description('Report supported Builder features')
+  .option('--json', 'Output machine-readable JSON')
+  .action(() => {
+    console.log(JSON.stringify({
+      schemaVersion: 1,
+      capabilities: {
+        verifiedLocalArchiveCache: { schemaVersion: 1, cliOption: verifiedLocalArchiveCacheOption }
+      }
+    }));
+  });
+
+program
   .command('compile')
   .description('Compile Arduino source')
   .argument('<sketch>', 'Path to Arduino source (.ino or .cpp file)')
@@ -147,6 +161,7 @@ program
   .option('--archive-cloud-cache-url <url>', 'Remote archive cloud cache base URL')
   .option('--no-fetch-archive-cloud-cache', 'Do not fetch compiled .a archives from remote cloud cache')
   .option('--archive-cloud-cache-local-only', 'Only use local archive cloud cache; do not request remote cache', false)
+  .option(verifiedLocalArchiveCacheOption, 'Reuse and create local archives with verified dependency inputs')
   .option('--generate-archive-cloud-cache', 'Generate uploadable archive cloud cache entries after successful builds', isTruthyEnv('AILY_BUILDER_GENERATE_ARCHIVE_CLOUD_CACHE'))
   .action(async (sketch, options) => {
     // console.log('options:', options);
@@ -182,6 +197,13 @@ program
     } else if (typeof options.archiveCloudCache === 'string') {
       process.env['AILY_BUILDER_ARCHIVE_CLOUD_CACHE'] = '1';
       process.env['AILY_BUILDER_ARCHIVE_CLOUD_CACHE_DIR'] = path.resolve(options.archiveCloudCache);
+    }
+    if (options.verifiedLocalArchiveCache && options.archiveCloudCache !== false) {
+      process.env['AILY_BUILDER_VERIFIED_LOCAL_ARCHIVE_CACHE'] = '1';
+      process.env['AILY_BUILDER_ARCHIVE_CLOUD_CACHE'] = '1';
+      process.env['AILY_BUILDER_ARCHIVE_CLOUD_CACHE_LOCAL_ONLY'] = '1';
+      process.env['AILY_BUILDER_FETCH_ARCHIVE_CLOUD_CACHE'] = '0';
+      process.env['AILY_BUILDER_GENERATE_ARCHIVE_CLOUD_CACHE'] = '1';
     }
     if (options.archiveCloudCacheUrl) {
       process.env['AILY_BUILDER_ARCHIVE_CLOUD_CACHE_URL'] = options.archiveCloudCacheUrl;
