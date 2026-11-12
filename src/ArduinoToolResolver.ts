@@ -149,13 +149,14 @@ async function findPinnedArduinoToolPath(
         }
     }
 
-    // Some Pico tool archives retain the upstream distribution revision.
-    const picoVersion = version === '4.1.0' && /^(pqt-picotool|pqt-pioasm|pqt-mklittlefs)$/.test(toolName)
+    // Some tool archives retain an upstream distribution revision that the npm wrapper omits.
+    const distributionVersion = version === '4.1.0' && /^(pqt-picotool|pqt-pioasm|pqt-mklittlefs)$/.test(toolName)
         ? '4.1.0-1aec55e'
-        : toolName === 'pqt-python3' && version === '1.0.1' ? '1.0.1-base-3a57aed-1' : '';
-    if (picoVersion) {
+        : toolName === 'pqt-python3' && version === '1.0.1' ? '1.0.1-base-3a57aed-1'
+        : version === '14.2.1' && names.includes('xpack-arm-none-eabi-gcc') ? '14.2.1-1.1' : '';
+    if (distributionVersion) {
         for (const stem of stems) {
-            const directory = stem + picoVersion;
+            const directory = stem + distributionVersion;
             if ((await stat(directory).catch(() => null))?.isDirectory()) {
                 return toGlobPath(directory);
             }

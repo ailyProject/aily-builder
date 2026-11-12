@@ -38,6 +38,7 @@ test('known distribution directory names satisfy their corresponding package pin
     ['ctags', '5.8.0', 'ctags@5.8-arduino11'],
     ['pqt-picotool', '4.1.0', 'pqt-picotool@4.1.0-1aec55e'],
     ['openocd', '0.12.0', 'xpack-openocd@0.12.0'],
+    ['arm-none-eabi-gcc', '14.2.1', 'xpack-arm-none-eabi-gcc@14.2.1-1.1'],
   ]) {
     const expected = directory(layout);
     assert.equal(await findArduinoToolPath({ ...location, toolName, version }), expected);
