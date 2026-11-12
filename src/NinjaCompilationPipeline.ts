@@ -17,6 +17,7 @@ import { ArchiveCacheFetchResult, ArchiveCacheHit, ArchiveCloudCacheManager, get
 import { parseNinjaArchiveDependencies, usesVerifiedLocalArchiveCache } from './VerifiedArchiveInputs';
 import { sanitizeNonAsciiPaths } from './utils/ShortPath';
 import { isMacOSHost, isWindowsHost, toHostPathKey } from './utils/HostPlatform';
+import { detectWindowsGccDepfile } from './WindowsGccDepfile';
 import { RecipeExecutionResult, RecipeRunner, RecipeRunnerError } from './RecipeRunner';
 import {
   collectGeneratedSketchSources,
@@ -117,7 +118,10 @@ export class NinjaCompilationPipeline {
         compileConfig,
         buildPath,
         jobs: parseInt(process.env['BUILD_JOBS'] || '4'),
-        archiveCacheHits
+        archiveCacheHits,
+        windowsGccDepfile: isWindowsHost() ? detectWindowsGccDepfile(
+          this.getNinjaExecutablePath(), compileConfig.compiler, this.getNinjaEnvironment()
+        ) : undefined
       };
 
       const hasSketchPrebuild = this.hasRecipeGroup(recipeRunner, 'recipe.hooks.sketch.prebuild');
@@ -892,6 +896,19 @@ export class NinjaCompilationPipeline {
     return failedKeys;
   }
 
+  private getNinjaEnvironment(): NodeJS.ProcessEnv {
+    const sanitizedEnv: NodeJS.ProcessEnv = {};
+    for (const [key, value] of Object.entries(process.env)) {
+      if (value !== undefined) sanitizedEnv[key] = sanitizeNonAsciiPaths(value);
+    }
+    sanitizedEnv.PATH = [
+      sanitizedEnv.COMPILER_PATH,
+      sanitizedEnv.ESPTOOL_PY_PATH,
+      sanitizedEnv.PATH
+    ].filter(Boolean).join(path.delimiter);
+    return sanitizedEnv;
+  }
+
   private async executeNinjaBuild(
     ninjaFilePath: string,
     targets: string[] = [],
@@ -913,23 +930,10 @@ export class NinjaCompilationPipeline {
       this.logger.verbose(`Executing: ${ninjaPath} ${args.join(' ')}`);
       this.logger.verbose(`Working directory: ${buildDir}`);
 
-      // 清洗所有环境变量中的非 ASCII 路径
-      const sanitizedEnv: Record<string, string> = {};
-      for (const [key, value] of Object.entries(process.env)) {
-        if (value !== undefined) {
-          sanitizedEnv[key] = sanitizeNonAsciiPaths(value);
-        }
-      }
-      sanitizedEnv['PATH'] = [
-        sanitizedEnv['COMPILER_PATH'],
-        sanitizedEnv['ESPTOOL_PY_PATH'],
-        sanitizedEnv['PATH']
-      ].filter(Boolean).join(path.delimiter);
-
       const childProcess = spawn(ninjaPath, args, {
         cwd: buildDir,
         stdio: ['ignore', 'pipe', 'pipe'],
-        env: sanitizedEnv
+        env: this.getNinjaEnvironment()
       });
 
       let stdout = '';

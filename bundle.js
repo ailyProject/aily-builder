@@ -17,6 +17,7 @@ async function bundleMinified() {
     await fs.emptyDir(BUNDLE_DIR);
 
     await bundleJavaScript(BUNDLE_DIR);
+    await fs.copy('./dist/src/windows-gcc-depfile-runner.js', path.join(BUNDLE_DIR, 'windows-gcc-depfile-runner.js'));
     await copyNinja(BUNDLE_DIR);
     await createLaunchScript(BUNDLE_DIR, options);
     await createPackageJson(BUNDLE_DIR, options);

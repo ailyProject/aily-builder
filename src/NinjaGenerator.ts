@@ -6,6 +6,7 @@ import { CompileConfigManager } from './CompileConfigManager';
 import { ArchiveCacheHit, getArchiveDependencyKey } from './ArchiveCloudCacheManager';
 import { commandHasIncludePath, dedupeCompileIncludePaths } from './utils/CompileIncludePaths';
 import { archiveObjectSources, withoutUserHeaderDepfileOption } from './VerifiedArchiveInputs';
+import { type WindowsGccDepfile, wrapWindowsGccDepfileCommand } from './WindowsGccDepfile';
 
 export interface NinjaRule {
   name: string;
@@ -41,6 +42,7 @@ export interface NinjaOptions {
   archiveCacheHits?: Map<string, ArchiveCacheHit>;
   verifiedArchiveReceipts?: boolean;
   verifiedArchivePathMapFlags?: string[];
+  windowsGccDepfile?: WindowsGccDepfile;
 }
 
 export class NinjaGenerator {
@@ -57,6 +59,7 @@ export class NinjaGenerator {
   private archiveCacheHits: Map<string, ArchiveCacheHit> = new Map();
   private verifiedArchiveReceipts = false;
   private verifiedArchivePathMapFlags: string[] = [];
+  private windowsGccDepfile?: WindowsGccDepfile;
   private readonly arduinoCoreBuildFlag = '-DARDUINO_CORE_BUILD';
   static readonly SKETCH_TARGET = '__aily_sketch_ready';
   static readonly LIBRARIES_TARGET = '__aily_libraries_ready';
@@ -83,6 +86,7 @@ export class NinjaGenerator {
       this.archiveCacheHits = options.archiveCacheHits || new Map();
       this.verifiedArchiveReceipts = options.verifiedArchiveReceipts === true;
       this.verifiedArchivePathMapFlags = options.verifiedArchivePathMapFlags || [];
+      this.windowsGccDepfile = options.windowsGccDepfile;
       this.objectFiles = [];
       this.prelinkInputs = [];
       this.sketchStageInputs = [];
@@ -216,7 +220,7 @@ export class NinjaGenerator {
         compiler: '$cpp_compiler',
         input: '$in',
         output: '$out'
-      })),
+      }), 'cpp'),
       description: 'Compiling C++ $in',
       deps: 'gcc',
       depfile: '$out.d'
@@ -229,7 +233,7 @@ export class NinjaGenerator {
         compiler: '$c_compiler',
         input: '$in',
         output: '$out'
-      })),
+      }), 'c'),
       description: 'Compiling C $in',
       deps: 'gcc',
       depfile: '$out.d'
@@ -242,7 +246,7 @@ export class NinjaGenerator {
         compiler: '$cpp_compiler',
         input: '$in',
         output: '$out'
-      })),
+      }), 'cpp'),
       description: 'Compiling core C++ $in',
       deps: 'gcc',
       depfile: '$out.d'
@@ -254,7 +258,7 @@ export class NinjaGenerator {
         compiler: '$c_compiler',
         input: '$in',
         output: '$out'
-      })),
+      }), 'c'),
       description: 'Compiling core C $in',
       deps: 'gcc',
       depfile: '$out.d'
@@ -266,7 +270,7 @@ export class NinjaGenerator {
         compiler: '$c_compiler',
         input: '$in',
         output: '$out'
-      })),
+      }), 'c'),
       description: 'Assembling $in',
       deps: 'gcc',
       depfile: '$out.d'
@@ -279,7 +283,7 @@ export class NinjaGenerator {
         compiler: '$c_compiler',
         input: '$in',
         output: '$out'
-      })),
+      }), 'c'),
       description: 'Assembling core $in',
       deps: 'gcc',
       depfile: '$out.d'
@@ -683,7 +687,7 @@ export class NinjaGenerator {
     }
   }
 
-  private withNinjaDepfile(command: string): string {
+  private withNinjaDepfile(command: string, language: 'c' | 'cpp'): string {
     let result = command;
     if (this.verifiedArchiveReceipts) {
       // GCC passes -MMD after -MD when both are present, regardless of argv order.
@@ -698,6 +702,9 @@ export class NinjaGenerator {
       // compiler and Ninja agree explicitly so header dependencies and true
       // incremental builds are both reliable.
       result += ' -MF "$out.d"';
+    }
+    if (this.windowsGccDepfile?.[language]) {
+      return wrapWindowsGccDepfileCommand(result, this.windowsGccDepfile.encoding);
     }
     return result;
   }
