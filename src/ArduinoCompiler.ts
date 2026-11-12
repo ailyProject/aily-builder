@@ -136,7 +136,7 @@ export class ArduinoCompiler {
           // 基本路径变量
           key === 'SKETCH_NAME' || key === 'SKETCH_PATH' || key === 'SKETCH_DIR_PATH' ||
           key === 'BUILD_PATH' || key === 'SDK_PATH' || key === 'TOOLS_PATH' ||
-          key === 'LIBRARIES_PATH' || key === 'BUILD_JOBS' ||
+          key === 'LIBRARIES_PATH' || key === 'PROJECT_LIBRARY_PATHS' || key === 'BUILD_JOBS' ||
           // 编译器相关
           key.startsWith('COMPILER_') ||
           // 运行时路径

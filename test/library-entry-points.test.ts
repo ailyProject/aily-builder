@@ -8,6 +8,8 @@ import { Dependency, DependencyAnalyzer } from '../src/DependencyAnalyzer';
 import { LibraryIndexCache } from '../src/LibraryIndexCache';
 import { NinjaGenerator } from '../src/NinjaGenerator';
 import { Logger } from '../src/utils/Logger';
+import { resolveArduinoSketchLibraries } from '../src/ArduinoSketchDependencies';
+import { getPathListDelimiter } from '../src/utils/HostPlatform';
 
 class QuietLogger extends Logger {
   readonly messages: string[] = [];
@@ -28,6 +30,7 @@ async function fixture(t: TestContext) {
     SKETCH_PATH: sketch,
     SKETCH_DIR_PATH: path.dirname(sketch),
     LIBRARIES_PATH: libraries,
+    PROJECT_LIBRARY_PATHS: undefined,
     BUILD_PATH: path.join(root, 'build'),
     SDK_CORE_PATH: undefined,
     SDK_VARIANT_PATH: undefined,
@@ -80,8 +83,8 @@ async function fixture(t: TestContext) {
     analyzer,
     logger,
     cacheReads,
-    async library(name: string, contents: Record<string, string>) {
-      const sourceRoot = path.join(libraries, name, 'src');
+    async library(name: string, contents: Record<string, string>, location = libraries) {
+      const sourceRoot = path.join(location, name, 'src');
       for (const [relative, content] of Object.entries(contents)) {
         const filename = path.join(sourceRoot, relative);
         await fs.mkdir(path.dirname(filename), { recursive: true });
@@ -119,6 +122,105 @@ async function fixture(t: TestContext) {
     },
   };
 }
+
+test('same public header uses Arduino metadata, explicit paths and the actual compiler order', async t => {
+  const f = await fixture(t);
+  const sdk = path.join(f.root, 'sdk libraries');
+  const sketchbook = process.env.LIBRARIES_PATH!;
+  const platformLibrary = await f.library('Radio', {
+    '../library.properties': 'name=Radio\narchitectures=fixture\n',
+    'Radio.h': '#include <PlatformClient.h>\n',
+    'OtherMode.h': '#include <UnusedClient.h>\n',
+  }, sdk);
+  const sketchbookLibrary = await f.library('RadioCommunity', {
+    '../library.properties': 'name=Community Radio\narchitectures=*\n',
+    'Radio.h': '#include <CommunityClient.h>\n',
+    'CommunityOnly.h': '#pragma once\n',
+  });
+  const projectLibrary = await f.library('Vendored', {
+    '../library.properties': 'name=Vendored Radio\narchitectures=some-other-target\n',
+    'Radio.h': '#pragma once\n',
+  }, path.join(f.root, 'project libraries'));
+  await f.library('PlatformClient', { 'PlatformClient.h': '#pragma once\n' }, sdk);
+  await f.library('CommunityClient', { 'CommunityClient.h': '#pragma once\n' });
+  await f.library('UnusedClient', { 'UnusedClient.h': '#pragma once\n' });
+  process.env.SDK_CORE_LIBRARIES_PATH = sdk;
+  process.env.LIBRARIES_PATH = [sketchbook, sdk].join(getPathListDelimiter());
+
+  assert.deepEqual(await f.read('#include <Radio.h>'), ['PlatformClient', 'Radio']);
+  assert.deepEqual(await f.read('#include <Radio.h>'), ['PlatformClient', 'Radio']);
+  assert.ok(f.cacheReads.every(read => read.hit));
+
+  process.env.PROJECT_LIBRARY_PATHS = projectLibrary;
+  assert.deepEqual((await f.preprocess('#include <Radio.h>')).map(dependency => dependency.path), [projectLibrary]);
+  const actual = await f.preprocess('#include <Radio.h>', '', {}, {
+    cpp: `-I"${sketchbookLibrary}" %INCLUDE_PATHS%`,
+  });
+  assert.deepEqual(actual.map(dependency => dependency.name), ['RadioCommunity', 'CommunityClient']);
+
+  delete process.env.PROJECT_LIBRARY_PATHS;
+  const prior = await f.preprocess('#include <CommunityOnly.h>\n#include <Radio.h>');
+  assert.deepEqual(prior.map(dependency => dependency.name), ['RadioCommunity', 'CommunityClient']);
+
+  // The platform header and every source file are unchanged. Architecture
+  // metadata alone can change the winning dependency.
+  await fs.writeFile(path.join(platformLibrary, '..', 'library.properties'), 'name=Radio\narchitectures=other\n');
+  assert.deepEqual(await f.read('#include <Radio.h>'), ['CommunityClient', 'RadioCommunity']);
+  assert.ok(f.cacheReads.every(read => !read.hit));
+});
+
+test('compiler dependency probes inject the same include sequence that Ninja uses', async t => {
+  const f = await fixture(t);
+  const sdk = path.join(f.root, 'sdk');
+  const platformLibrary = await f.library('Radio', {
+    '../library.properties': 'name=Radio\narchitectures=fixture\n',
+    'Radio.h': '#pragma once\n',
+    'Radio.cpp': 'int radio;',
+  }, sdk);
+  const additional = await f.library('OtherRadio', { 'Radio.h': '#pragma once\n' });
+  const analyzer = f.analyzer as any;
+  await analyzer.parserLibraryPaths([sdk, process.env.LIBRARIES_PATH], [], 'fixture');
+  const build = process.env.BUILD_PATH!;
+  const sketch = process.env.SKETCH_PATH!;
+  await fs.writeFile(sketch, '#include <Radio.h>\nvoid setup() {}\nvoid loop() {}\n');
+  await fs.mkdir(build);
+  await fs.writeFile(path.join(build, 'recipe.rsp'), additional);
+  const probe = path.join(f.root, 'compiler.cjs');
+  await fs.writeFile(probe, `
+    const fs = require('node:fs');
+    const path = require('node:path');
+    const args = process.argv.slice(2);
+    const directories = args.flatMap(arg => arg.startsWith('-I') ? [arg.slice(2)] :
+      arg.startsWith('@') ? [fs.readFileSync(arg.slice(1), 'utf8')] : []);
+    const source = args.find(arg => arg.endsWith('.cpp'));
+    const header = fs.readFileSync(source, 'utf8').includes('<Radio.h>') &&
+      directories.map(dir => path.join(dir, 'Radio.h')).find(file => fs.existsSync(file));
+    const dep = header || (source.endsWith('arduino-dependencies.cpp') ? 'Radio.h' : '');
+    console.log('aily-deps: ' + dep.replaceAll(' ', String.fromCharCode(92) + ' '));
+    fs.appendFileSync('arguments.jsonl', JSON.stringify(args) + '\\n');
+  `);
+  const compiler = `"${process.execPath}" "${probe}" -c %INCLUDE_PATHS% -o "%OBJECT_FILE_PATH%" "%SOURCE_FILE_PATH%"`;
+  const deps = await resolveArduinoSketchLibraries({ 'recipe.cpp.o.pattern': compiler }, sketch, analyzer.librarySelection,
+    async directory => directory === platformLibrary ? [path.join(directory, 'Radio.cpp')] : []);
+  assert.deepEqual(deps.map(dependency => dependency.path), [platformLibrary]);
+  const args = (await fs.readFile(path.join(build, 'arguments.jsonl'), 'utf8')).trim().split(/\r?\n/).map(line => JSON.parse(line));
+  assert.ok(args[1].indexOf(`-I${path.dirname(sketch)}`) < args[1].indexOf(`-I${platformLibrary}`));
+  assert.ok(args[1].indexOf(`-I${platformLibrary}`) < args[1].indexOf('-E'));
+  const recipe = '%INCLUDE_PATHS% -o "%OBJECT_FILE_PATH%" "%SOURCE_FILE_PATH%"';
+  const ninja = await new NinjaGenerator(f.logger).generateNinjaFile({
+    dependencies: deps, buildPath: build, jobs: 1,
+    compileConfig: {
+      compiler: { cpp: 'g++', c: 'gcc', ar: 'ar', ld: 'g++', objcopy: 'objcopy' },
+      args: { cpp: recipe, c: recipe, s: recipe, ld: '%OBJECT_FILE_PATHS% -o "%OBJECT_FILE_PATH%"' },
+    },
+  });
+  assert.match(await fs.readFile(ninja, 'utf8'), /"-I\$sketch_dir_path" "-I\$Radio_path"/);
+
+  const withPhysicalInclude = await resolveArduinoSketchLibraries({
+    'recipe.cpp.o.pattern': compiler.replace('%INCLUDE_PATHS%', '@recipe.rsp %INCLUDE_PATHS%'),
+  }, sketch, analyzer.librarySelection, async () => []);
+  assert.deepEqual(withPhysicalInclude.map(dependency => dependency.path), [additional]);
+});
 
 async function selectableLibrary(f: Awaited<ReturnType<typeof fixture>>) {
   await f.library('Selectable', {
