@@ -5,6 +5,8 @@ import { Dependency } from './DependencyAnalyzer';
 import { CompileConfigManager } from './CompileConfigManager';
 import { ArchiveCacheHit, getArchiveDependencyKey } from './ArchiveCloudCacheManager';
 import { commandHasIncludePath, dedupeCompileIncludePaths } from './utils/CompileIncludePaths';
+import { archiveObjectSources, withoutUserHeaderDepfileOption } from './VerifiedArchiveInputs';
+import { type WindowsGccDepfile, wrapWindowsGccDepfileCommand } from './WindowsGccDepfile';
 
 export interface NinjaRule {
   name: string;
@@ -38,6 +40,9 @@ export interface NinjaOptions {
   buildPath: string;
   jobs: number;
   archiveCacheHits?: Map<string, ArchiveCacheHit>;
+  verifiedArchiveReceipts?: boolean;
+  verifiedArchivePathMapFlags?: string[];
+  windowsGccDepfile?: WindowsGccDepfile;
 }
 
 export class NinjaGenerator {
@@ -52,6 +57,9 @@ export class NinjaGenerator {
   private libraryStageInputs: string[] = [];
   private coreStageInputs: string[] = [];
   private archiveCacheHits: Map<string, ArchiveCacheHit> = new Map();
+  private verifiedArchiveReceipts = false;
+  private verifiedArchivePathMapFlags: string[] = [];
+  private windowsGccDepfile?: WindowsGccDepfile;
   private readonly arduinoCoreBuildFlag = '-DARDUINO_CORE_BUILD';
   static readonly SKETCH_TARGET = '__aily_sketch_ready';
   static readonly LIBRARIES_TARGET = '__aily_libraries_ready';
@@ -76,6 +84,9 @@ export class NinjaGenerator {
       this.compileConfig = options.compileConfig;
       this.buildPath = options.buildPath;
       this.archiveCacheHits = options.archiveCacheHits || new Map();
+      this.verifiedArchiveReceipts = options.verifiedArchiveReceipts === true;
+      this.verifiedArchivePathMapFlags = options.verifiedArchivePathMapFlags || [];
+      this.windowsGccDepfile = options.windowsGccDepfile;
       this.objectFiles = [];
       this.prelinkInputs = [];
       this.sketchStageInputs = [];
@@ -209,7 +220,7 @@ export class NinjaGenerator {
         compiler: '$cpp_compiler',
         input: '$in',
         output: '$out'
-      })),
+      }), 'cpp'),
       description: 'Compiling C++ $in',
       deps: 'gcc',
       depfile: '$out.d'
@@ -222,7 +233,7 @@ export class NinjaGenerator {
         compiler: '$c_compiler',
         input: '$in',
         output: '$out'
-      })),
+      }), 'c'),
       description: 'Compiling C $in',
       deps: 'gcc',
       depfile: '$out.d'
@@ -235,7 +246,7 @@ export class NinjaGenerator {
         compiler: '$cpp_compiler',
         input: '$in',
         output: '$out'
-      })),
+      }), 'cpp'),
       description: 'Compiling core C++ $in',
       deps: 'gcc',
       depfile: '$out.d'
@@ -247,7 +258,7 @@ export class NinjaGenerator {
         compiler: '$c_compiler',
         input: '$in',
         output: '$out'
-      })),
+      }), 'c'),
       description: 'Compiling core C $in',
       deps: 'gcc',
       depfile: '$out.d'
@@ -259,7 +270,7 @@ export class NinjaGenerator {
         compiler: '$c_compiler',
         input: '$in',
         output: '$out'
-      })),
+      }), 'c'),
       description: 'Assembling $in',
       deps: 'gcc',
       depfile: '$out.d'
@@ -272,7 +283,7 @@ export class NinjaGenerator {
         compiler: '$c_compiler',
         input: '$in',
         output: '$out'
-      })),
+      }), 'c'),
       description: 'Assembling core $in',
       deps: 'gcc',
       depfile: '$out.d'
@@ -387,12 +398,8 @@ export class NinjaGenerator {
 
       const archiveHit = this.getArchiveCacheHit(dependency);
       if (archiveHit) {
-        if (dependency.type === 'library') {
-          this.objectFiles.push(archiveHit.archiveName);
-          this.libraryStageInputs.push(archiveHit.archiveName);
-        } else if (dependency.type === 'core') {
-          this.coreStageInputs.push(archiveHit.archiveName);
-        }
+        // Restored and newly built libraries occupy the same link positions.
+        archiveGroups.set(dependency.name, { objects: [], needsRebuild: false });
         this.logger.debug(`generateBuilds: archive cache hit '${dependency.name}', using ${archiveHit.archiveName}`);
         continue;
       }
@@ -547,6 +554,14 @@ export class NinjaGenerator {
     }
   }
 
+  getArchiveObjectFiles(dependency: Dependency): string[] {
+    if (dependency.type !== 'library' && dependency.type !== 'core') return [];
+    const type = dependency.type;
+    return archiveObjectSources(dependency).map(source =>
+      this.calculateObjectFilePath(source, type, dependency.name).replace(/\\/g, '/')
+    );
+  }
+
   private async createCompileBuild(
     sourceFile: string,
     type: 'sketch' | 'library' | 'core' | 'variant',
@@ -672,9 +687,13 @@ export class NinjaGenerator {
     }
   }
 
-  private withNinjaDepfile(command: string): string {
+  private withNinjaDepfile(command: string, language: 'c' | 'cpp'): string {
     let result = command;
-    if (!/(?:^|\s)-M(?:MD|D)(?=\s|$)/.test(result)) {
+    if (this.verifiedArchiveReceipts) {
+      // GCC passes -MMD after -MD when both are present, regardless of argv order.
+      result = withoutUserHeaderDepfileOption(result) + ' -MD';
+      for (const flag of this.verifiedArchivePathMapFlags) result += ' "' + flag + '"';
+    } else if (!/(?:^|\s)-M(?:MD|D)(?=\s|$)/.test(result)) {
       result += ' -MMD';
     }
     if (!/(?:^|\s)-MF(?:\s|$)/.test(result)) {
@@ -683,6 +702,9 @@ export class NinjaGenerator {
       // compiler and Ninja agree explicitly so header dependencies and true
       // incremental builds are both reliable.
       result += ' -MF "$out.d"';
+    }
+    if (this.windowsGccDepfile?.[language]) {
+      return wrapWindowsGccDepfileCommand(result, this.windowsGccDepfile.encoding);
     }
     return result;
   }
@@ -876,13 +898,9 @@ export class NinjaGenerator {
     command = command.replace(new RegExp(`"[^"]*/${sketchName}\\.eep"`, 'g'), `${sketchName}.eep`);
     command = command.replace(new RegExp(`"[^"]*/${sketchName}\\.bin"`, 'g'), `${sketchName}.bin`);
 
-    // 最后添加编译器命令
-    if (replacements.compiler) {
-      command = `${replacements.compiler} ${command}`;
-    }
-
-    // 清理多余的空格
-    return command.replace(/\s+/g, ' ').trim();
+    // 保留可执行文件路径中的空格，只整理 recipe 参数。
+    command = command.replace(/\s+/g, ' ').trim();
+    return replacements.compiler ? `${replacements.compiler} ${command}`.trimEnd() : command;
   }
 
   private async writeNinjaFile(filePath: string): Promise<void> {

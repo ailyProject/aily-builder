@@ -16,9 +16,9 @@ import {
     resolveArduinoPlatformProperties
 } from './ArduinoPropertyResolver';
 import {
-    findArduinoToolPath,
     getDefaultArduino15BasePath,
-    resolveArduinoToolPaths
+    resolveArduinoToolPaths,
+    resolveRequiredArduinoToolPath
 } from './ArduinoToolResolver';
 import {
     createRuntimePlatformProperties,
@@ -155,7 +155,7 @@ export class ArduinoConfigParser {
             toolchainPackage = boardProperties['build.toolchainpkg'] || 'pqt-gcc';
             pqtGccPath = await this.findToolPath(
                 toolchainPackage,
-                '',
+                toolVersions[toolchainPackage] || '',
                 fqbnObj.package
             );
         }
@@ -284,14 +284,14 @@ export class ArduinoConfigParser {
 
     /**
      * 查找已安装的 Arduino 工具。自定义 TOOLS_PATH 优先，否则使用
-     * Arduino15 包目录；未找到时返回 null，不修改环境变量。
+     * Arduino15 包目录；缺少指定版本时报告错误，不修改环境变量。
      */
     async findToolPath(
         toolName: string,
         version = '',
         packageName = process.env['package'] || ''
     ): Promise<string | null> {
-        return findArduinoToolPath({
+        return resolveRequiredArduinoToolPath({
             toolName,
             version,
             toolsPath: process.env['TOOLS_PATH'],

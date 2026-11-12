@@ -16,12 +16,16 @@ import { Logger } from './utils/Logger';
 import { Dependency } from './DependencyAnalyzer';
 import { collectPackageIdentitiesFromPaths, extractPackageIdentityFromPath } from './utils/PackageIdentity';
 import { getAilyBuilderCacheDirectory } from './utils/CacheDirectory';
+import { LIBRARY_FINGERPRINT_FILE_GLOBS } from './utils/LibraryFilePatterns';
+import { captureVerifiedArchiveInputs, usesVerifiedLocalArchiveCache, VerifiedArchiveInputs, VerifiedInputMemo } from './VerifiedArchiveInputs';
 
 const CACHE_SCHEMA = 'aily.archive-cache.v2';
 const INPUT_SCHEMA = 'aily.archive-build-inputs.v2';
 const FETCH_REQUEST_SCHEMA = 'aily.archive-fetch-request.v2';
 const KEY_VERSION = 'archive-cloud-cache-v2';
 const CACHE_LAYOUT_VERSION = 'v2';
+const VERIFIED_LOCAL_LAYOUT = 'verified-local-v1';
+export const ARCHIVE_CACHE_LAYOUTS = ['v1', CACHE_LAYOUT_VERSION, VERIFIED_LOCAL_LAYOUT] as const;
 const DEFAULT_REMOTE_BASE_URL = 'https://cache.aily.pro/v2';
 const DEFAULT_REMOTE_TIMEOUT_MS = 1500;
 const LIBRARY_ARCHIVE_CACHE_MIN_COMPILE_FILES = 20;
@@ -123,8 +127,13 @@ export class ArchiveCloudCacheManager {
   private cacheDir: string;
   private remoteDisabledForRun = false;
   private compilerVersionCache = new Map<string, string>();
+  private commandBinarySignatureCache = new Map<string, Record<string, any>>();
   private fileHashCache = new Map<string, string>();
   private packageVersion?: string;
+  private verifiedInputs?: VerifiedArchiveInputs;
+  private verifiedArchiveMisses = false;
+  private verifiedInputMemo: VerifiedInputMemo = new Map();
+  private verifiedToolState?: string;
 
   constructor(logger: Logger) {
     this.logger = logger;
@@ -137,7 +146,20 @@ export class ArchiveCloudCacheManager {
   }
 
   shouldGenerate(): boolean {
-    return this.readBooleanEnv('AILY_BUILDER_GENERATE_ARCHIVE_CLOUD_CACHE', false);
+    return usesVerifiedLocalArchiveCache() || this.readBooleanEnv('AILY_BUILDER_GENERATE_ARCHIVE_CLOUD_CACHE', false);
+  }
+
+  needsVerifiedArchiveReceipts(): boolean {
+    return !!this.verifiedInputs && this.verifiedArchiveMisses;
+  }
+
+  async verifyBuildInputs(dependencies: Dependency[], compileConfig: any): Promise<boolean> {
+    const verified = this.verifiedInputs;
+    if (!verified || !this.verifiedToolState ||
+      await this.readVerifiedToolState(compileConfig) !== this.verifiedToolState) return false;
+    const current = await this.captureVerifiedInputs(dependencies, compileConfig);
+    return current?.fingerprint === verified.fingerprint &&
+      await this.readVerifiedToolState(compileConfig) === this.verifiedToolState;
   }
 
   startRemoteFetches(archiveHits: Map<string, ArchiveCacheHit>): Map<string, Promise<ArchiveCacheFetchResult>> {
@@ -158,18 +180,63 @@ export class ArchiveCloudCacheManager {
     return fetches;
   }
 
-  async restoreArchives(dependencies: Dependency[], compileConfig: any): Promise<Map<string, ArchiveCacheHit>> {
+  async prepareVerifiedBuild(dependencies: Dependency[], compileConfig: any): Promise<VerifiedArchiveInputs | undefined> {
+    this.verifiedInputMemo = new Map();
+    this.verifiedToolState = undefined;
+    // Verifying all native headers would cost more than building a small
+    // project. Only pay for the envelope when a library archive is eligible.
+    if (!this.isEnabled() || !(await this.collectTargets(dependencies)).some(target => target.dependencyType === 'library')) {
+      return undefined;
+    }
+    this.verifiedToolState = await this.readVerifiedToolState(compileConfig);
+    if (!this.verifiedToolState) return undefined;
+    this.compilerVersionCache.clear();
+    this.commandBinarySignatureCache.clear();
+    this.fileHashCache.clear();
+    return this.captureVerifiedInputs(dependencies, compileConfig);
+  }
+
+  private async readVerifiedToolState(compileConfig: any): Promise<string | undefined> {
+    const { c, cpp, ar } = compileConfig?.compiler || {};
+    const commands = [...new Set([c, cpp, ar].filter((value): value is string => typeof value === 'string' && !!value))];
+    if (!commands.length) return undefined;
+    try {
+      return JSON.stringify(await Promise.all(commands.map(async command => {
+        const resolved = await this.resolveCommandPath(command);
+        if (!resolved) throw new Error(`Executable not found: ${command}`);
+        const realFile = await fs.realpath(resolved);
+        const stat = await fs.stat(realFile, { bigint: true });
+        return [realFile, stat.dev, stat.ino, stat.size, stat.mtimeNs, stat.ctimeNs].map(String);
+      })));
+    } catch (error) {
+      this.logger.debug(`[ARCHIVE_CLOUD_CACHE] verified-local tool identity unavailable: ${error}`);
+      return undefined;
+    }
+  }
+
+  async restoreArchives(
+    dependencies: Dependency[],
+    compileConfig: any,
+    verifiedInputs?: VerifiedArchiveInputs
+  ): Promise<Map<string, ArchiveCacheHit>> {
     const hits = new Map<string, ArchiveCacheHit>();
+    this.verifiedInputs = undefined;
+    this.verifiedArchiveMisses = false;
     if (!this.isEnabled()) {
       this.logger.debug('[ARCHIVE_CLOUD_CACHE] disabled');
       return hits;
+    }
+    if (usesVerifiedLocalArchiveCache()) {
+      this.verifiedInputs = verifiedInputs;
+      if (!verifiedInputs) return hits;
     }
 
     let localHits = 0;
     let remoteHits = 0;
     let misses = 0;
 
-    for (const target of await this.collectTargets(dependencies)) {
+    const targets = await this.collectTargets(dependencies);
+    for (const target of targets) {
       try {
         const inputs = await this.computeInputs(target, dependencies, compileConfig);
         const key = this.computeKey(inputs);
@@ -198,17 +265,21 @@ export class ArchiveCloudCacheManager {
       this.logger.debug(`[ARCHIVE_CLOUD_CACHE] local hits=0 remote hits=0 misses=${misses}`);
     }
 
+    this.verifiedArchiveMisses = misses > 0;
     return hits;
   }
 
   async storeArchives(
     dependencies: Dependency[],
     compileConfig: any,
-    archiveHits: Map<string, ArchiveCacheHit>
+    archiveHits: Map<string, ArchiveCacheHit>,
+    nativeDependencies?: ReadonlyMap<string, readonly string[]>,
+    verifiedInputsUnchanged?: boolean
   ): Promise<void> {
     if (!this.isEnabled()) {
       return;
     }
+    if (usesVerifiedLocalArchiveCache() && !this.verifiedInputs) return;
 
     if (!this.shouldGenerate()) {
       this.logger.info('[ARCHIVE_CLOUD_CACHE] generate=off stored archives=0');
@@ -220,9 +291,28 @@ export class ArchiveCloudCacheManager {
     let totalSize = 0;
     const buildPath = process.env['BUILD_PATH'] || '';
 
-    for (const target of await this.collectTargets(dependencies)) {
+    const allTargets = await this.collectTargets(dependencies);
+    const targets = allTargets.filter(target =>
+      !archiveHits.has(getArchiveDependencyKey(target.dependencyType, target.dependencyName))
+    );
+    skipped += allTargets.length - targets.length;
+    const verified = this.verifiedInputs;
+    if (usesVerifiedLocalArchiveCache() && targets.length > 0) {
+      if (!verified || !nativeDependencies?.size) {
+        this.logger.debug('[ARCHIVE_CLOUD_CACHE] verified-local store skipped: compiler dependency receipts unavailable');
+        return;
+      }
+      if (!(verifiedInputsUnchanged ?? await this.verifyBuildInputs(dependencies, compileConfig))) {
+        this.logger.debug('[ARCHIVE_CLOUD_CACHE] verified-local store skipped: build inputs changed');
+        return;
+      }
+    }
+
+    for (const target of targets) {
       const hitKey = getArchiveDependencyKey(target.dependencyType, target.dependencyName);
-      if (archiveHits.has(hitKey)) {
+      const inputs = nativeDependencies?.get(hitKey);
+      if (usesVerifiedLocalArchiveCache() && (!inputs?.length || !inputs.every(file => verified?.covers(file)))) {
+        this.logger.debug(`[ARCHIVE_CLOUD_CACHE] verified-local store skipped for ${target.archiveName}: uncovered compiler input`);
         skipped++;
         continue;
       }
@@ -256,7 +346,8 @@ export class ArchiveCloudCacheManager {
   }
 
   getEntryDir(key: string): string {
-    return path.join(this.cacheDir, CACHE_LAYOUT_VERSION, key.substring(0, 2), key.substring(2, 4), key);
+    const layout = usesVerifiedLocalArchiveCache() ? VERIFIED_LOCAL_LAYOUT : CACHE_LAYOUT_VERSION;
+    return path.join(this.cacheDir, layout, key.substring(0, 2), key.substring(2, 4), key);
   }
 
   getCacheDir(): string {
@@ -302,7 +393,7 @@ export class ArchiveCloudCacheManager {
     }
 
     await this.touchEntryAccess(entryDir);
-    await this.linkOrCopy(archivePath, buildArchivePath);
+    await this.copyArchive(archivePath, buildArchivePath);
     this.logger.debug(`[ARCHIVE_CLOUD_CACHE] local hit ${target.archiveName} ${key}`);
     return {
       dependencyName: target.dependencyName,
@@ -435,7 +526,7 @@ export class ArchiveCloudCacheManager {
       }
 
       const localArchivePath = path.join(this.getEntryDir(fetch.key), fetch.archiveName);
-      await this.linkOrCopy(localArchivePath, hit.buildArchivePath);
+      await this.copyArchive(localArchivePath, hit.buildArchivePath);
       this.logger.debug(`[ARCHIVE_CLOUD_CACHE] remote download ready ${fetch.archiveName} ${fetch.key}`);
 
       return {
@@ -489,11 +580,16 @@ export class ArchiveCloudCacheManager {
 
   private async computeInputs(target: ArchiveTarget, dependencies: Dependency[], compileConfig: any): Promise<ArchiveBuildInputs> {
     const platform = compileConfig?.arduino?.platform || {};
-    const sourceFiles = await this.collectSourceFiles(target.dependency);
-    const sourceRoot = target.dependency.path || '';
-    const projectConfigFiles = await this.collectProjectConfigFiles();
-    const responseFiles = await this.collectResponseFiles(compileConfig);
+    const verified = usesVerifiedLocalArchiveCache() && this.verifiedInputs;
     const compileArgs = this.createCompileSignature(dependencies, compileConfig);
+    // The verified envelope already includes every response, library input
+    // and include directory. Add the ordered archive source list separately
+    // so a change in which translation units are linked also changes the key.
+    const sourceHash = verified
+      ? this.sha256String(this.canonicalJson((target.dependency.includes || []).map(file =>
+        verified.pathIdentity(file)
+      )))
+      : await this.hashFiles(await this.collectSourceFiles(target.dependency), target.dependency.path || '');
 
     return {
       schema: INPUT_SCHEMA,
@@ -503,20 +599,40 @@ export class ArchiveCloudCacheManager {
         archiveName: target.archiveName
       },
       builder: {
-        keyVersion: KEY_VERSION
+        keyVersion: this.getKeyVersion()
       },
       board: this.createBoardSignature(platform),
       toolchain: await this.createToolchainSignature(compileConfig),
       sdk: await this.createSdkSignature(platform, compileConfig),
       compile: {
         effectiveCompileArgs: compileArgs,
-        responseFilesHash: await this.hashFilesByNameAndContent(responseFiles)
+        ...(!verified ? {
+          responseFilesHash: await this.hashFilesByNameAndContent(await this.collectResponseFiles(compileConfig))
+        } : {})
       },
       sources: {
-        sourceHash: await this.hashFiles(sourceFiles, sourceRoot),
-        projectConfigHeaderHash: await this.hashFilesByNameAndContent(projectConfigFiles)
+        sourceHash,
+        ...(verified ? { verifiedInputsHash: verified.fingerprint } : {
+          projectConfigHeaderHash: await this.hashFilesByNameAndContent(await this.collectProjectConfigFiles())
+        })
       }
     };
+  }
+
+  private getKeyVersion(): string {
+    return usesVerifiedLocalArchiveCache() ? VERIFIED_LOCAL_LAYOUT : KEY_VERSION;
+  }
+
+  private async captureVerifiedInputs(dependencies: Dependency[], compileConfig: any): Promise<VerifiedArchiveInputs | undefined> {
+    try {
+      const snapshot = await captureVerifiedArchiveInputs(dependencies, compileConfig, this.verifiedInputMemo);
+      const { compilerMs, hashingMs, files, reused } = snapshot.timings;
+      this.logger.debug(`[ARCHIVE_CLOUD_CACHE] verified-local inputs: compiler=${compilerMs}ms, scan=${hashingMs}ms, files=${files}, reused=${reused}`);
+      return snapshot;
+    } catch (error) {
+      this.logger.debug(`[ARCHIVE_CLOUD_CACHE] verified-local disabled for this build: ${error instanceof Error ? error.message : error}`);
+      return undefined;
+    }
   }
 
   private async collectTargets(dependencies: Dependency[]): Promise<ArchiveTarget[]> {
@@ -605,7 +721,7 @@ export class ArchiveCloudCacheManager {
 
     if (dependency.path && await fs.pathExists(dependency.path)) {
       try {
-        const scanned = await glob(['**/*.{h,hpp,hh,c,cpp,S,s}', 'library.properties'], {
+        const scanned = await glob(LIBRARY_FINGERPRINT_FILE_GLOBS, {
           cwd: dependency.path,
           absolute: true,
           nodir: true,
@@ -675,10 +791,11 @@ export class ArchiveCloudCacheManager {
   }
 
   private createCompileSignature(dependencies: Dependency[], compileConfig: any): Record<string, any> {
+    const verified = usesVerifiedLocalArchiveCache();
     return {
-      c: this.normalizeCompileString(compileConfig?.args?.c || '', dependencies),
-      cpp: this.normalizeCompileString(compileConfig?.args?.cpp || '', dependencies),
-      s: this.normalizeCompileString(compileConfig?.args?.s || '', dependencies)
+      c: this.normalizeCompileString(compileConfig?.args?.c || '', dependencies, verified),
+      cpp: this.normalizeCompileString(compileConfig?.args?.cpp || '', dependencies, verified),
+      s: this.normalizeCompileString(compileConfig?.args?.s || '', dependencies, verified)
     };
   }
 
@@ -694,11 +811,23 @@ export class ArchiveCloudCacheManager {
     const cppCommand = compiler.cpp || '';
     const cCommand = compiler.c || '';
     const arCommand = compiler.ar || '';
+    const [cppBinary, cBinary, arBinary] = await Promise.all([
+      this.getCommandBinarySignature(cppCommand),
+      this.getCommandBinarySignature(cCommand),
+      this.getCommandBinarySignature(arCommand)
+    ]);
 
     return {
+      host: {
+        platform: process.platform,
+        arch: process.arch
+      },
       c: this.getCommandIdentity(cCommand),
       cpp: this.getCommandIdentity(cppCommand),
       ar: this.getCommandIdentity(arCommand),
+      cBinary,
+      cppBinary,
+      arBinary,
       cppVersion: await this.getCommandVersion(cppCommand),
       cVersion: await this.getCommandVersion(cCommand),
       arVersion: await this.getCommandVersion(arCommand)
@@ -773,8 +902,11 @@ export class ArchiveCloudCacheManager {
     return result;
   }
 
-  private normalizeCompileString(value: string, dependencies: Dependency[]): string {
-    let result = this.normalizePath(value || '');
+  private normalizeCompileString(value: string, dependencies: Dependency[], preferSpecificPaths = false): string {
+    return this.createCompilePathNormalizer(dependencies, preferSpecificPaths)(value);
+  }
+
+  private createCompilePathNormalizer(dependencies: Dependency[], preferSpecificPaths: boolean): (value: string) => string {
     const replacements: Array<[string | undefined, string]> = [
       [process.env['BUILD_PATH'], '$BUILD_PATH'],
       [process.env['SKETCH_DIR_PATH'], '$SKETCH_DIR_PATH'],
@@ -789,12 +921,11 @@ export class ArchiveCloudCacheManager {
       replacements.push([dep.path, `$DEP_${dep.name.replace(/[^a-zA-Z0-9]/g, '_')}`]);
     }
 
-    for (const [from, to] of replacements) {
-      if (!from) continue;
-      result = result.split(this.normalizePath(from)).join(to);
-    }
-
-    return result;
+    // A frozen library can itself be under the user directory or build
+    // root. Preserve its logical role before replacing any broader prefix.
+    if (preferSpecificPaths) replacements.sort(([a], [b]) => (b?.length || 0) - (a?.length || 0));
+    const normalized = replacements.flatMap(([from, to]) => from ? [[this.normalizePath(from), to]] : []);
+    return value => normalized.reduce((result, [from, to]) => result.split(from).join(to), this.normalizePath(value || ''));
   }
 
   private normalizeValue(value: any): any {
@@ -832,6 +963,11 @@ export class ArchiveCloudCacheManager {
       if (!this.isManifestUsable(manifest, key, target)) {
         return false;
       }
+      if (usesVerifiedLocalArchiveCache() &&
+        (manifest.inputs?.file !== 'inputs.json' || manifest.inputs.sha256 !== key ||
+          await this.hashFile(path.join(entryDir, 'inputs.json')) !== key)) {
+        return false;
+      }
 
       const stat = await fs.stat(archivePath);
       if (stat.size !== manifest.artifact.size) {
@@ -856,7 +992,7 @@ export class ArchiveCloudCacheManager {
       manifest.artifact?.file === target.archiveName &&
       typeof manifest.artifact?.sha256 === 'string' &&
       typeof manifest.artifact?.size === 'number' &&
-      manifest.builder?.keyVersion === KEY_VERSION;
+      manifest.builder?.keyVersion === this.getKeyVersion();
   }
 
   private async writeEntryFromFile(
@@ -869,11 +1005,7 @@ export class ArchiveCloudCacheManager {
     const artifactHash = await this.hashFile(sourceArchivePath);
     const stat = await fs.stat(sourceArchivePath);
     await this.writeEntry(target, inputs, key, origin, artifactHash, stat.size, async (archivePath) => {
-      try {
-        await fs.link(sourceArchivePath, archivePath);
-      } catch {
-        await fs.copy(sourceArchivePath, archivePath);
-      }
+      await fs.copy(sourceArchivePath, archivePath);
     });
   }
 
@@ -935,7 +1067,7 @@ export class ArchiveCloudCacheManager {
         },
         builder: {
           ailyBuilderVersion: await this.getAilyBuilderVersion(),
-          keyVersion: KEY_VERSION
+          keyVersion: this.getKeyVersion()
         }
       };
 
@@ -954,14 +1086,10 @@ export class ArchiveCloudCacheManager {
     }
   }
 
-  private async linkOrCopy(sourcePath: string, targetPath: string): Promise<void> {
+  private async copyArchive(sourcePath: string, targetPath: string): Promise<void> {
     await fs.ensureDir(path.dirname(targetPath));
     await fs.remove(targetPath).catch(() => undefined);
-    try {
-      await fs.link(sourcePath, targetPath);
-    } catch {
-      await fs.copy(sourcePath, targetPath);
-    }
+    await fs.copy(sourcePath, targetPath);
   }
 
   private async touchEntryAccess(entryDir: string): Promise<void> {
@@ -1083,6 +1211,61 @@ export class ArchiveCloudCacheManager {
     }
   }
 
+  private async getCommandBinarySignature(command: string): Promise<Record<string, any>> {
+    if (!command) return { sha256: '', size: 0 };
+    if (this.commandBinarySignatureCache.has(command)) {
+      return this.commandBinarySignatureCache.get(command)!;
+    }
+
+    const resolved = await this.resolveCommandPath(command);
+    if (!resolved) {
+      const missing = { sha256: '', size: 0 };
+      this.commandBinarySignatureCache.set(command, missing);
+      return missing;
+    }
+
+    try {
+      const stat = await fs.stat(resolved);
+      const signature = {
+        sha256: await this.hashFile(resolved),
+        size: stat.size
+      };
+      this.commandBinarySignatureCache.set(command, signature);
+      return signature;
+    } catch {
+      const unreadable = { sha256: '', size: 0 };
+      this.commandBinarySignatureCache.set(command, unreadable);
+      return unreadable;
+    }
+  }
+
+  private async resolveCommandPath(command: string): Promise<string | null> {
+    const cleaned = command.replace(/^["']|["']$/g, '');
+    if (!cleaned) return null;
+
+    const hasDirectory = path.dirname(cleaned) !== '.';
+    const searchDirectories = hasDirectory
+      ? ['']
+      : (this.createToolEnv().PATH || '').split(path.delimiter).filter(Boolean);
+    const extensions = process.platform === 'win32' && !path.extname(cleaned)
+      ? (process.env['PATHEXT'] || '.EXE;.CMD;.BAT;.COM').split(';').filter(Boolean)
+      : [''];
+
+    for (const directory of searchDirectories) {
+      for (const extension of extensions) {
+        const candidate = path.resolve(directory || process.cwd(), `${cleaned}${extension}`);
+        try {
+          const stat = await fs.stat(candidate);
+          if (stat.isFile()) return candidate;
+        } catch {
+          // Try the next PATH entry or executable extension.
+        }
+      }
+    }
+
+    return null;
+  }
+
   private getCommandIdentity(command: string): string {
     const cleaned = command.replace(/^["']|["']$/g, '');
     if (!cleaned) {
@@ -1176,7 +1359,7 @@ export class ArchiveCloudCacheManager {
   }
 
   private isLocalOnly(): boolean {
-    return this.readBooleanEnv('AILY_BUILDER_ARCHIVE_CLOUD_CACHE_LOCAL_ONLY', false);
+    return usesVerifiedLocalArchiveCache() || this.readBooleanEnv('AILY_BUILDER_ARCHIVE_CLOUD_CACHE_LOCAL_ONLY', false);
   }
 
   private shouldFetchRemote(): boolean {

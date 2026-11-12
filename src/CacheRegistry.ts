@@ -4,7 +4,9 @@ import type { Dirent, Stats } from 'fs';
 import { Logger } from './utils/Logger';
 import { CacheManager } from './CacheManager';
 import { LibraryIndexCache } from './LibraryIndexCache';
-import { ArchiveCloudCacheManager } from './ArchiveCloudCacheManager';
+import { ARCHIVE_CACHE_LAYOUTS, ArchiveCloudCacheManager } from './ArchiveCloudCacheManager';
+
+const archiveCacheLayouts = new Set<string>(ARCHIVE_CACHE_LAYOUTS);
 
 export type CacheClearMode = 'all' | 'unused-30' | 'unused-7';
 
@@ -310,7 +312,7 @@ export class CacheRegistry {
       const parts = file.relativePath.split('/');
       let entryId: string | null = null;
 
-      if (parts[0] === 'v1' && parts.length >= 4) {
+      if (archiveCacheLayouts.has(parts[0]) && parts.length >= 5) {
         entryId = parts.slice(0, 4).join('/');
       } else if (parts[0] === '.tmp' && parts.length >= 2) {
         entryId = parts.slice(0, 2).join('/');
@@ -345,7 +347,10 @@ export class CacheRegistry {
       return files.filter(file => file.name.endsWith('.o')).length;
     }
     if (bucket.kind === 'archive-cloud') {
-      return files.filter(file => file.name === 'manifest.json' && file.relativePath.startsWith('v1/')).length;
+      return files.filter(file => {
+        const parts = file.relativePath.split('/');
+        return file.name === 'manifest.json' && parts.length === 5 && archiveCacheLayouts.has(parts[0]);
+      }).length;
     }
     if (bucket.kind === 'library-index') {
       return files.filter(file => file.name.endsWith('.json')).length;

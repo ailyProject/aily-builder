@@ -15,6 +15,7 @@ import packageJson from './package.json';
 
 const program = new Command();
 const logger = new Logger();
+const verifiedLocalArchiveCacheOption = '--verified-local-archive-cache';
 
 function isTruthyEnv(name: string): boolean {
   const value = process.env[name];
@@ -43,13 +44,13 @@ function getDefaultBuildPath(sketchPath: string, sketchName: string): string {
  * 将命令行提供的库目录写入 LIBRARIES_PATH。
  * 每个目录先转换为绝对路径，再使用当前主机的路径列表分隔符连接。
  */
-function setLibrariesPathEnvironment(libraryPaths?: readonly string[]): void {
-  if (!libraryPaths || libraryPaths.length === 0) {
-    return;
+function setLibrariesPathEnvironment(libraryPaths?: readonly string[], projectLibraryPaths?: readonly string[]): void {
+  if (libraryPaths?.length) {
+    process.env['LIBRARIES_PATH'] = libraryPaths.map(directory => path.resolve(directory)).join(getPathListDelimiter());
   }
-
-  const resolvedPaths = libraryPaths.map(libraryPath => path.resolve(libraryPath));
-  process.env['LIBRARIES_PATH'] = resolvedPaths.join(getPathListDelimiter());
+  if (projectLibraryPaths?.length) {
+    process.env['PROJECT_LIBRARY_PATHS'] = projectLibraryPaths.map(directory => path.resolve(directory)).join(getPathListDelimiter());
+  }
 }
 
 function resolveCacheClearMode(options: any): CacheClearMode {
@@ -111,6 +112,20 @@ program
   .version(packageJson.version);
 
 program
+  .command('capabilities')
+  .description('Report supported Builder features')
+  .option('--json', 'Output machine-readable JSON')
+  .action(() => {
+    console.log(JSON.stringify({
+      schemaVersion: 1,
+      capabilities: {
+        verifiedLocalArchiveCache: { schemaVersion: 1, cliOption: verifiedLocalArchiveCacheOption },
+        projectLibraryPaths: { schemaVersion: 1, cliOption: '--project-library-path' }
+      }
+    }));
+  });
+
+program
   .command('compile')
   .description('Compile Arduino source')
   .argument('<sketch>', 'Path to Arduino source (.ino or .cpp file)')
@@ -122,6 +137,7 @@ program
     libraries.push(val);
     return libraries;
   }, [])
+  .option('--project-library-path <path>', 'Explicit project library path (repeatable)', (val, libraries) => [...libraries, val], [])
   .option('--build-property <key=value>', 'Additional build property', (val, memo) => {
     const [key, value] = val.split('=');
     memo[key] = value;
@@ -147,6 +163,7 @@ program
   .option('--archive-cloud-cache-url <url>', 'Remote archive cloud cache base URL')
   .option('--no-fetch-archive-cloud-cache', 'Do not fetch compiled .a archives from remote cloud cache')
   .option('--archive-cloud-cache-local-only', 'Only use local archive cloud cache; do not request remote cache', false)
+  .option(verifiedLocalArchiveCacheOption, 'Reuse and create local archives with verified dependency inputs')
   .option('--generate-archive-cloud-cache', 'Generate uploadable archive cloud cache entries after successful builds', isTruthyEnv('AILY_BUILDER_GENERATE_ARCHIVE_CLOUD_CACHE'))
   .action(async (sketch, options) => {
     // console.log('options:', options);
@@ -182,6 +199,13 @@ program
     } else if (typeof options.archiveCloudCache === 'string') {
       process.env['AILY_BUILDER_ARCHIVE_CLOUD_CACHE'] = '1';
       process.env['AILY_BUILDER_ARCHIVE_CLOUD_CACHE_DIR'] = path.resolve(options.archiveCloudCache);
+    }
+    if (options.verifiedLocalArchiveCache && options.archiveCloudCache !== false) {
+      process.env['AILY_BUILDER_VERIFIED_LOCAL_ARCHIVE_CACHE'] = '1';
+      process.env['AILY_BUILDER_ARCHIVE_CLOUD_CACHE'] = '1';
+      process.env['AILY_BUILDER_ARCHIVE_CLOUD_CACHE_LOCAL_ONLY'] = '1';
+      process.env['AILY_BUILDER_FETCH_ARCHIVE_CLOUD_CACHE'] = '0';
+      process.env['AILY_BUILDER_GENERATE_ARCHIVE_CLOUD_CACHE'] = '1';
     }
     if (options.archiveCloudCacheUrl) {
       process.env['AILY_BUILDER_ARCHIVE_CLOUD_CACHE_URL'] = options.archiveCloudCacheUrl;
@@ -268,7 +292,7 @@ program
       process.env['TOOLS_PATH'] = options.toolsPath;
     }
     
-    setLibrariesPathEnvironment(options.librariesPath);
+    setLibrariesPathEnvironment(options.librariesPath, options.projectLibraryPath);
 
     const buildOptions = {
       sketchPath,
@@ -340,6 +364,7 @@ program
     libraries.push(val);
     return libraries;
   }, [])
+  .option('--project-library-path <path>', 'Explicit project library path (repeatable)', (val, libraries) => [...libraries, val], [])
   .option('--build-property <key=value>', 'Additional build property', (val, memo) => {
     const [key, value] = val.split('=');
     memo[key] = value;
@@ -449,7 +474,7 @@ Note: This command only performs preprocessing without actual compilation.
       process.env['TOOLS_PATH'] = options.toolsPath;
     }
 
-    setLibrariesPathEnvironment(options.librariesPath);
+    setLibrariesPathEnvironment(options.librariesPath, options.projectLibraryPath);
 
     const preprocessOptions = {
       sketchPath,
