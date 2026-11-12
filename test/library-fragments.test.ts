@@ -45,6 +45,8 @@ function analyzer(): any {
     logger: new QuietLogger(),
     libraryMap: new Map(),
     platformHeaderRoots: [],
+    compilerSearch: {},
+    projectAndLibraryRoots: [],
   });
 }
 

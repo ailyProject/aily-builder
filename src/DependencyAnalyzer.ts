@@ -17,7 +17,7 @@ import {
   scanPreprocessorDirectives
 } from './utils/PreprocessorDirectiveScanner';
 import type { MacroDefinition } from './utils/PreprocessorExpression';
-import { LibraryIndexCache, LibraryIndexBuildResult, LibraryIndexResult } from './LibraryIndexCache';
+import { dependencyInputIdentity, LibraryIndexCache, LibraryIndexBuildResult, LibraryIndexResult } from './LibraryIndexCache';
 import {
   collectGeneratedSketchSources,
   GENERATED_SKETCH_DEPENDENCY_NAME,
@@ -25,8 +25,29 @@ import {
 } from './GeneratedSketchSources';
 import { getPathListDelimiter, toHostPathKey } from './utils/HostPlatform';
 import { LIBRARY_INCLUDE_FILE_GLOB } from './utils/LibraryFilePatterns';
+import { compilerIncludeDirectories, readCompilerHeaderSearch } from './CompilerHeaderSearch';
+import { expandRecipeProperties } from './RecipeRunner';
+import { removeCompilerPath } from './utils/ExtractCompilerArgs';
+import type { CompilerHeaderSearch } from './CompilerHeaderSearch';
+import type { IncludeDelimiter } from './utils/PreprocessorDirectiveExecutor';
 
 export type { MacroDefinition } from './utils/PreprocessorExpression';
+
+interface HeaderSite {
+  file: string;
+  directory?: string;
+  sourceDirectory?: string;
+}
+
+interface CompilerArguments {
+  cpp?: string;
+  c?: string;
+}
+
+interface HeaderLookup {
+  checked: string[];
+  match?: HeaderSite;
+}
 
 export interface PreprocessOptions {
   libraries?: string;
@@ -69,6 +90,7 @@ interface LibraryIndexWork {
   tapes: Map<string, PreprocessorDirectiveTape>;
   units: Map<string, LibraryUnitAnalysis>;
   externalHeaders: Map<string, string | undefined>;
+  headerInputs: Map<string, string | null>;
   observedPaths: Map<string, boolean>;
   observedFiles: Map<string, boolean>;
   lookupChanged: boolean;
@@ -83,19 +105,10 @@ function isRegularFile(file: string): boolean {
   }
 }
 
-function fileIdentity(filePath: string): string | undefined {
-  try {
-    const stat = fs.statSync(filePath);
-    return `${stat.dev}:${stat.ino}:${stat.size}:${stat.mtimeMs}:${stat.ctimeMs}`;
-  } catch {
-    return undefined;
-  }
-}
-
 function canReuseLibraryIndexWork(work: LibraryIndexWork): boolean {
   if (work.lookupChanged) return false;
   for (const [header, identity] of work.externalHeaders) {
-    if (!identity || fileIdentity(header) !== identity) return false;
+    if (!identity || dependencyInputIdentity(header) !== identity) return false;
   }
   for (const [file, exists] of work.observedPaths) {
     if (fs.existsSync(file) !== exists) return false;
@@ -206,6 +219,11 @@ export class DependencyAnalyzer {
   private libraryIndexCache: LibraryIndexCache;
   private platformHeaderRoots: string[];
   private platformContextKey: string;
+  private compilerSearch: Partial<Record<'c' | 'cpp', CompilerHeaderSearch>> = {};
+  private compilerDependencyDirectories: string[] = [];
+  private projectAndLibraryRoots: string[] = [];
+  private headerExistence = new Map<string, boolean>();
+  private headerLookups = new WeakMap<CompilerHeaderSearch, Map<string, HeaderLookup>>();
 
   /**
    * 构造函数，初始化预处理引擎
@@ -229,7 +247,7 @@ export class DependencyAnalyzer {
  * 包括分析sketch文件、核心SDK依赖、变体依赖和递归库依赖
  * @returns 返回包含所有依赖信息的配置对象
  */
-  async preprocess(arduinoConfig): Promise<any> {
+  async preprocess(arduinoConfig, compilerArguments?: CompilerArguments): Promise<any> {
     this.logger.verbose('Starting dependency analysis...');
     // A DependencyAnalyzer instance can be reused by callers. Analysis state belongs to
     // one preprocess session and must never leak into the next project/configuration.
@@ -247,12 +265,16 @@ export class DependencyAnalyzer {
     const variantPath = process.env['SDK_VARIANT_PATH'];
     const librariesPathEnv = process.env['LIBRARIES_PATH'];
     const coreLibrariesPath = process.env['SDK_CORE_LIBRARIES_PATH'];
-    this.configurePlatformHeaderContext(arduinoConfig, coreSDKPath, variantPath);
-
     // 处理 librariesPath，支持多个路径（用分号或冒号分隔）
     const librariesPaths = librariesPathEnv
       ? librariesPathEnv.split(getPathListDelimiter()).filter(p => p.trim())
       : [];
+    this.projectAndLibraryRoots = [
+      process.env['SKETCH_DIR_PATH'] || (sketchPath && path.dirname(sketchPath)),
+      coreLibrariesPath, ...librariesPaths,
+      getGeneratedSketchSourceRoot()
+    ].filter(Boolean).map(directory => path.resolve(directory));
+    this.configurePlatformHeaderContext(arduinoConfig, compilerArguments, coreSDKPath, variantPath);
 
     this.logger.info(`- Sketch Path: ${sketchPath}`)
     this.logger.info(`- Core SDK Path: ${coreSDKPath}`);
@@ -334,17 +356,13 @@ export class DependencyAnalyzer {
     // 5. 递归分析依赖，resolveA用于确定是否处理预编译库
     let resolveA = arduinoConfig.platform['compiler.libraries.ldflags'] ? true : false;
     for (const tab of sketchTabs) {
-      const includes = await analyzeFile(tab, this.macroDefinitions, {
-        hasInclude: includePath => this.canResolveKnownInclude(includePath, tab)
-      });
+      const includes = await this.analyzeSketchUnit(tab, this.macroDefinitions);
       await this.resolveDependencies(includes, resolveA);
     }
 
     for (const generatedSource of [...sketchSources, ...generatedSketchSources]) {
       const translationUnitMacros = new Map(generatedSourceMacros);
-      const includeFiles = await analyzeFile(generatedSource, translationUnitMacros, {
-        hasInclude: includePath => this.canResolveKnownInclude(includePath, generatedSource)
-      });
+      const includeFiles = await this.analyzeSketchUnit(generatedSource, translationUnitMacros);
       await this.resolveDependencies(includeFiles, resolveA, 0, 10, translationUnitMacros);
     }
 
@@ -442,16 +460,36 @@ export class DependencyAnalyzer {
    */
   private configurePlatformHeaderContext(
     arduinoConfig,
+    compilerArguments?: CompilerArguments,
     coreSDKPath?: string,
     variantPath?: string
   ): void {
+    const cwd = path.resolve(process.env['BUILD_PATH'] || process.cwd());
+    const platform = arduinoConfig.platform || {};
+    const sketchDirectory = process.env['SKETCH_DIR_PATH'] ||
+      (process.env['SKETCH_PATH'] && path.dirname(process.env['SKETCH_PATH']));
+    this.compilerDependencyDirectories = [sketchDirectory, coreSDKPath, variantPath]
+      .filter(Boolean).map(directory => path.resolve(directory));
+    this.compilerSearch = {};
+    this.resetHeaderLookups();
+    for (const language of ['c', 'cpp'] as const) {
+      const recipe = compilerArguments?.[language] ??
+        removeCompilerPath(platform[`recipe.${language}.o.pattern`]);
+      if (!recipe) continue;
+      const args = expandRecipeProperties(recipe, {
+        ...platform, 'build.path': cwd, includes: '%INCLUDE_PATHS%'
+      });
+      this.compilerSearch[language] = readCompilerHeaderSearch(args, cwd);
+    }
     const candidates = [
       coreSDKPath,
-      arduinoConfig.platform?.['build.core.path'],
+      platform['build.core.path'],
       variantPath,
-      arduinoConfig.platform?.['build.variant.path'],
-      arduinoConfig.platform?.['build.system.path'],
-      arduinoConfig.platform?.['compiler.sdk.path']
+      platform['build.variant.path'],
+      platform['build.system.path'],
+      platform['compiler.sdk.path'],
+      ...Object.values(this.compilerSearch).flatMap(search =>
+        compilerIncludeDirectories({ ...search, sourceDirectory: false }, true, cwd, []))
     ];
     const roots = new Map<string, string>();
     for (const candidate of candidates) {
@@ -461,13 +499,17 @@ export class DependencyAnalyzer {
     }
 
     this.platformHeaderRoots = [...roots.values()];
-    this.platformContextKey = [
+    this.platformContextKey = JSON.stringify([
       arduinoConfig.fqbn || '',
       arduinoConfig.fqbnParsed?.package || '',
       arduinoConfig.fqbnParsed?.platform || '',
       arduinoConfig.fqbnParsed?.boardId || '',
+      this.normalizeAnalysisPath(cwd),
+      this.compilerDependencyDirectories.map(directory => this.normalizeAnalysisPath(directory)),
+      this.projectAndLibraryRoots.map(directory => this.normalizeAnalysisPath(directory)),
+      this.compilerSearch,
       ...this.platformHeaderRoots.map(root => this.normalizeAnalysisPath(root))
-    ].join('|');
+    ]);
   }
 
   /** 将文件路径转换为依赖分析使用的绝对、正斜杠、主机大小写比较键。 */
@@ -484,7 +526,136 @@ export class DependencyAnalyzer {
 
   private isPlatformHeaderPath(filePath: string): boolean {
     const resolved = path.resolve(filePath);
-    return this.platformHeaderRoots.some(root => this.isPathWithinRoot(resolved, root));
+    return !this.projectAndLibraryRoots.some(root => this.isPathWithinRoot(resolved, root))
+      && this.platformHeaderRoots.some(root => this.isPathWithinRoot(resolved, root));
+  }
+
+  private searchForSource(filePath: string): CompilerHeaderSearch | undefined {
+    return this.compilerSearch[/\.c$/i.test(filePath) ? 'c' : 'cpp'];
+  }
+
+  private resetHeaderLookups(): void {
+    this.headerExistence = new Map();
+    this.headerLookups = new WeakMap();
+  }
+
+  private resolveCompilerHeader(
+    site: HeaderSite,
+    includePath: string,
+    delimiter: IncludeDelimiter,
+    includeNext: boolean,
+    search: CompilerHeaderSearch,
+    libraryPath?: string,
+    observeLookup?: LibraryPathObserver
+  ): HeaderSite | undefined {
+    if (!includePath) return undefined;
+    const quoted = delimiter === 'quote';
+    const sourceDirectory = site.sourceDirectory || path.dirname(site.file);
+    const origin = includeNext && (site.directory || sourceDirectory);
+    let lookups = this.headerLookups.get(search);
+    if (!lookups) {
+      lookups = new Map();
+      this.headerLookups.set(search, lookups);
+    }
+    const lookupKey = JSON.stringify([libraryPath, includePath, quoted, quoted ? sourceDirectory : '', origin]);
+    let lookup = lookups.get(lookupKey);
+    if (!lookup) {
+      lookup = { checked: [] };
+      const dependencies = libraryPath
+        ? [...this.compilerDependencyDirectories, libraryPath] : this.compilerDependencyDirectories;
+      const directories = compilerIncludeDirectories(search, quoted, sourceDirectory, dependencies);
+      const start = origin ? directories.findIndex(directory =>
+        this.normalizeAnalysisPath(directory) === this.normalizeAnalysisPath(origin)) + 1 : 0;
+      for (let index = start; index < directories.length; index++) {
+        const directory = directories[index];
+        const file = path.resolve(directory, includePath);
+        const key = this.normalizeAnalysisPath(file);
+        let found = this.headerExistence.get(key);
+        if (found === undefined) {
+          found = isRegularFile(file);
+          this.headerExistence.set(key, found);
+        }
+        lookup.checked.push(file);
+        if (found) {
+          lookup.match = { file, directory };
+          break;
+        }
+      }
+      lookups.set(lookupKey, lookup);
+    }
+    if (observeLookup) {
+      for (const file of lookup.checked) observeLookup(file, 'isFile', file === lookup.match?.file);
+    }
+    return lookup.match;
+  }
+
+  private isOtherLibraryHeader(file: string, includePath: string, libraryPath?: string): boolean {
+    const dependency = this.libraryMap.get(includePath);
+    return !!dependency && dependency.path !== libraryPath && this.isPathWithinRoot(file, dependency.path);
+  }
+
+  private libraryHeaderResolver(
+    site: HeaderSite,
+    libraryPath: string,
+    search: CompilerHeaderSearch | undefined,
+    resolveLocal: (includePath: string, file: string) => string | undefined,
+    observeLookup?: LibraryPathObserver
+  ): (includePath: string, delimiter: IncludeDelimiter, includeNext: boolean) => HeaderSite | undefined {
+    if (search) {
+      return (includePath, delimiter, includeNext) =>
+        this.resolveCompilerHeader(site, includePath, delimiter, includeNext, search, libraryPath, observeLookup);
+    }
+    return includePath => {
+      const file = resolveLocal(includePath, site.file) || this.resolvePlatformHeader(includePath, site.file, observeLookup);
+      return file ? { file } : undefined;
+    };
+  }
+
+  private isKnownExternalInclude(includePath: string): boolean {
+    return this.libraryMap.has(includePath) || this.libraryMap.has(path.basename(includePath)) || this.isSystemHeader(includePath);
+  }
+
+  private async analyzeSketchUnit(file: string, macros: Map<string, MacroDefinition>): Promise<string[]> {
+    const search = this.searchForSource(file);
+    if (!search) return analyzeFile(file, macros, {
+      hasInclude: includePath => this.canResolveKnownInclude(includePath, file)
+    });
+
+    const includes = new Set<string>();
+    const active = new Set<string>();
+    const once = new Set<string>();
+    const visit = (site: HeaderSite): void => {
+      const key = this.normalizeAnalysisPath(site.file);
+      if (active.has(key) || once.has(key)) return;
+      active.add(key);
+      try {
+        const resolve = (includePath: string, delimiter: IncludeDelimiter, next: boolean) =>
+          this.resolveCompilerHeader(site, includePath, delimiter, next, search);
+        analyzeDirectiveTapeWithDefines(scanPreprocessorDirectives(fs.readFileSync(site.file)), macros, {
+          allowIndeterminate: this.isPlatformHeaderPath(site.file),
+          onPragmaOnce: () => once.add(key),
+          hasInclude: (includePath, delimiter, next) =>
+            !!resolve(includePath, delimiter, next) || this.isKnownExternalInclude(includePath),
+          onInclude: (includePath, event) => {
+            const target = resolve(includePath, event.delimiter, event.includeNext);
+            if (target && !this.isOtherLibraryHeader(target.file, includePath)) {
+              visit(target);
+            } else if (!this.isPlatformHeaderPath(site.file)) {
+              includes.add(includePath);
+            }
+          }
+        }, site.file);
+      } finally {
+        active.delete(key);
+      }
+    };
+    // Ninja compiles the generated C++ file under BUILD_PATH; the original
+    // sketch directory appears at the dependency include marker.
+    const entry = process.env['SKETCH_PATH'];
+    const sourceDirectory = entry && this.normalizeAnalysisPath(entry) === this.normalizeAnalysisPath(file)
+      ? process.env['BUILD_PATH'] : undefined;
+    visit({ file, sourceDirectory });
+    return [...includes];
   }
 
   /** Resolve only headers that stay inside the active platform search roots. */
@@ -750,15 +921,16 @@ export class DependencyAnalyzer {
         if (!sharedWork) return this.buildLibraryIndex(libraryObject, macroDefinitions, entries);
         let work = sharedWork.get(libraryObject);
         if (work?.sourceHash !== sourceHash || !canReuseLibraryIndexWork(work)) {
+          if (work) this.resetHeaderLookups();
           work = {
             sourceHash, tapes: new Map(), units: new Map(), externalHeaders: new Map(),
-            observedPaths: new Map(), observedFiles: new Map(), lookupChanged: false
+            headerInputs: new Map(), observedPaths: new Map(), observedFiles: new Map(), lookupChanged: false
           };
           sharedWork.set(libraryObject, work);
         }
         return this.buildLibraryIndex(libraryObject, macroDefinitions, entries, work);
       },
-      JSON.stringify([this.platformContextKey, entries])
+      JSON.stringify([this.platformContextKey, this.normalizeAnalysisPath(libraryObject.path), entries])
     );
 
     libraryObject.includes = index.sourceFiles;
@@ -773,21 +945,35 @@ export class DependencyAnalyzer {
   ): Promise<LibraryIndexBuildResult> {
     const macroDefinitionsCopy = new Map(macroDefinitions);
     const directiveTapeCache = work?.tapes ?? new Map<string, PreprocessorDirectiveTape>();
+    const headerInputs = work?.headerInputs ?? new Map<string, string | null>();
+    const observedMisses = new Set<string>();
     // Negative lookups matter too: a newly created optional header can
     // change __has_include or take priority over an already-read header.
-    const observeLookup: LibraryPathObserver | undefined = work ? (file, check, found) => {
-      const observations = check === 'isFile' ? work.observedFiles : work.observedPaths;
-      const previous = observations.get(file);
-      if (previous === undefined) observations.set(file, found);
-      else if (previous !== found) work.lookupChanged = true;
-    } : undefined;
+    const observeLookup: LibraryPathObserver = (file, check, found) => {
+      if (work) {
+        const observations = check === 'isFile' ? work.observedFiles : work.observedPaths;
+        const previous = observations.get(file);
+        if (previous === undefined) observations.set(file, found);
+        else if (previous !== found) work.lookupChanged = true;
+      }
+      if (!found && !observedMisses.has(file)) {
+        observedMisses.add(file);
+        if (this.isPathWithinRoot(file, libraryObject.path)) return;
+        // Watch the containing directory once rather than persisting every
+        // missing header. A newly created directory also invalidates the miss.
+        const directory = path.dirname(file);
+        if (!headerInputs.has(directory)) headerInputs.set(directory, dependencyInputIdentity(directory) ?? null);
+      }
+    };
     const getTape: DirectiveTapeProvider = (filePath: string) => {
       const cacheKey = this.normalizeAnalysisPath(filePath);
       let tape = directiveTapeCache.get(cacheKey);
       if (!tape) {
         // The library hash does not cover SDK or relative sibling headers.
-        if (work && !this.isPathWithinRoot(filePath, libraryObject.path)) {
-          work.externalHeaders.set(filePath, fileIdentity(filePath));
+        if (!this.isPathWithinRoot(filePath, libraryObject.path)) {
+          const identity = dependencyInputIdentity(filePath);
+          headerInputs.set(filePath, identity ?? null);
+          work?.externalHeaders.set(filePath, identity);
         }
         tape = scanPreprocessorDirectives(fs.readFileSync(filePath));
         directiveTapeCache.set(cacheKey, tape);
@@ -814,7 +1000,8 @@ export class DependencyAnalyzer {
     return {
       sourceFiles,
       includeFiles,
-      macroDefinitions: macroDefinitionsCopy
+      macroDefinitions: macroDefinitionsCopy,
+      headerInputs: [...headerInputs]
     };
   }
 
@@ -911,11 +1098,13 @@ export class DependencyAnalyzer {
     // that unit's macro state and are analyzed synchronously at their include location.
     const analyzeUnit = (rootFilePath: string): LibraryUnitAnalysis => {
       const translationUnitMacros = new Map(initialMacroDefinitions);
+      const search = this.searchForSource(rootFilePath);
       const activeIncludeStack = new Set<string>();
       const onceFiles = new Set<string>();
       const externalIncludes = new Set<string>();
 
-      const analyzeLocalFile = (filePath: string): void => {
+      const analyzeLocalFile = (site: HeaderSite): void => {
+        const filePath = site.file;
         const normalizedFilePath = normalizeAbsolutePath(filePath);
         if (activeIncludeStack.has(normalizedFilePath) || onceFiles.has(normalizedFilePath)) {
           return;
@@ -923,19 +1112,16 @@ export class DependencyAnalyzer {
 
         activeIncludeStack.add(normalizedFilePath);
         try {
+          const resolve = this.libraryHeaderResolver(site, libraryPath, search, resolveLocalInclude, observeLookup);
           analyzeDirectiveTapeWithDefines(getTape(filePath), translationUnitMacros, {
             onPragmaOnce: () => onceFiles.add(normalizedFilePath),
             allowIndeterminate: this.isPlatformHeaderPath(filePath),
-            hasInclude: includePath => {
-              return !!resolveLocalInclude(includePath, filePath)
-                || !!this.resolvePlatformHeader(includePath, filePath, observeLookup)
-                || this.canResolveKnownInclude(includePath, filePath, observeLookup);
-            },
-            onInclude: includePath => {
-              const localIncludePath = resolveLocalInclude(includePath, filePath);
-              const resolvedPath = localIncludePath || this.resolvePlatformHeader(includePath, filePath, observeLookup);
-              if (resolvedPath) {
-                analyzeLocalFile(resolvedPath);
+            hasInclude: (includePath, delimiter, next) => !!resolve(includePath, delimiter, next)
+              || (search ? this.isKnownExternalInclude(includePath) : this.canResolveKnownInclude(includePath, filePath, observeLookup)),
+            onInclude: (includePath, event) => {
+              const target = resolve(includePath, event.delimiter, event.includeNext);
+              if (target && !this.isOtherLibraryHeader(target.file, includePath, libraryPath)) {
+                analyzeLocalFile(target);
               } else if (!this.isPlatformHeaderPath(filePath)) {
                 externalIncludes.add(includePath);
               }
@@ -946,7 +1132,7 @@ export class DependencyAnalyzer {
         }
       };
 
-      analyzeLocalFile(rootFilePath);
+      analyzeLocalFile({ file: rootFilePath });
       const macroChanges: LibraryUnitAnalysis['macroChanges'] = [];
       for (const [name, macroDefinition] of translationUnitMacros) {
         if (initialMacroDefinitions.get(name) !== macroDefinition) macroChanges.push([name, macroDefinition]);
@@ -1149,6 +1335,9 @@ export class DependencyAnalyzer {
     for (const rootFile of allFiles) {
       if (!/\.(?:c|cpp)$/i.test(rootFile)) continue;
       const rootTape = getTape(rootFile);
+      const search = this.searchForSource(rootFile);
+      const resolveRoot = this.libraryHeaderResolver({ file: rootFile }, libraryObject.path,
+        search, resolveLocalInclude, observeLookup);
 
       // Preserve the historical duplicate-definition guard: a literal source
       // include marks that file as a fragment even when its controlling macro
@@ -1162,39 +1351,40 @@ export class DependencyAnalyzer {
         if ((flags & PreprocessorDirectiveFlags.IncludeMacro) !== 0) continue;
         const includePath = rootTape.payloads[rootTape.payloadIndices[index]];
         if (!/\.(?:c|cpp)$/i.test(includePath || '')) continue;
-        const localPath = resolveLocalInclude(includePath, rootFile);
-        if (localPath) includedFiles.add(normalizeFileKey(localPath));
+        const target = resolveRoot(includePath, (flags & PreprocessorDirectiveFlags.IncludeAngled) !== 0 ? 'angle' : 'quote',
+          opcode === PreprocessorDirectiveOpcode.IncludeNext);
+        if (target && this.isPathWithinRoot(target.file, libraryObject.path)) {
+          includedFiles.add(normalizeFileKey(target.file));
+        }
       }
 
       const translationUnitMacros = new Map(macroDefinitions);
       const activeIncludeStack = new Set<string>();
       const onceFiles = new Set<string>();
 
-      const analyzeLocalFile = (filePath: string): void => {
+      const analyzeLocalFile = (site: HeaderSite): void => {
+        const filePath = site.file;
         const normalized = path.resolve(filePath);
         const key = toHostPathKey(normalized);
         if (activeIncludeStack.has(key) || onceFiles.has(key)) return;
 
         activeIncludeStack.add(key);
         try {
+          const resolve = this.libraryHeaderResolver(site, libraryObject.path, search, resolveLocalInclude, observeLookup);
           analyzeDirectiveTapeWithDefines(getTape(filePath), translationUnitMacros, {
             onPragmaOnce: () => onceFiles.add(key),
             allowIndeterminate: this.isPlatformHeaderPath(filePath),
-            hasInclude: includePath => {
-              return !!resolveLocalInclude(includePath, filePath)
-                || !!this.resolvePlatformHeader(includePath, filePath, observeLookup)
-                || this.canResolveKnownInclude(includePath, filePath, observeLookup);
-            },
-            onInclude: includePath => {
-              const localPath = resolveLocalInclude(includePath, filePath);
-              const resolvedPath = localPath || this.resolvePlatformHeader(includePath, filePath, observeLookup);
-              if (!resolvedPath) return;
-              if (localPath && /\.(?:c|cpp)$/i.test(localPath)) {
-                includedFiles.add(normalizeFileKey(localPath));
+            hasInclude: (includePath, delimiter, next) => !!resolve(includePath, delimiter, next)
+              || (search ? this.isKnownExternalInclude(includePath) : this.canResolveKnownInclude(includePath, filePath, observeLookup)),
+            onInclude: (includePath, event) => {
+              const target = resolve(includePath, event.delimiter, event.includeNext);
+              if (!target || this.isOtherLibraryHeader(target.file, includePath, libraryObject.path)) return;
+              if (this.isPathWithinRoot(target.file, libraryObject.path) && /\.(?:c|cpp)$/i.test(target.file)) {
+                includedFiles.add(normalizeFileKey(target.file));
               }
-              if (this.isPlatformHeaderPath(resolvedPath)
-                || /\.(?:h|hpp|c|cpp|ipp|inc)$/i.test(resolvedPath)) {
-                analyzeLocalFile(resolvedPath);
+              if (this.isPlatformHeaderPath(target.file)
+                || /\.(?:h|hpp|c|cpp|ipp|inc)$/i.test(target.file)) {
+                analyzeLocalFile(target);
               }
             }
           }, filePath);
@@ -1203,7 +1393,7 @@ export class DependencyAnalyzer {
         }
       };
 
-      analyzeLocalFile(rootFile);
+      analyzeLocalFile({ file: rootFile });
     }
 
     // 第二遍：过滤代码片段
