@@ -76,6 +76,10 @@ export class RequiredArduinoToolError extends Error {
     }
 }
 
+export function isPinnedArduinoToolVersion(version: unknown): version is string {
+    return typeof version === 'string' && /^\d+\.\d+(?:\.\d+)?(?:-[\w.-]+)?(?:\+[\w.-]+)?$/.test(version);
+}
+
 /**
  * Resolves the directory searched for tools. A custom aily-project tools
  * directory takes precedence over the standard Arduino15 package layout.
@@ -102,7 +106,7 @@ export async function findArduinoToolPath(
     options: FindArduinoToolPathOptions
 ): Promise<string | null> {
     const toolsBasePath = resolveArduinoToolsBasePath(options);
-    if (options.version) {
+    if (isPinnedArduinoToolVersion(options.version)) {
         return findPinnedArduinoToolPath(path.resolve(toolsBasePath), options.toolName, options.version);
     }
     const exactPatterns = [
@@ -187,7 +191,7 @@ export async function resolveRequiredArduinoToolPath(
     options: FindArduinoToolPathOptions
 ): Promise<string | null> {
     const toolPath = await findArduinoToolPath(options);
-    if (!toolPath && options.version) {
+    if (!toolPath && isPinnedArduinoToolVersion(options.version)) {
         throw new RequiredArduinoToolError(
             options.toolName, options.version, resolveArduinoToolsBasePath(options)
         );

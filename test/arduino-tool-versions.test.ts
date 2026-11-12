@@ -54,6 +54,10 @@ test('preprocessing reports the required tool version when the only payload belo
   await assert.rejects(resolveArduinoToolPaths({
     ...options, toolVersions: { esptool_py: '5.3.0' },
   }), /Required Arduino tool esptool_py@5\.3\.0/);
+  const legacy = await resolveArduinoToolPaths({
+    ...options, toolVersions: { esptool_py: '^5.3.0' },
+  });
+  assert.match(legacy['runtime.tools.esptool_py.path'], /esptool_py@5\.3\.1$/);
 });
 
 test('a pinned output recipe keeps its resolved executable path and reports a missing executable', t => {
@@ -71,4 +75,5 @@ test('a pinned output recipe keeps its resolved executable path and reports a mi
   fs.writeFileSync(executable, '');
   assert.equal(manager.parseCompileConfig(arduinoConfig, versions).compiler.bin, `"${executable}"`);
   assert.equal(manager.parseCompileConfig(arduinoConfig).compiler.bin, 'esptool.exe');
+  assert.equal(manager.parseCompileConfig(arduinoConfig, { esptool_py: '^5.3.0' }).compiler.bin, 'esptool.exe');
 });

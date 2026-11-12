@@ -2,7 +2,7 @@ import { statSync } from 'node:fs';
 import path from 'node:path';
 import { extractCommandExecutable, removeCompilerPath } from './utils/ExtractCompilerArgs';
 import { extractCompilerName, extractToolName } from './utils/ExtractCompilerName';
-import { stripToolVersion, xpackToolAlias } from './ArduinoToolResolver';
+import { isPinnedArduinoToolVersion, stripToolVersion, xpackToolAlias } from './ArduinoToolResolver';
 import { Logger } from './utils/Logger';
 import { escapeQuotedDefines } from './utils/escapeQuotes';
 
@@ -28,7 +28,7 @@ export class CompileConfigManager {
         const match = /^runtime\.tools\.(.+)\.path$/.exec(key);
         if (!match || typeof directory !== 'string' || !path.isAbsolute(directory)) return false;
         const name = stripToolVersion(match[1]);
-        return toolVersions[name] || toolVersions[xpackToolAlias(name)];
+        return isPinnedArduinoToolVersion(toolVersions[name] || toolVersions[xpackToolAlias(name)]);
       })
       .map(([, directory]) => directory as string);
     const outputTool = (recipe: string) => {
