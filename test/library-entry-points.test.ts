@@ -26,6 +26,7 @@ async function fixture(t: TestContext) {
   await fs.mkdir(libraries);
   const environment = {
     SKETCH_PATH: sketch,
+    SKETCH_DIR_PATH: path.dirname(sketch),
     LIBRARIES_PATH: libraries,
     BUILD_PATH: path.join(root, 'build'),
     SDK_CORE_PATH: undefined,
@@ -70,6 +71,8 @@ async function fixture(t: TestContext) {
     libraryIndexCache: cache,
     platformHeaderRoots: [],
     platformContextKey: '',
+    compilerSearch: {},
+    projectAndLibraryRoots: [],
   });
 
   return {
@@ -86,7 +89,12 @@ async function fixture(t: TestContext) {
       }
       return sourceRoot;
     },
-    async preprocess(includes: string, extraDefines = '', platformOverrides: Record<string, string> = {}) {
+    async preprocess(
+      includes: string,
+      extraDefines = '',
+      platformOverrides: Record<string, string> = {},
+      compilerArguments?: { cpp?: string; c?: string }
+    ) {
       // Exactly one ino and no companion C/C++ files: exercise the production
       // directive/index route, not the separate native-compiler sketch route.
       await fs.writeFile(sketch, `${includes}\nvoid setup() {}\nvoid loop() {}\n`);
@@ -95,14 +103,19 @@ async function fixture(t: TestContext) {
       const result: Dependency[] = await analyzer.preprocess({
         fqbn: 'fixture:fixture:board',
         fqbnParsed: { package: 'fixture', platform: 'fixture', boardId: 'board' },
-        platform: { 'recipe.cpp.o.pattern': `g++ -DARDUINO_ARCH_FIXTURE=1 ${extraDefines}`, ...platformOverrides },
+        platform: { 'recipe.cpp.o.pattern': `g++ -DARDUINO_ARCH_FIXTURE=1 ${extraDefines} %INCLUDE_PATHS%`, ...platformOverrides },
         board: {},
-      });
+      }, compilerArguments);
       assert.equal(result.some(dependency => dependency.type === 'sketch'), false);
       return result.filter(dependency => dependency.type === 'library');
     },
-    async read(includes: string, extraDefines = '', platformOverrides: Record<string, string> = {}) {
-      return (await this.preprocess(includes, extraDefines, platformOverrides)).map(dependency => dependency.name).sort();
+    async read(
+      includes: string,
+      extraDefines = '',
+      platformOverrides: Record<string, string> = {},
+      compilerArguments?: { cpp?: string; c?: string }
+    ) {
+      return (await this.preprocess(includes, extraDefines, platformOverrides, compilerArguments)).map(dependency => dependency.name).sort();
     },
   };
 }
@@ -114,6 +127,125 @@ async function selectableLibrary(f: Awaited<ReturnType<typeof fixture>>) {
   });
   await f.library('LocalClient', { 'LocalClient.h': '#pragma once\n' });
   await f.library('CloudClient', { 'CloudClient.h': '#pragma once\n' });
+}
+
+async function buildFile(root: string, relative: string, contents: string) {
+  const filename = path.join(root, 'build', relative);
+  await fs.mkdir(path.dirname(filename), { recursive: true });
+  await fs.writeFile(filename, contents);
+}
+
+test('dependency analysis resolves SDK headers through nested compiler responses in the build directory', async t => {
+  const f = await fixture(t);
+  await f.library('Radio', {
+    'Radio.h': [
+      '#include <device/capabilities.h>',
+      '#if DEVICE_HAS_RADIO',
+      '#include <Transport.h>',
+      '#endif'
+    ].join('\n'),
+    'UnusedEntry.h': '#include <Unused.h>\n',
+  });
+  await f.library('Transport', { 'Transport.h': '#pragma once\n' });
+  await f.library('Unused', { 'Unused.h': '#pragma once\n' });
+  await buildFile(f.root, 'flags/outer.rsp', '-iprefix "toolchain folder/" @flags/nested.rsp\n');
+  await buildFile(f.root, 'flags/nested.rsp', '-iwithprefixbefore "headers/soc include"\n');
+  await buildFile(f.root, 'toolchain folder/headers/soc include/device/capabilities.h', '#define DEVICE_HAS_RADIO 1\n');
+
+  const platform = {
+    'recipe.cpp.o.pattern': 'g++ {compiler.cpp.flags} {includes}',
+    'compiler.cpp.flags': '@flags/outer.rsp',
+    includes: '%INCLUDE_PATHS%',
+  };
+  assert.deepEqual(await f.read('#include <Radio.h>', '', platform), ['Radio', 'Transport']);
+});
+
+test('dependency analysis respects quote, user, system and after search order and separates reordered contexts', async t => {
+  const f = await fixture(t);
+  await f.library('SearchOrder', {
+    'SearchOrder.h': [
+      '#include <selection.h>',
+      '#if SELECTION == 1',
+      '#include <First.h>',
+      '#elif SELECTION == 2',
+      '#include <Second.h>',
+      '#endif',
+      '#undef SELECTION',
+      '#include "selection.h"',
+      '#if SELECTION == 3',
+      '#include <Quote.h>',
+      '#endif',
+      '#include <fallback.h>',
+      '#if FALLBACK == 4',
+      '#include <System.h>',
+      '#endif',
+      '#if __has_include(<quote_only.h>)',
+      '#include <Unexpected.h>',
+      '#endif',
+    ].join('\n'),
+  });
+  for (const library of ['First', 'Second', 'Quote', 'System', 'Unexpected']) {
+    await f.library(library, { [library + '.h']: '#pragma once\n' });
+  }
+  await buildFile(f.root, 'user one/selection.h', '#define SELECTION 1\n');
+  await buildFile(f.root, 'user two/selection.h', '#define SELECTION 2\n');
+  await buildFile(f.root, 'quote/selection.h', '#define SELECTION 3\n');
+  await buildFile(f.root, 'quote/quote_only.h', '#pragma once\n');
+  await buildFile(f.root, 'system/selection.h', '#define SELECTION 5\n');
+  await buildFile(f.root, 'system/fallback.h', '#define FALLBACK 4\n');
+  await buildFile(f.root, 'after/fallback.h', '#define FALLBACK 5\n');
+
+  const includes = '#include <SearchOrder.h>';
+  const platform = { 'recipe.cpp.o.pattern': 'g++ -I after' };
+  const compilerArguments = { cpp: '@paths.rsp' };
+  const options = '-isystem system -idirafter after -iquote quote';
+  const read = async (expected: string[], cacheHit: boolean) => {
+    assert.deepEqual(await f.read(includes, '', platform, compilerArguments), expected);
+    const indexed = f.cacheReads.filter(read => read.name === 'SearchOrder');
+    assert.ok(indexed.length > 0);
+    assert.ok(indexed.every(read => read.hit === cacheHit));
+  };
+  await buildFile(f.root, 'paths.rsp', `${options} -I"user one" -I "user two"\n`);
+  await read(['First', 'Quote', 'SearchOrder', 'System'], false);
+  await read(['First', 'Quote', 'SearchOrder', 'System'], true);
+
+  await buildFile(f.root, 'paths.rsp', `${options} -I"user two" -I "user one"\n`);
+  await read(['Quote', 'SearchOrder', 'Second', 'System'], false);
+  await read(['Quote', 'SearchOrder', 'Second', 'System'], true);
+});
+
+for (const change of ['a changed external header', 'an earlier header appearing']) {
+  test(`persistent library indexes recheck ${change} under compiler include roots`, async t => {
+    const f = await fixture(t);
+    await f.library('Feature', {
+      'Feature.h': [
+        '#include <PlatformFlag.h>',
+        '#if PLATFORM_FEATURE',
+        '#include <Enabled.h>',
+        '#else',
+        '#include <Disabled.h>',
+        '#endif',
+      ].join('\n'),
+    });
+    await f.library('Enabled', { 'Enabled.h': '#pragma once\n' });
+    await f.library('Disabled', { 'Disabled.h': '#pragma once\n' });
+    await buildFile(f.root, 'fallback/PlatformFlag.h', '#define PLATFORM_FEATURE 0\n');
+    // Keep both search roots present before the first run so the compiler
+    // context stays identical when the earlier lookup starts finding a file.
+    await fs.mkdir(path.join(f.root, 'build', 'primary'));
+    const compilerArguments = { cpp: '-I primary -I fallback' };
+    const read = async (library: string, cacheHit: boolean) => {
+      assert.deepEqual(await f.read('#include <Feature.h>', '', {}, compilerArguments), [library, 'Feature']);
+      assert.equal(f.cacheReads.find(entry => entry.name === 'Feature')?.hit, cacheHit);
+    };
+
+    await read('Disabled', false);
+    await read('Disabled', true);
+    const changedRoot = change === 'a changed external header' ? 'fallback' : 'primary';
+    await buildFile(f.root, changedRoot + '/PlatformFlag.h', '#define PLATFORM_FEATURE 1\n');
+    await read('Enabled', false);
+    await read('Enabled', true);
+  });
 }
 
 for (const [header, client] of [['Local.h', 'LocalClient'], ['Cloud.h', 'CloudClient']]) {
@@ -262,6 +394,7 @@ for (const change of ['changed', 'appeared', 'higher-priority']) {
     assert.deepEqual(await f.read('#include <Local.h>\n#include <Cloud.h>', '', {
       'build.core.path': core,
       'compiler.sdk.path': sdk,
+      'recipe.cpp.o.pattern': `g++ -I"${core}" -I"${sdk}" %INCLUDE_PATHS%`,
     }), ['Disabled', 'Enabled', 'Selectable']);
   });
 }

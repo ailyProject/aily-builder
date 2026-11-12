@@ -111,24 +111,11 @@ export class ArduinoCompiler {
       // files consumed by compile configuration and dependency analysis.
       await this.runGlobalPrebuild(arduinoConfig, options.buildPath);
 
-      // Preserve the fast analyzer: only the read-only work remains parallel,
-      // after the mandatory prebuild barrier.
-      this.logger.info('Starting parallel preprocessing tasks...');
-      const [compileConfig, dependencies] = await Promise.all([
-        // 构建编译配置
-        (async () => {
-          this.logger.info('Generating compile configuration...');
-          return await this.compileConfigManager.parseCompileConfig(arduinoConfig);
-        })(),
-
-        // 依赖分析
-        (async () => {
-          this.logger.info('Analyzing dependencies...');
-          const deps = await this.analyzer.preprocess(arduinoConfig);
-          this.logger.info(`Dependency analysis completed.`);
-          return deps;
-        })()
-      ]);
+      this.logger.info('Generating compile configuration...');
+      const compileConfig = await this.compileConfigManager.parseCompileConfig(arduinoConfig);
+      this.logger.info('Analyzing dependencies...');
+      const dependencies = await this.analyzer.preprocess(arduinoConfig, compileConfig.args);
+      this.logger.info('Dependency analysis completed.');
 
       // 输出分析
       this.logger.info(`Found ${dependencies.length} dependencies.`);

@@ -15,8 +15,8 @@ import { getAilyBuilderCacheDirectory } from './utils/CacheDirectory';
 import { toHostPathKey } from './utils/HostPlatform';
 import { LIBRARY_FINGERPRINT_FILE_GLOBS } from './utils/LibraryFilePatterns';
 
-const SCHEMA_VERSION = 4;
-export const DEPENDENCY_ANALYZER_VERSION = 'dependency-directive-tape-v4';
+const SCHEMA_VERSION = 5;
+export const DEPENDENCY_ANALYZER_VERSION = 'dependency-directive-tape-v5';
 const ANALYZER_VERSION = DEPENDENCY_ANALYZER_VERSION;
 const STAT_CONCURRENCY = 32;
 
@@ -37,6 +37,7 @@ interface CachedMacroIndex {
   sourceFiles: string[];
   includeFiles: string[];
   macroDeltas: Record<string, CachedMacroDefinition>;
+  headerInputs?: HeaderInputs;
   builtAt: string;
 }
 
@@ -72,6 +73,24 @@ export interface LibraryIndexBuildResult {
   sourceFiles: string[];
   includeFiles: string[];
   macroDefinitions?: Map<string, MacroDefinition>;
+  headerInputs?: HeaderInputs;
+}
+
+type HeaderInputs = Array<[file: string, identity: string | null]>;
+
+export function dependencyInputIdentity(file: string): string | undefined {
+  try {
+    const stat = fs.statSync(file);
+    return `${stat.dev}:${stat.ino}:${stat.size}:${stat.mtimeMs}:${stat.ctimeMs}`;
+  } catch {
+    return undefined;
+  }
+}
+
+function headerInputsCurrent(inputs?: HeaderInputs): boolean {
+  return inputs === undefined || (Array.isArray(inputs) && inputs.every(entry =>
+    Array.isArray(entry) && typeof entry[0] === 'string' &&
+    (dependencyInputIdentity(entry[0]) ?? null) === entry[1]));
 }
 
 export interface LibraryIndexResult extends LibraryIndexBuildResult {
@@ -106,7 +125,7 @@ export class LibraryIndexCache {
     if (this.isPathStateUsable(cachedPathState, normalizedLibraryPath) && cachedPathState.fastFingerprint === fastFingerprint) {
       const sourceIndex = await this.readSourceIndexForHash(cachedPathState.sourceHash);
       const macroIndex = sourceIndex?.macroIndexes?.[macroKey];
-      if (sourceIndex && macroIndex) {
+      if (sourceIndex && macroIndex && headerInputsCurrent(macroIndex.headerInputs)) {
         await this.touchCacheAccess([
           pathStatePath,
           this.getSourceIndexPath(cachedPathState.sourceHash)
@@ -146,7 +165,7 @@ export class LibraryIndexCache {
     const sourceIndex = await this.readSourceIndexForHash(sourceHash);
     const macroIndex = sourceIndex?.macroIndexes?.[macroKey];
 
-    if (sourceIndex && macroIndex) {
+    if (sourceIndex && macroIndex && headerInputsCurrent(macroIndex.headerInputs)) {
       await this.writeCache(pathStatePath, this.createPathState(
         libraryName,
         normalizedLibraryPath,
@@ -216,14 +235,19 @@ export class LibraryIndexCache {
       sourceIndex?.macroIndexes || {}
     );
     const finalMacroDefinitions = built.macroDefinitions || macroDefinitions;
-    const hasSensitiveDelta = this.hasSensitiveMacroDelta(macroDefinitions, finalMacroDefinitions);
-    if (!hasSensitiveDelta) {
+    const skipReason = this.hasSensitiveMacroDelta(macroDefinitions, finalMacroDefinitions)
+      ? 'sensitive macro state changed'
+      : headerInputsCurrent(built.headerInputs) ? undefined : 'header inputs changed';
+    if (!skipReason) {
       nextSourceIndex.macroIndexes[macroKey] = this.createMacroIndex(
         sourceFiles,
         built.includeFiles,
         macroDefinitions,
         finalMacroDefinitions
       );
+      nextSourceIndex.macroIndexes[macroKey].headerInputs = built.headerInputs;
+    } else {
+      delete nextSourceIndex.macroIndexes[macroKey];
     }
 
     await Promise.all([
@@ -231,8 +255,8 @@ export class LibraryIndexCache {
       this.writeCache(this.getSourceIndexPath(sourceHash), nextSourceIndex)
     ]);
 
-    this.logger.debug(hasSensitiveDelta
-      ? `[LIB_INDEX] skipped macro cache ${libraryName}: sensitive macro state changed, ${Date.now() - startedAt}ms`
+    this.logger.debug(skipReason
+      ? `[LIB_INDEX] skipped macro cache ${libraryName}: ${skipReason}, ${Date.now() - startedAt}ms`
       : `[LIB_INDEX] stored ${libraryName}: sources=${built.sourceFiles.length}, includes=${built.includeFiles.length}, ${Date.now() - startedAt}ms`);
     return {
       // Ninja's archive member order must agree with cache-hit builds.
