@@ -44,13 +44,13 @@ function getDefaultBuildPath(sketchPath: string, sketchName: string): string {
  * 将命令行提供的库目录写入 LIBRARIES_PATH。
  * 每个目录先转换为绝对路径，再使用当前主机的路径列表分隔符连接。
  */
-function setLibrariesPathEnvironment(libraryPaths?: readonly string[]): void {
-  if (!libraryPaths || libraryPaths.length === 0) {
-    return;
+function setLibrariesPathEnvironment(libraryPaths?: readonly string[], projectLibraryPaths?: readonly string[]): void {
+  if (libraryPaths?.length) {
+    process.env['LIBRARIES_PATH'] = libraryPaths.map(directory => path.resolve(directory)).join(getPathListDelimiter());
   }
-
-  const resolvedPaths = libraryPaths.map(libraryPath => path.resolve(libraryPath));
-  process.env['LIBRARIES_PATH'] = resolvedPaths.join(getPathListDelimiter());
+  if (projectLibraryPaths?.length) {
+    process.env['PROJECT_LIBRARY_PATHS'] = projectLibraryPaths.map(directory => path.resolve(directory)).join(getPathListDelimiter());
+  }
 }
 
 function resolveCacheClearMode(options: any): CacheClearMode {
@@ -119,7 +119,8 @@ program
     console.log(JSON.stringify({
       schemaVersion: 1,
       capabilities: {
-        verifiedLocalArchiveCache: { schemaVersion: 1, cliOption: verifiedLocalArchiveCacheOption }
+        verifiedLocalArchiveCache: { schemaVersion: 1, cliOption: verifiedLocalArchiveCacheOption },
+        projectLibraryPaths: { schemaVersion: 1, cliOption: '--project-library-path' }
       }
     }));
   });
@@ -136,6 +137,7 @@ program
     libraries.push(val);
     return libraries;
   }, [])
+  .option('--project-library-path <path>', 'Explicit project library path (repeatable)', (val, libraries) => [...libraries, val], [])
   .option('--build-property <key=value>', 'Additional build property', (val, memo) => {
     const [key, value] = val.split('=');
     memo[key] = value;
@@ -290,7 +292,7 @@ program
       process.env['TOOLS_PATH'] = options.toolsPath;
     }
     
-    setLibrariesPathEnvironment(options.librariesPath);
+    setLibrariesPathEnvironment(options.librariesPath, options.projectLibraryPath);
 
     const buildOptions = {
       sketchPath,
@@ -362,6 +364,7 @@ program
     libraries.push(val);
     return libraries;
   }, [])
+  .option('--project-library-path <path>', 'Explicit project library path (repeatable)', (val, libraries) => [...libraries, val], [])
   .option('--build-property <key=value>', 'Additional build property', (val, memo) => {
     const [key, value] = val.split('=');
     memo[key] = value;
@@ -471,7 +474,7 @@ Note: This command only performs preprocessing without actual compilation.
       process.env['TOOLS_PATH'] = options.toolsPath;
     }
 
-    setLibrariesPathEnvironment(options.librariesPath);
+    setLibrariesPathEnvironment(options.librariesPath, options.projectLibraryPath);
 
     const preprocessOptions = {
       sketchPath,

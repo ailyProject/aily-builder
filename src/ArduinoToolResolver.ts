@@ -1,5 +1,6 @@
 import os from 'node:os';
 import path from 'node:path';
+import { stat } from 'node:fs/promises';
 import { glob } from 'glob';
 import type { ArduinoProperties } from './ArduinoPropertyFile';
 import { expandArduinoProperty } from './ArduinoPropertyResolver';
@@ -69,30 +70,14 @@ export function toGlobPath(value: string): string {
     return value.replace(/\\/g, '/');
 }
 
-/**
- * Selects a path using the parser's existing version rule. A requested
- * version is considered only when multiple candidates exist and is matched
- * against the suffix following `@`; otherwise the first candidate wins.
- */
-export function selectToolMatch(
-    candidates: readonly string[],
-    version: string = ''
-): string | null {
-    if (candidates.length === 0) {
-        return null;
+export class RequiredArduinoToolError extends Error {
+    constructor(toolName: string, version: string, toolsBasePath: string) {
+        super(`Required Arduino tool ${toolName}@${version} was not found in ${toolsBasePath}`);
     }
+}
 
-    if (candidates.length > 1 && version) {
-        const versionMatch = candidates.find(candidate => {
-            const candidateVersion = path.basename(candidate).split('@')[1];
-            return candidateVersion === version;
-        });
-        if (versionMatch) {
-            return versionMatch;
-        }
-    }
-
-    return candidates[0];
+export function isPinnedArduinoToolVersion(version: unknown): version is string {
+    return typeof version === 'string' && /^\d+\.\d+(?:\.\d+)?(?:-[\w.-]+)?(?:\+[\w.-]+)?$/.test(version);
 }
 
 /**
@@ -114,16 +99,16 @@ export function resolveArduinoToolsBasePath(location: ArduinoToolLocation): stri
 
 /**
  * Finds an installed Arduino tool without reading process-global state.
- * Search order is exact `tool@version`, exact traditional `tool/version`,
- * fuzzy names in the `name@version` layout, then fuzzy traditional directory
- * names. Within a matching pattern, the existing version-selection and
- * first-item fallback semantics are preserved. Returns `null` when no
- * candidate exists.
+ * Pinned requests search supported versioned layouts. Unpinned requests
+ * retain the legacy name-based discovery order.
  */
 export async function findArduinoToolPath(
     options: FindArduinoToolPathOptions
 ): Promise<string | null> {
     const toolsBasePath = resolveArduinoToolsBasePath(options);
+    if (isPinnedArduinoToolVersion(options.version)) {
+        return findPinnedArduinoToolPath(path.resolve(toolsBasePath), options.toolName, options.version);
+    }
     const exactPatterns = [
         path.join(toolsBasePath, `${options.toolName}@*`),
         path.join(toolsBasePath, options.toolName, '*')
@@ -135,13 +120,84 @@ export async function findArduinoToolPath(
 
     for (const pattern of [...exactPatterns, ...fuzzyPatterns]) {
         const candidates = await glob(toGlobPath(pattern), { absolute: true });
-        const match = selectToolMatch(candidates, options.version);
-        if (match) {
-            return match;
+        if (candidates.length > 0) {
+            return candidates[0];
         }
     }
 
     return null;
+}
+
+async function findPinnedArduinoToolPath(
+    toolsBasePath: string,
+    toolName: string,
+    version: string
+): Promise<string | null> {
+    if ([toolName, version].some(part => !/^[\w.+-]+$/.test(part) || part === '.' || part === '..')) {
+        return null;
+    }
+    const names = [toolName, xpackToolAlias(toolName)];
+    const stems = names.flatMap(name => [
+        path.join(toolsBasePath, `${name}@`),
+        path.join(toolsBasePath, name) + path.sep,
+        path.join(toolsBasePath, `${name}_`)
+    ]);
+    for (const stem of stems) {
+        const directory = stem + version;
+        if ((await stat(directory).catch(() => null))?.isDirectory()) {
+            return toGlobPath(directory);
+        }
+    }
+
+    // Some tool archives retain an upstream distribution revision that the npm wrapper omits.
+    const distributionVersion = version === '4.1.0' && /^(pqt-picotool|pqt-pioasm|pqt-mklittlefs)$/.test(toolName)
+        ? '4.1.0-1aec55e'
+        : toolName === 'pqt-python3' && version === '1.0.1' ? '1.0.1-base-3a57aed-1'
+        : version === '14.2.1' && names.includes('xpack-arm-none-eabi-gcc') ? '14.2.1-1.1' : '';
+    if (distributionVersion) {
+        for (const stem of stems) {
+            const directory = stem + distributionVersion;
+            if ((await stat(directory).catch(() => null))?.isDirectory()) {
+                return toGlobPath(directory);
+            }
+        }
+    }
+
+    // Older Arduino distributions append -arduinoN to the upstream release.
+    // Some omit the zero patch component (for example, ctags 5.8-arduino11).
+    if (!/^\d+\.\d+(?:\.\d+)?$/.test(version)) {
+        return null;
+    }
+    const legacyVersions = [version, version.replace(/^(\d+\.\d+)\.0$/, '$1')];
+    for (const legacyVersion of new Set(legacyVersions)) {
+        for (const stem of stems) {
+            const prefix = stem + legacyVersion + '-arduino';
+            const matches = await glob(toGlobPath(prefix + '*'), { absolute: true });
+            for (const directory of matches.sort()) {
+                if (/^\d+$/.test(path.basename(directory).slice(path.basename(prefix).length))
+                    && (await stat(directory).catch(() => null))?.isDirectory()) {
+                    return toGlobPath(directory);
+                }
+            }
+        }
+    }
+    return null;
+}
+
+export function xpackToolAlias(toolName: string): string {
+    return toolName.startsWith('xpack-') ? toolName.slice('xpack-'.length) : `xpack-${toolName}`;
+}
+
+export async function resolveRequiredArduinoToolPath(
+    options: FindArduinoToolPathOptions
+): Promise<string | null> {
+    const toolPath = await findArduinoToolPath(options);
+    if (!toolPath && isPinnedArduinoToolVersion(options.version)) {
+        throw new RequiredArduinoToolError(
+            options.toolName, options.version, resolveArduinoToolsBasePath(options)
+        );
+    }
+    return toolPath;
 }
 
 /**
@@ -180,9 +236,12 @@ export async function resolveArduinoToolPaths(
                 seen.add(fullKey);
 
                 const baseName = stripToolVersion(toolId);
-                const toolPath = await findArduinoToolPath({
-                    toolName: baseName,
-                    version: options.toolVersions?.[baseName] || '',
+                const alternateName = xpackToolAlias(baseName);
+                const requestedName = options.toolVersions?.[baseName] ? baseName
+                    : options.toolVersions?.[alternateName] ? alternateName : baseName;
+                const toolPath = await resolveRequiredArduinoToolPath({
+                    toolName: requestedName,
+                    version: options.toolVersions?.[requestedName] || '',
                     toolsPath: options.toolsPath,
                     packageName: options.packageName,
                     arduino15BasePath: options.arduino15BasePath
@@ -193,6 +252,9 @@ export async function resolveArduinoToolPaths(
             }
         }
     } catch (error) {
+        if (error instanceof RequiredArduinoToolError) {
+            throw error;
+        }
         options.onWarning?.(`解析工具路径失败: ${error}`);
     }
 

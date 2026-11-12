@@ -1,5 +1,9 @@
-import { removeCompilerPath } from './utils/ExtractCompilerArgs';
+import { statSync } from 'node:fs';
+import path from 'node:path';
+import { extractCommandExecutable, removeCompilerPath } from './utils/ExtractCompilerArgs';
 import { extractCompilerName, extractToolName } from './utils/ExtractCompilerName';
+import { isWindowsHost } from './utils/HostPlatform';
+import { isPinnedArduinoToolVersion, stripToolVersion, xpackToolAlias } from './ArduinoToolResolver';
 import { Logger } from './utils/Logger';
 import { escapeQuotedDefines } from './utils/escapeQuotes';
 
@@ -19,22 +23,45 @@ export class CompileConfigManager {
     return escapeQuotedDefines(args);
   }
 
-  parseCompileConfig(arduinoConfig: any) {
+  parseCompileConfig(arduinoConfig: any, toolVersions: Readonly<Record<string, string>> = {}) {
+    const pinnedToolPaths = Object.entries(arduinoConfig.platform)
+      .filter(([key, directory]) => {
+        const match = /^runtime\.tools\.(.+)\.path$/.exec(key);
+        if (!match || typeof directory !== 'string' || !path.isAbsolute(directory)) return false;
+        const name = stripToolVersion(match[1]);
+        return isPinnedArduinoToolVersion(toolVersions[name] || toolVersions[xpackToolAlias(name)]);
+      })
+      .map(([, directory]) => directory as string);
+    const outputTool = (recipe: string) => {
+      const executable = extractCommandExecutable(recipe);
+      const pinned = pinnedToolPaths.some(directory => {
+        const relative = path.relative(directory, executable);
+        return path.isAbsolute(executable) && relative && relative !== '..'
+          && !relative.startsWith('..' + path.sep) && !path.isAbsolute(relative);
+      });
+      if (!pinned) return extractToolName(recipe);
+      const candidates = isWindowsHost() && !path.extname(executable) ? [executable, executable + '.exe'] : [executable];
+      const installed = candidates.find(candidate => statSync(candidate, { throwIfNoEntry: false })?.isFile());
+      if (!installed) {
+        throw new Error(`Required Arduino tool executable was not found: ${executable}`);
+      }
+      return `"${installed.replace(/\\/g, '/').replace(/\$/g, '$$$$')}"`;
+    };
 
     let flag_eep, flag_hex, bin, flag_bin, zip, flag_zip, ld, flag_ld, objcopy;
     if (arduinoConfig.platform['recipe.objcopy.eep.pattern']) {
       flag_eep = removeCompilerPath(arduinoConfig.platform['recipe.objcopy.eep.pattern'])
     }
     if (arduinoConfig.platform['recipe.objcopy.hex.pattern']) {
-      objcopy = extractToolName(arduinoConfig.platform['recipe.objcopy.hex.pattern'])
+      objcopy = outputTool(arduinoConfig.platform['recipe.objcopy.hex.pattern'])
       flag_hex = removeCompilerPath(arduinoConfig.platform['recipe.objcopy.hex.pattern'])
     }
     if (arduinoConfig.platform['recipe.objcopy.bin.pattern']) {
-      bin = extractToolName(arduinoConfig.platform['recipe.objcopy.bin.pattern'])
+      bin = outputTool(arduinoConfig.platform['recipe.objcopy.bin.pattern'])
       flag_bin = removeCompilerPath(arduinoConfig.platform['recipe.objcopy.bin.pattern'])
     }
     if (arduinoConfig.platform['recipe.objcopy.zip.pattern']) {
-      zip = extractToolName(arduinoConfig.platform['recipe.objcopy.zip.pattern'])
+      zip = outputTool(arduinoConfig.platform['recipe.objcopy.zip.pattern'])
       flag_zip = removeCompilerPath(arduinoConfig.platform['recipe.objcopy.zip.pattern'])
     }
     if (arduinoConfig.platform['recipe.c.combine.pattern']) {

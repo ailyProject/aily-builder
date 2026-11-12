@@ -30,6 +30,7 @@ import { expandRecipeProperties } from './RecipeRunner';
 import { removeCompilerPath } from './utils/ExtractCompilerArgs';
 import type { CompilerHeaderSearch } from './CompilerHeaderSearch';
 import type { IncludeDelimiter } from './utils/PreprocessorDirectiveExecutor';
+import { LibrarySelection, libraryPathKey, uniqueDependencyNames, type LibrarySource } from './LibrarySelection';
 
 export type { MacroDefinition } from './utils/PreprocessorExpression';
 
@@ -215,6 +216,8 @@ export class DependencyAnalyzer {
   private macroDefinitions: Map<string, MacroDefinition>;
   private configuredMacros: Map<string, MacroDefinition>;
   private libraryMap: Map<string, Dependency>
+  private librarySelection?: LibrarySelection;
+  private selectedLibraryPaths: string[] = [];
   private libraryEntryPoints: Map<string, Set<string>>;
   private libraryIndexCache: LibraryIndexCache;
   private platformHeaderRoots: string[];
@@ -257,6 +260,7 @@ export class DependencyAnalyzer {
       this.macroDefinitions.set(name, { ...macroDefinition });
     }
     this.libraryMap.clear();
+    this.selectedLibraryPaths = [];
     this.libraryEntryPoints.clear();
     const sketchPath = process.env['SKETCH_PATH'];
 
@@ -269,9 +273,11 @@ export class DependencyAnalyzer {
     const librariesPaths = librariesPathEnv
       ? librariesPathEnv.split(getPathListDelimiter()).filter(p => p.trim())
       : [];
+    const projectLibraryPaths = (process.env['PROJECT_LIBRARY_PATHS'] || '')
+      .split(getPathListDelimiter()).filter(directory => directory.trim());
     this.projectAndLibraryRoots = [
       process.env['SKETCH_DIR_PATH'] || (sketchPath && path.dirname(sketchPath)),
-      coreLibrariesPath, ...librariesPaths,
+      coreLibrariesPath, ...librariesPaths, ...projectLibraryPaths,
       getGeneratedSketchSourceRoot()
     ].filter(Boolean).map(directory => path.resolve(directory));
     this.configurePlatformHeaderContext(arduinoConfig, compilerArguments, coreSDKPath, variantPath);
@@ -305,7 +311,9 @@ export class DependencyAnalyzer {
     }
 
     // 4. 解析路径，解出libraryMap
-    this.libraryMap = await this.parserLibraryPaths([coreLibrariesPath, ...librariesPaths]);
+    this.libraryMap = await this.parserLibraryPaths(
+      [coreLibrariesPath, ...librariesPaths], projectLibraryPaths, arduinoConfig.fqbnParsed?.platform || ''
+    );
     // this.logger.debug(JSON.stringify(Object.fromEntries(this.libraryMap)));
 
     // 4.5. 添加平台特定的必需库（如 STM32 SrcWrapper）
@@ -339,19 +347,22 @@ export class DependencyAnalyzer {
     // Generated sources are separate translation units, so retain the platform
     // macro state from before the main sketch mutates its own analysis map.
     const generatedSourceMacros = new Map(this.macroDefinitions);
+    const initialDependencies = [...this.dependencyList.values()];
+    this.compilerDependencyDirectories.push(...initialDependencies.map(dependency => dependency.path));
     const sketchTabs = await collectArduinoSketchTabs(sketchPath!);
     if (sketchSources.length > 0 || sketchTabs.length > 1) {
-      const libraries = await resolveArduinoSketchLibraries(arduinoConfig.platform, sketchPath!, this.libraryMap,
-        root => this.scanDirectoryRecursive(root, ['.cpp', '.cc', '.cxx', '.c', '.S', '.s']), generatedSketchSources);
+      const libraries = await resolveArduinoSketchLibraries(arduinoConfig.platform, sketchPath!, this.librarySelection,
+        root => this.scanDirectoryRecursive(root, ['.cpp', '.cc', '.cxx', '.c', '.S', '.s']), generatedSketchSources,
+        initialDependencies);
       for (const library of libraries) {
         if (arduinoConfig.platform['compiler.libraries.ldflags'] && process.env['BUILD_MCU']) {
           library.others = await glob('*.a', {
             cwd: path.join(library.path, process.env['BUILD_MCU']!), absolute: true, nodir: true,
           });
         }
-        this.dependencyList.set(library.name, library);
+        this.registerLibrary(library);
       }
-      return Array.from(this.dependencyList.values());
+      return uniqueDependencyNames(this.dependencyList.values());
     }
     // 5. 递归分析依赖，resolveA用于确定是否处理预编译库
     let resolveA = arduinoConfig.platform['compiler.libraries.ldflags'] ? true : false;
@@ -366,7 +377,7 @@ export class DependencyAnalyzer {
       await this.resolveDependencies(includeFiles, resolveA, 0, 10, translationUnitMacros);
     }
 
-    return Array.from(this.dependencyList.values());
+    return uniqueDependencyNames(this.dependencyList.values());
   }
 
   /**
@@ -557,12 +568,13 @@ export class DependencyAnalyzer {
       lookups = new Map();
       this.headerLookups.set(search, lookups);
     }
-    const lookupKey = JSON.stringify([libraryPath, includePath, quoted, quoted ? sourceDirectory : '', origin]);
+    const selectedPaths = this.selectedLibraryPaths || [];
+    const lookupKey = JSON.stringify([libraryPath, selectedPaths.length, includePath, quoted, quoted ? sourceDirectory : '', origin]);
     let lookup = lookups.get(lookupKey);
     if (!lookup) {
       lookup = { checked: [] };
-      const dependencies = libraryPath
-        ? [...this.compilerDependencyDirectories, libraryPath] : this.compilerDependencyDirectories;
+      const dependencies = [...this.compilerDependencyDirectories, ...selectedPaths];
+      if (libraryPath && !selectedPaths.includes(libraryPath)) dependencies.push(libraryPath);
       const directories = compilerIncludeDirectories(search, quoted, sourceDirectory, dependencies);
       const start = origin ? directories.findIndex(directory =>
         this.normalizeAnalysisPath(directory) === this.normalizeAnalysisPath(origin)) + 1 : 0;
@@ -590,8 +602,24 @@ export class DependencyAnalyzer {
   }
 
   private isOtherLibraryHeader(file: string, includePath: string, libraryPath?: string): boolean {
-    const dependency = this.libraryMap.get(includePath);
+    const dependency = this.librarySelection?.owner(file) || this.libraryMap.get(includePath);
     return !!dependency && dependency.path !== libraryPath && this.isPathWithinRoot(file, dependency.path);
+  }
+
+  private lookupLibraryInclude(includePath: string): { library: Dependency; entry: string } | undefined {
+    const absolute = path.isAbsolute(includePath);
+    const library = absolute ? this.librarySelection?.owner(includePath)
+      : this.librarySelection?.forHeader(includePath, this.selectedLibraryPaths) || this.libraryMap.get(includePath);
+    if (library) {
+      const entry = absolute ? path.relative(library.path, includePath).replace(/\\/g, '/') : includePath;
+      return { library, entry };
+    }
+  }
+
+  private registerLibrary(dependency: Dependency): void {
+    const key = libraryPathKey(dependency.path);
+    if (!this.dependencyList.has(key)) this.selectedLibraryPaths?.push(dependency.path);
+    this.dependencyList.set(key, dependency);
   }
 
   private libraryHeaderResolver(
@@ -640,8 +668,8 @@ export class DependencyAnalyzer {
             const target = resolve(includePath, event.delimiter, event.includeNext);
             if (target && !this.isOtherLibraryHeader(target.file, includePath)) {
               visit(target);
-            } else if (!this.isPlatformHeaderPath(site.file)) {
-              includes.add(includePath);
+            } else if (target || !this.isPlatformHeaderPath(site.file)) {
+              includes.add(target && this.librarySelection ? target.file : includePath);
             }
           }
         }, site.file);
@@ -852,7 +880,7 @@ export class DependencyAnalyzer {
     const repeatedLibraries = new Set<Dependency>();
     const seenLibraries = new Set<Dependency>();
     for (const includeFile of includeFiles) {
-      const library = this.libraryMap.get(includeFile);
+      const library = this.lookupLibraryInclude(includeFile)?.library;
       if (library) {
         if (seenLibraries.has(library)) repeatedLibraries.add(library);
         seenLibraries.add(library);
@@ -861,28 +889,27 @@ export class DependencyAnalyzer {
     const sharedWork = new Map<Dependency, LibraryIndexWork>();
 
     for (const includeFile of includeFiles) {
-      // 跳过系统头文件
-      if (this.isSystemHeader(includeFile)) {
+      const match = this.lookupLibraryInclude(includeFile);
+      if (!match && this.isSystemHeader(includeFile)) {
         this.logger.debug(`Skipping system header: ${includeFile}`);
         continue;
       }
 
-      if (this.libraryMap.has(includeFile)) {
-        // 库存在
-        const libraryObject = this.libraryMap.get(includeFile)
+      if (match) {
+        const { library: libraryObject, entry } = match;
         this.logger.debug(`Found library for ${includeFile}: ${libraryObject.name}`);
 
         const libraryKey = this.normalizeAnalysisPath(libraryObject.path);
-        const entryKey = this.normalizeAnalysisPath(path.resolve(libraryObject.path, includeFile));
+        const entryKey = this.normalizeAnalysisPath(path.resolve(libraryObject.path, entry));
         if (activeEntries.has(entryKey)) continue;
         const entries = this.libraryEntryPoints.get(libraryKey) || new Set<string>();
-        entries.add(includeFile);
+        entries.add(entry);
         this.libraryEntryPoints.set(libraryKey, entries);
         activeEntries.add(entryKey);
         try {
+          this.registerLibrary(libraryObject);
           const work = repeatedLibraries.has(libraryObject) ? sharedWork : undefined;
           const libraryIndex = await this.applyLibraryIndex(libraryObject, macroDefinitions, [...entries], work);
-          this.dependencyList.set(libraryObject.name, libraryObject);
 
           // Keep precompiled archives associated with the selected library.
           if (resolveA) {
@@ -930,7 +957,10 @@ export class DependencyAnalyzer {
         }
         return this.buildLibraryIndex(libraryObject, macroDefinitions, entries, work);
       },
-      JSON.stringify([this.platformContextKey, this.normalizeAnalysisPath(libraryObject.path), entries])
+      JSON.stringify([
+        this.platformContextKey, this.compilerDependencyDirectories, this.librarySelection?.fingerprint, this.selectedLibraryPaths,
+        this.normalizeAnalysisPath(libraryObject.path), entries,
+      ])
     );
 
     libraryObject.includes = index.sourceFiles;
@@ -1122,8 +1152,8 @@ export class DependencyAnalyzer {
               const target = resolve(includePath, event.delimiter, event.includeNext);
               if (target && !this.isOtherLibraryHeader(target.file, includePath, libraryPath)) {
                 analyzeLocalFile(target);
-              } else if (!this.isPlatformHeaderPath(filePath)) {
-                externalIncludes.add(includePath);
+              } else if (target || !this.isPlatformHeaderPath(filePath)) {
+                externalIncludes.add(target && this.librarySelection ? target.file : includePath);
               }
             }
           }, filePath);
@@ -1890,61 +1920,32 @@ export class DependencyAnalyzer {
     return generalFiles;
   }
 
-  async parserLibraryPaths(paths: (string | undefined)[]): Promise<Map<string, Dependency>> {
-    // console.log('找到库列表:');
-    const resultDirs = new Set<string>();
-    for (const libPath of paths) {
-      if (libPath && await fs.pathExists(libPath)) {
-        const sourceDirs = await this.findSourceDirectories(libPath);
-        sourceDirs.forEach(dir => resultDirs.add(dir));
+  async parserLibraryPaths(paths: (string | undefined)[], projectPaths: string[] = [], architecture = ''): Promise<Map<string, Dependency>> {
+    const roots = new Map<string, { directory: string; source: LibrarySource }>();
+    for (const [directory, source] of [
+      [paths[0], 'platform'] as const,
+      ...paths.slice(1).map(directory => [directory, 'additional'] as const),
+      ...projectPaths.map(directory => [directory, 'project'] as const),
+    ]) {
+      if (!directory || !await fs.pathExists(directory)) continue;
+      const key = libraryPathKey(directory);
+      if (!roots.has(key) || source === 'project') roots.set(key, { directory, source });
+    }
+    const sources = new Map<string, { directory: string; source: LibrarySource }>();
+    for (const { directory, source } of roots.values()) {
+      for (const sourceDirectory of await this.findSourceDirectories(directory)) {
+        const key = libraryPathKey(await fs.realpath(sourceDirectory));
+        if (!sources.has(key) || source === 'project') sources.set(key, { directory: sourceDirectory, source });
       }
     }
-    // console.log(resultDirs);
-    // 构建头文件到库信息的映射
-    const libraryMap = new Map<string, Dependency>();
-    // 同时构建库名称到库信息的映射，用于平台特定库查找
-    const libraryByNameMap = new Map<string, Dependency>();
-
-    for (const dir of resultDirs) {
-      let libName = path.basename(dir);
-      if (libName === 'src') {
-        libName = path.basename(path.dirname(dir));
-      }
-      let libObject: Dependency = {
-        path: dir,
-        name: libName,
-        type: 'library',
-        includes: [],
-        others: []
-      }
-
-      // 将库按名称存储，用于平台特定库查找
-      libraryByNameMap.set(libName, libObject);
-
-      try {
-        // 扫描目录中的所有.h文件，只搜索当前目录，不递归子目录
-        const headerFiles = await glob('*.{h,hpp}', {
-          cwd: dir,
-          absolute: true,
-          nodir: true
-        });
-        // console.log(headerFiles);
-        for (const headerFile of headerFiles) {
-          const headerName = path.basename(headerFile);
-          libraryMap.set(headerName, libObject);
-        }
-      } catch (error) {
-        this.logger.debug(`Failed to scan headers in ${dir}: ${error instanceof Error ? error.message : error}`);
-      }
+    const selection = new LibrarySelection(architecture.toLowerCase());
+    for (const { directory, source } of sources.values()) {
+      const headers = await glob('*.{h,hpp}', { cwd: directory, nodir: true });
+      await selection.add(directory, source, headers);
     }
-
-    // 将库名称映射添加到主映射中，使用特殊前缀避免与头文件名冲突
-    for (const [libName, libObject] of libraryByNameMap) {
-      libraryMap.set(`__LIB_${libName}`, libObject);
-    }
-
-    // console.log(libraryMap);
-    return libraryMap;
+    selection.resolve();
+    this.librarySelection = selection;
+    return selection.headers;
   }
 
   /**
@@ -2029,7 +2030,7 @@ export class DependencyAnalyzer {
           // 先解析库索引来扫描源文件
           await this.applyLibraryIndex(srcWrapperDep, this.macroDefinitions);
           // 将 SrcWrapper 库添加到依赖列表中
-          this.dependencyList.set('SrcWrapper', srcWrapperDep);
+          this.registerLibrary(srcWrapperDep);
           this.logger.info('Added SrcWrapper library for STM32 platform');
         }
       } else {

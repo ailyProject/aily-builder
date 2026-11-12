@@ -112,7 +112,7 @@ export class ArduinoCompiler {
       await this.runGlobalPrebuild(arduinoConfig, options.buildPath);
 
       this.logger.info('Generating compile configuration...');
-      const compileConfig = await this.compileConfigManager.parseCompileConfig(arduinoConfig);
+      const compileConfig = this.compileConfigManager.parseCompileConfig(arduinoConfig, options.toolVersions);
       this.logger.info('Analyzing dependencies...');
       const dependencies = await this.analyzer.preprocess(arduinoConfig, compileConfig.args);
       this.logger.info('Dependency analysis completed.');
@@ -136,7 +136,7 @@ export class ArduinoCompiler {
           // 基本路径变量
           key === 'SKETCH_NAME' || key === 'SKETCH_PATH' || key === 'SKETCH_DIR_PATH' ||
           key === 'BUILD_PATH' || key === 'SDK_PATH' || key === 'TOOLS_PATH' ||
-          key === 'LIBRARIES_PATH' || key === 'BUILD_JOBS' ||
+          key === 'LIBRARIES_PATH' || key === 'PROJECT_LIBRARY_PATHS' || key === 'BUILD_JOBS' ||
           // 编译器相关
           key.startsWith('COMPILER_') ||
           // 运行时路径
