@@ -1,3 +1,5 @@
+import { isWindowsHost } from './HostPlatform';
+
 /**
  * 转义编译参数中的双引号，处理宏定义格式
  * @param args 编译参数字符串
@@ -6,12 +8,15 @@
 export function escapeQuotedDefines(args: string): string {
   if (!args) return args;
   
-  // 首先处理被单引号包围的 -D 宏定义（来自 platform.txt）
-  // 匹配 '-DMACRO_NAME="VALUE"' 格式
-  const singleQuotedDefineRegex = /'-D([A-Z_][A-Z0-9_]*)="([^"]*)"'/g;
-  args = args.replace(singleQuotedDefineRegex, (match, macroName, value) => {
-    // 去掉外层单引号，转义内部双引号，添加外层双引号（Arduino IDE 格式）
-    return `"-D${macroName}=\\"${value}\\""`;
+  // Arduino recipes may wrap the whole -D argument in either kind of quote.
+  // Replace the whole argument so the outer quotes are emitted exactly once.
+  const quotedDefine = /(?<!\S)(["']?)(-D[A-Za-z_][A-Za-z0-9_]*="(?:\\.|[^"\\])*")\1(?=\s|$)/g;
+  const windows = isWindowsHost();
+  args = args.replace(quotedDefine, (_match, _outerQuote, define: string) => {
+    const escaped = windows
+      ? define.replace(/(\\*)"/g, '$1$1\\"')
+      : define.replace(/[\\"]/g, '\\$&');
+    return `"${escaped}"`;
   });
 
   // 处理被单引号包围的简单 -D 宏定义（无双引号值）
@@ -21,13 +26,6 @@ export function escapeQuotedDefines(args: string): string {
 
   // 处理被单引号包围的 -I 路径（来自 platform.txt）
   args = args.replace(/'(-I[^\s'"]*)'/g, '$1');
-  
-  // 然后处理普通的 -D 宏定义（带双引号的值）
-  const quotedDefineRegex = /-D([A-Z_][A-Z0-9_]*)="([^"]*)"/g;
-  args = args.replace(quotedDefineRegex, (match, macroName, value) => {
-    // 标准处理：转义内部引号，添加外层双引号
-    return `"-D${macroName}=\\"${value}\\""`;
-  });
   
   // 处理包含 shell 特殊字符（如括号）的宏定义
   // 匹配 -DMACRO=VALUE 格式，其中 VALUE 包含 ( 或 ) 等特殊字符
