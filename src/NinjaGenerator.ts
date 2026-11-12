@@ -898,13 +898,9 @@ export class NinjaGenerator {
     command = command.replace(new RegExp(`"[^"]*/${sketchName}\\.eep"`, 'g'), `${sketchName}.eep`);
     command = command.replace(new RegExp(`"[^"]*/${sketchName}\\.bin"`, 'g'), `${sketchName}.bin`);
 
-    // 最后添加编译器命令
-    if (replacements.compiler) {
-      command = `${replacements.compiler} ${command}`;
-    }
-
-    // 清理多余的空格
-    return command.replace(/\s+/g, ' ').trim();
+    // 保留可执行文件路径中的空格，只整理 recipe 参数。
+    command = command.replace(/\s+/g, ' ').trim();
+    return replacements.compiler ? `${replacements.compiler} ${command}`.trimEnd() : command;
   }
 
   private async writeNinjaFile(filePath: string): Promise<void> {

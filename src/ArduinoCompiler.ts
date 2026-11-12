@@ -112,7 +112,7 @@ export class ArduinoCompiler {
       await this.runGlobalPrebuild(arduinoConfig, options.buildPath);
 
       this.logger.info('Generating compile configuration...');
-      const compileConfig = await this.compileConfigManager.parseCompileConfig(arduinoConfig);
+      const compileConfig = this.compileConfigManager.parseCompileConfig(arduinoConfig, options.toolVersions);
       this.logger.info('Analyzing dependencies...');
       const dependencies = await this.analyzer.preprocess(arduinoConfig, compileConfig.args);
       this.logger.info('Dependency analysis completed.');
