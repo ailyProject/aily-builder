@@ -78,3 +78,22 @@ test('a pinned output recipe keeps its resolved executable path and reports a mi
   assert.equal(manager.parseCompileConfig(arduinoConfig).compiler.bin, 'esptool.exe');
   assert.equal(manager.parseCompileConfig(arduinoConfig, { esptool_py: '^5.3.0' }).compiler.bin, 'esptool.exe');
 });
+
+test('a pinned Windows output recipe resolves an omitted .exe only in its selected distribution', { skip: process.platform !== 'win32' }, t => {
+  const { directory } = fixture(t);
+  const pinned = directory('xpack-arm-none-eabi-gcc@14.2.1-1.1');
+  const executable = `${directory('xpack-arm-none-eabi-gcc@14.2.1-1.1', 'bin')}/arm-none-eabi-objcopy`;
+  fs.writeFileSync(`${directory('xpack-arm-none-eabi-gcc@14.2.2', 'bin')}/arm-none-eabi-objcopy.exe`, '');
+  const manager = new CompileConfigManager(null);
+  const arduinoConfig = { platform: {
+    'runtime.tools.xpack-arm-none-eabi-gcc-14.2.1-1.1.path': pinned,
+    'recipe.objcopy.bin.pattern': `"${executable}" -O binary`,
+    'recipe.objcopy.hex.pattern': `"${executable}" -O ihex`,
+  } };
+  const versions = { 'xpack-arm-none-eabi-gcc': '14.2.1' };
+  assert.throws(() => manager.parseCompileConfig(arduinoConfig, versions), /Required Arduino tool executable/);
+  fs.writeFileSync(executable + '.exe', '');
+  const { compiler } = manager.parseCompileConfig(arduinoConfig, versions);
+  assert.equal(compiler.bin, `"${executable}.exe"`);
+  assert.equal(compiler.objcopy, `"${executable}.exe"`);
+});

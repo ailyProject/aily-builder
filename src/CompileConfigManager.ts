@@ -2,6 +2,7 @@ import { statSync } from 'node:fs';
 import path from 'node:path';
 import { extractCommandExecutable, removeCompilerPath } from './utils/ExtractCompilerArgs';
 import { extractCompilerName, extractToolName } from './utils/ExtractCompilerName';
+import { isWindowsHost } from './utils/HostPlatform';
 import { isPinnedArduinoToolVersion, stripToolVersion, xpackToolAlias } from './ArduinoToolResolver';
 import { Logger } from './utils/Logger';
 import { escapeQuotedDefines } from './utils/escapeQuotes';
@@ -39,10 +40,12 @@ export class CompileConfigManager {
           && !relative.startsWith('..' + path.sep) && !path.isAbsolute(relative);
       });
       if (!pinned) return extractToolName(recipe);
-      if (!statSync(executable, { throwIfNoEntry: false })?.isFile()) {
+      const candidates = isWindowsHost() && !path.extname(executable) ? [executable, executable + '.exe'] : [executable];
+      const installed = candidates.find(candidate => statSync(candidate, { throwIfNoEntry: false })?.isFile());
+      if (!installed) {
         throw new Error(`Required Arduino tool executable was not found: ${executable}`);
       }
-      return `"${executable.replace(/\\/g, '/').replace(/\$/g, '$$$$')}"`;
+      return `"${installed.replace(/\\/g, '/').replace(/\$/g, '$$$$')}"`;
     };
 
     let flag_eep, flag_hex, bin, flag_bin, zip, flag_zip, ld, flag_ld, objcopy;
