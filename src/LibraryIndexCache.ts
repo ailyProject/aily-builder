@@ -7,7 +7,7 @@
  */
 import fs from 'fs-extra';
 import path from 'path';
-import { createHash, randomUUID } from 'crypto';
+import { createHash } from 'crypto';
 import { glob } from 'glob';
 import { Logger } from './utils/Logger';
 import type { MacroDefinition } from './utils/PreprocessorExpression';
@@ -19,6 +19,7 @@ import { captureMacroOrigins, restoreMacroOrigins, sameMacroDefinition } from '.
 import type { MacroSourceReference, RestoredMacroOrigins } from './MacroSourceOrigins';
 import { librarySourceIndexPath, isSourceIndexUsable, type CachedMacroIndex, type CachedSourceIndex } from './LibrarySourceIndex';
 import { PreprocessInputChangedError } from './DirectiveTapeSnapshot';
+import { publishAtomicJsonCache } from './AtomicJsonCache';
 
 const SCHEMA_VERSION = 7;
 export const DEPENDENCY_ANALYZER_VERSION = 'dependency-library-layout-v8';
@@ -502,10 +503,7 @@ export class LibraryIndexCache {
 
   private async writeCache(cachePath: string, cache: CachedPathState | CachedSourceIndex): Promise<void> {
     try {
-      await fs.ensureDir(path.dirname(cachePath));
-      const tmpPath = `${cachePath}.${process.pid}.${randomUUID()}.tmp`;
-      await fs.writeJSON(tmpPath, cache);
-      await fs.rename(tmpPath, cachePath);
+      await publishAtomicJsonCache(cachePath, cache);
     } catch (error) {
       this.logger.debug(`[LIB_INDEX] failed to write cache ${cachePath}: ${error instanceof Error ? error.message : error}`);
     }
