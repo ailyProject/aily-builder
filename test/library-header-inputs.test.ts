@@ -125,10 +125,10 @@ test('v6 exact lookup summaries ignore unrelated derived archives and objects in
   assert.equal(cached.dependency.headerInputsScheme, LIBRARY_HEADER_INPUTS_SCHEME);
 });
 
-test('v7 rejects v5 directory and v6 unbound-tape indexes instead of relabeling their proofs', async t => {
+test('current analyzer rejects v5 directory and v6 unbound-tape indexes instead of relabeling their proofs', async t => {
  for (const oldVersion of [5, 6]) {
   const f = await fixture(t), fresh = await f.read();
-  assert.equal(DEPENDENCY_ANALYZER_VERSION, 'dependency-directive-tape-v7');
+  assert.equal(DEPENDENCY_ANALYZER_VERSION, 'dependency-library-layout-v8');
   const [sourceIndexPath] = await glob(`sources/**/${fresh.index.sourceHash}/*.json`, { cwd: f.cache.getCacheDir(), absolute: true });
   assert.ok(sourceIndexPath);
   const pathStatePath = f.cache.getPathStatePath(f.cache.normalizePath(f.library));

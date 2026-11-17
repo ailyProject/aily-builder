@@ -21,7 +21,7 @@ import { librarySourceIndexPath, isSourceIndexUsable, type CachedMacroIndex, typ
 import { PreprocessInputChangedError } from './DirectiveTapeSnapshot';
 
 const SCHEMA_VERSION = 7;
-export const DEPENDENCY_ANALYZER_VERSION = 'dependency-directive-tape-v7';
+export const DEPENDENCY_ANALYZER_VERSION = 'dependency-library-layout-v8';
 export const LIBRARY_HEADER_INPUTS_SCHEME = 'checked-header-paths-v2' as const;
 const ANALYZER_VERSION = DEPENDENCY_ANALYZER_VERSION;
 const STAT_CONCURRENCY = 32;
@@ -77,9 +77,45 @@ export function headerInputsCurrent(inputs?: LibraryHeaderInputs): boolean {
   }));
 }
 
-export interface LibraryIndexLookupOptions {
+export interface LibraryIndexValidationOptions {
+  /** Facts used to select the layout/context, independent of parsed C/C++ inputs. */
+  requiredInputs?: readonly (readonly [file: string, identity: string | null])[];
+}
+
+export interface LibraryIndexLookupOptions extends LibraryIndexValidationOptions {
   /** Unverified metadata can only be used to decline a speculative lookup. */
   acceptCachedIncludes?: (includeFiles: readonly string[]) => boolean;
+}
+
+function inputKey(file: string): string { return toHostPathKey(path.resolve(file)); }
+
+function mergeHeaderInputs(inputs: LibraryHeaderInputs | undefined,
+  required: LibraryIndexValidationOptions['requiredInputs']): LibraryHeaderInputs | undefined {
+  if (!required?.length) return inputs;
+  const merged = new Map<string, [string, string | null]>();
+  for (const [file, identity] of [...(inputs || []), ...required]) {
+    const key = inputKey(file), previous = merged.get(key);
+    if (previous && previous[1] !== identity) throw new PreprocessInputChangedError(file, 'conflicting-required-input');
+    merged.set(key, [file, identity]);
+  }
+  return [...merged.values()];
+}
+
+function containsRequiredInputs(inputs: LibraryHeaderInputs | undefined,
+  required: LibraryIndexValidationOptions['requiredInputs']): boolean {
+  if (!required?.length) return true;
+  if (!inputs) return false;
+  const recorded = new Map<string, string | null>();
+  for (const [file, identity] of inputs) {
+    const key = inputKey(file);
+    if (recorded.has(key) && recorded.get(key) !== identity) return false;
+    recorded.set(key, identity);
+  }
+  return required.every(([file, identity]) => recorded.has(inputKey(file)) && recorded.get(inputKey(file)) === identity);
+}
+
+function assertRequiredInputsCurrent(required: LibraryHeaderInputs | undefined): void {
+  if (!headerInputsCurrent(required)) throw new PreprocessInputChangedError(required?.[0]?.[0] || '', 'layout-input-changed');
 }
 
 interface PreparedLibraryIndexLookup {
@@ -113,14 +149,16 @@ export class LibraryIndexCache {
     libraryPath: string,
     macroDefinitions: Map<string, MacroDefinition>,
     builder: (sourceHash: string) => Promise<LibraryIndexBuildResult>,
-    analysisContext: string = ''
+    analysisContext: string = '',
+    options: LibraryIndexValidationOptions = {}
   ): Promise<LibraryIndexResult> {
-    const lookup = await this.lookupIndex(libraryName, libraryPath, macroDefinitions, analysisContext, false);
+    const requiredInputs = mergeHeaderInputs(undefined, options.requiredInputs);
+    const lookup = await this.lookupIndex(libraryName, libraryPath, macroDefinitions, analysisContext, false, { requiredInputs });
     if (lookup.result) return lookup.result;
     return this.rebuildAndStore(
       libraryName, libraryPath, lookup.normalizedLibraryPath, lookup.pathStatePath,
       macroDefinitions, lookup.macroKey, builder, lookup.files.length,
-      lookup.fastFingerprint, lookup.sourceHash, lookup.fileRecords, lookup.startedAt
+      lookup.fastFingerprint, lookup.sourceHash, lookup.fileRecords, lookup.startedAt, requiredInputs
     );
   }
 
@@ -132,7 +170,8 @@ export class LibraryIndexCache {
     analysisContext: string = '',
     options: LibraryIndexLookupOptions = {}
   ): Promise<LibraryIndexResult | undefined> {
-    return (await this.lookupIndex(libraryName, libraryPath, macroDefinitions, analysisContext, true, options)).result;
+    return (await this.lookupIndex(libraryName, libraryPath, macroDefinitions, analysisContext, true,
+      { ...options, requiredInputs: mergeHeaderInputs(undefined, options.requiredInputs) })).result;
   }
 
   private async lookupIndex(
@@ -143,6 +182,7 @@ export class LibraryIndexCache {
     cacheOnly: boolean,
     options: LibraryIndexLookupOptions = {}
   ): Promise<PreparedLibraryIndexLookup> {
+    assertRequiredInputsCurrent(options.requiredInputs as LibraryHeaderInputs | undefined);
     const startedAt = Date.now();
     const normalizedLibraryPath = this.normalizePath(libraryPath);
     const pathStatePath = this.getPathStatePath(normalizedLibraryPath);
@@ -163,7 +203,8 @@ export class LibraryIndexCache {
     const macroIndex = sourceIndex?.macroIndex;
     // This callback may reject an unverified summary; accepting it never
     // authorizes consumption without the complete validation below.
-    if (!macroIndex || (cacheOnly && !Array.isArray(macroIndex.headerInputs))
+    if (!macroIndex || !containsRequiredInputs(macroIndex.headerInputs, options.requiredInputs)
+      || (cacheOnly && !Array.isArray(macroIndex.headerInputs))
       || (options.acceptCachedIncludes && !options.acceptCachedIncludes([...macroIndex.includeFiles]))) return lookup;
     const restored = this.restoreIndex(macroIndex, libraryPath, files, macroDefinitions);
     if (!restored) return lookup;
@@ -177,6 +218,7 @@ export class LibraryIndexCache {
       ...(pathHit ? [pathStatePath] : []), this.getSourceIndexPath(sourceHash, macroKey)
     ]);
     const currentFiles = await this.collectFiles(libraryPath);
+    assertRequiredInputsCurrent(options.requiredInputs as LibraryHeaderInputs | undefined);
     if (!this.finalInputsCurrent(libraryPath, fastFingerprint, currentFiles, restored.headerInputs, restored)) return lookup;
     this.logger.debug(`[LIB_INDEX] ${pathHit ? 'hit' : 'source hit'} ${libraryName}: ${files.length} files, ${Date.now() - startedAt}ms`);
     lookup.result = {
@@ -199,10 +241,13 @@ export class LibraryIndexCache {
     fastFingerprint: string,
     sourceHash: string,
     fileRecords: Record<string, CachedFileSnapshot>,
-    startedAt: number
+    startedAt: number,
+    requiredInputs?: LibraryHeaderInputs
   ): Promise<LibraryIndexResult> {
+    assertRequiredInputsCurrent(requiredInputs);
     this.logger.debug(`[LIB_INDEX] rebuild ${libraryName}: ${fileCount} files`);
     const built = await builder(sourceHash);
+    const headerInputs = mergeHeaderInputs(built.headerInputs, requiredInputs);
     const sourceFiles = this.toRelativePaths(libraryPath, built.sourceFiles);
 
     const nextPathState = this.createPathState(
@@ -216,12 +261,12 @@ export class LibraryIndexCache {
     const finalMacroDefinitions = built.macroDefinitions || macroDefinitions;
     const macroOrigins = captureMacroOrigins(macroDefinitions, finalMacroDefinitions, built.macroOrigins);
     const restored = macroOrigins && restoreMacroOrigins(macroOrigins, macroDefinitions,
-      new Set(Object.keys(fileRecords).map(file => path.resolve(libraryPath, file))), built.headerInputs, libraryPath);
+      new Set(Object.keys(fileRecords).map(file => path.resolve(libraryPath, file))), headerInputs, libraryPath);
     const completeOrigins = !!restored && new Set([...restored.macros.keys(), ...finalMacroDefinitions.keys()]).size === finalMacroDefinitions.size
       && [...finalMacroDefinitions].every(([name, definition]) => sameMacroDefinition(definition, restored.macros.get(name)));
     const macroIndex: CachedMacroIndex | null = macroOrigins && completeOrigins ? {
         sourceFiles, includeFiles: [...new Set(built.includeFiles)], libraryPath: path.resolve(libraryPath), macroOrigins,
-        headerInputs: built.headerInputs, builtAt: new Date().toISOString()
+        headerInputs, builtAt: new Date().toISOString()
       } : null;
     const nextSourceIndex = this.createSourceIndex(libraryName, sourceHash, macroKey, macroIndex);
 
@@ -229,12 +274,14 @@ export class LibraryIndexCache {
     // A post-write guard alone would leave a mismatched entry under the old
     // sourceHash even though this request correctly refused to return it.
     this.assertLibraryFingerprint(libraryPath, fastFingerprint, await this.collectFiles(libraryPath));
+    assertRequiredInputsCurrent(requiredInputs);
     await Promise.all([
       this.writeCache(pathStatePath, nextPathState),
       this.writeCache(this.getSourceIndexPath(sourceHash, macroKey), nextSourceIndex)
     ]);
     const currentFiles = await this.collectFiles(libraryPath);
-    if (!this.finalInputsCurrent(libraryPath, fastFingerprint, currentFiles, built.headerInputs, restored || undefined))
+    assertRequiredInputsCurrent(requiredInputs);
+    if (!this.finalInputsCurrent(libraryPath, fastFingerprint, currentFiles, headerInputs, restored || undefined))
       throw new PreprocessInputChangedError(libraryPath, 'header-inputs-changed-after-analysis');
     this.logger.debug(!completeOrigins
       ? `[LIB_INDEX] skipped macro cache ${libraryName}: incomplete macro source references, ${Date.now() - startedAt}ms`
@@ -245,7 +292,7 @@ export class LibraryIndexCache {
       includeFiles: built.includeFiles,
       macroDefinitions: built.macroDefinitions || macroDefinitions,
       macroOrigins: built.macroOrigins,
-      headerInputs: built.headerInputs,
+      headerInputs,
       cacheHit: false,
       fastFingerprint,
       sourceHash

@@ -31,8 +31,9 @@ import { removeCompilerPath } from './utils/ExtractCompilerArgs';
 import type { CompilerHeaderSearch } from './CompilerHeaderSearch';
 import type { IncludeDelimiter } from './utils/PreprocessorDirectiveExecutor';
 import { LibrarySelection, libraryPathKey, uniqueDependencyNames, type LibrarySource } from './LibrarySelection';
+import { discoverLibraryLayouts, type LibraryLayout } from './LibraryLayout';
 import { FileObservationSnapshot, readFileObservation, type FileObservation } from './FileObservation';
-import { DirectiveTapeSnapshot, isPreprocessInputChanged, type ObservedDirectiveTape } from './DirectiveTapeSnapshot';
+import { DirectiveTapeSnapshot, PreprocessInputChangedError, isPreprocessInputChanged, type ObservedDirectiveTape } from './DirectiveTapeSnapshot';
 import type { MacroSourceReference } from './MacroSourceOrigins';
 import { SourceFragmentInventory } from './SourceFragmentInventory';
 
@@ -370,6 +371,7 @@ export class DependencyAnalyzer {
         }
         this.registerLibrary(library);
       }
+      this.librarySelection?.assertLayoutCurrent();
       return uniqueDependencyNames(this.dependencyList.values());
     }
     // 5. 递归分析依赖，resolveA用于确定是否处理预编译库
@@ -385,6 +387,7 @@ export class DependencyAnalyzer {
       await this.resolveDependencies(includeFiles, resolveA, 0, 10, translationUnitMacros);
     }
 
+    this.librarySelection?.assertLayoutCurrent();
     return uniqueDependencyNames(this.dependencyList.values());
   }
 
@@ -614,8 +617,15 @@ export class DependencyAnalyzer {
   }
 
   private isOtherLibraryHeader(file: string, includePath: string, libraryPath?: string): boolean {
-    const dependency = this.librarySelection?.owner(file) || this.libraryMap.get(includePath);
+    const owner = this.librarySelection?.owner(file);
+    if (owner) return !libraryPath || libraryPathKey(owner.path) !== libraryPathKey(libraryPath);
+    const dependency = this.libraryMap.get(includePath);
     return !!dependency && dependency.path !== libraryPath && this.isPathWithinRoot(file, dependency.path);
+  }
+
+  private belongsToLibrary(file: string, libraryPath: string): boolean {
+    const owner = this.librarySelection?.owner(file);
+    return owner ? libraryPathKey(owner.path) === libraryPathKey(libraryPath) : this.isPathWithinRoot(file, libraryPath);
   }
 
   private lookupLibraryInclude(includePath: string): { library: Dependency; entry: string } | undefined {
@@ -1000,7 +1010,8 @@ export class DependencyAnalyzer {
             }
             return this.buildLibraryIndex(libraryObject, macroDefinitions, entries, work);
           },
-          this.libraryAnalysisContext(libraryObject, entries)
+          this.libraryAnalysisContext(libraryObject, entries),
+          { requiredInputs: this.librarySelection?.inputObservations() }
         );
         return index;
       } catch (error) {
@@ -1100,7 +1111,15 @@ export class DependencyAnalyzer {
         nodir: true,
         ignore: ['**/examples/**', '**/extras/**', '**/test/**', '**/tests/**', '**/docs/**']
       });
-      includeFilePaths = [...new Set(libraryFiles)].sort((a, b) => {
+      const explicitEntries = entryPoints.map(entry => path.resolve(libraryPath, entry));
+      for (const file of explicitEntries) {
+        if (!this.belongsToLibrary(file, libraryPath)) continue;
+        const observation = readFileObservation(file);
+        observeLookup?.(file, 'isFile', observation.isFile, observation);
+        if (observation.state === 'unavailable') throw new PreprocessInputChangedError(file, observation.errorCode || 'entry-unavailable');
+        if (observation.isFile) libraryFiles.push(file);
+      }
+      includeFilePaths = [...new Set(libraryFiles)].filter(file => this.belongsToLibrary(file, libraryPath)).sort((a, b) => {
         const priorityDiff = this.getIncludeAnalysisPriority(a) - this.getIncludeAnalysisPriority(b);
         if (priorityDiff !== 0) {
           return priorityDiff;
@@ -1109,6 +1128,7 @@ export class DependencyAnalyzer {
         return path.relative(libraryPath, a).localeCompare(path.relative(libraryPath, b));
       });
     } catch (error) {
+      if (isPreprocessInputChanged(error)) throw error;
       this.logger.debug(`Failed to read header files in ${libraryPath}: ${error instanceof Error ? error.message : error}`);
     }
 
@@ -1146,6 +1166,10 @@ export class DependencyAnalyzer {
         if (matchedFile) {
           return matchedFile;
         }
+        const observation = readFileObservation(candidate);
+        observeLookup?.(candidate, 'isFile', observation.isFile, observation);
+        if (observation.state === 'unavailable') throw new PreprocessInputChangedError(candidate, observation.errorCode || 'include-unavailable');
+        if (observation.isFile) return candidate;
       }
 
       const relativeMatch = filesByRelativePath.get(relativeInclude);
@@ -1159,6 +1183,7 @@ export class DependencyAnalyzer {
     const sourceRootPaths = new Set(sourceFiles.map(normalizeAbsolutePath));
     const publicRootPaths = new Set(entryPoints.map(entry => normalizeAbsolutePath(path.resolve(libraryPath, entry))));
     const rootFiles = includeFilePaths.filter(filePath => {
+      if (publicRootPaths.has(normalizeAbsolutePath(filePath))) return true;
       const ext = path.extname(filePath).toLowerCase();
       if (ext === '.cpp' || ext === '.c') {
         return sourceRootPaths.has(normalizeAbsolutePath(filePath));
@@ -1400,7 +1425,8 @@ export class DependencyAnalyzer {
   ): Promise<string[]> {
     const extensions = ['.cpp', '.c', '.S', '.s'];
     // 直接扫描传入的路径（可能是库根目录或src目录）
-    const allFiles = await this.scanDirectoryRecursive(libraryObject.path, extensions);
+    const allFiles = (await this.scanDirectoryRecursive(libraryObject.path, extensions))
+      .filter(file => this.belongsToLibrary(file, libraryObject.path));
 
     // 过滤掉被其他文件 #include 的代码片段文件
     const includedFiles = new Set<string>();
@@ -2012,88 +2038,26 @@ export class DependencyAnalyzer {
       ...paths.slice(1).map(directory => [directory, 'additional'] as const),
       ...projectPaths.map(directory => [directory, 'project'] as const),
     ]) {
-      if (!directory || !await fs.pathExists(directory)) continue;
+      if (!directory) continue;
       const key = libraryPathKey(directory);
       if (!roots.has(key) || source === 'project') roots.set(key, { directory, source });
     }
-    const sources = new Map<string, { directory: string; source: LibrarySource }>();
+    const selection = new LibrarySelection(architecture.toLowerCase());
+    const sources = new Map<string, { layout: LibraryLayout; source: LibrarySource }>();
     for (const { directory, source } of roots.values()) {
-      for (const sourceDirectory of await this.findSourceDirectories(directory)) {
-        const key = libraryPathKey(await fs.realpath(sourceDirectory));
-        if (!sources.has(key) || source === 'project') sources.set(key, { directory: sourceDirectory, source });
+      const layouts = await discoverLibraryLayouts(directory, { onInputs: inputs => selection.observeLayoutInputs(inputs) });
+      for (const layout of layouts) {
+        const key = libraryPathKey(await fs.realpath(layout.sourceRoot));
+        if (!sources.has(key) || source === 'project') sources.set(key, { layout, source });
       }
     }
-    const selection = new LibrarySelection(architecture.toLowerCase());
-    for (const { directory, source } of sources.values()) {
-      const headers = await glob('*.{h,hpp}', { cwd: directory, nodir: true });
-      await selection.add(directory, source, headers);
+    for (const { layout, source } of sources.values()) {
+      const headers = await glob('*.{h,hpp}', { cwd: layout.sourceRoot, nodir: true });
+      await selection.addLayout(layout, source, headers);
     }
     selection.resolve();
     this.librarySelection = selection;
     return selection.headers;
-  }
-
-  /**
-   * 搜索包含源文件的目录，只要上级目录中有源文件就停止搜索
-   * @param libPath 要搜索的根路径
-   * @returns 返回包含源文件的目录数组
-   */
-  private async findSourceDirectories(libPath: string): Promise<string[]> {
-    const sourceDirs = new Set<string>();
-
-    try {
-      // 使用glob搜索所有源文件（.h, .hpp, .c, .cpp, .S）
-      const patterns = ['**/*.h', '**/*.hpp', '**/*.c', '**/*.cpp', '**/*.S'];
-      const files: string[] = [];
-
-      for (const pattern of patterns) {
-        const matchedFiles = await glob(pattern, {
-          cwd: libPath,
-          absolute: true,
-          nodir: true,
-          ignore: ['**/examples/**', '**/extras/**', '**/test/**', '**/tests/**', '**/docs/**']
-        });
-        files.push(...matchedFiles);
-      }
-
-      // 获取文件所在的目录
-      const fileDirs = new Set(files.map(file => path.dirname(file)));
-
-      // 过滤逻辑：如果上级目录已经包含源文件，则不添加子目录
-      for (const dir of fileDirs) {
-        let shouldAdd = true;
-
-        // 检查当前目录是否是已存在目录的子目录
-        for (const existingDir of sourceDirs) {
-          if (dir.startsWith(existingDir + path.sep)) {
-            // 当前目录是已存在目录的子目录，跳过
-            shouldAdd = false;
-            break;
-          }
-        }
-
-        if (shouldAdd) {
-          // 检查是否需要移除已存在的子目录（因为找到了父目录）
-          const dirsToRemove = new Set<string>();
-          for (const existingDir of sourceDirs) {
-            if (existingDir.startsWith(dir + path.sep)) {
-              dirsToRemove.add(existingDir);
-            }
-          }
-          // 移除子目录
-          dirsToRemove.forEach(d => sourceDirs.delete(d));
-          // 添加当前目录
-          sourceDirs.add(dir);
-        }
-      }
-
-    } catch (error) {
-      this.logger.debug(`Failed to find source directories in ${libPath}: ${error instanceof Error ? error.message : error}`);
-    }
-
-    const result = Array.from(sourceDirs);
-    this.logger.debug(`[SOURCE_DIRS] ${path.basename(libPath)}: found ${result.length} directories: ${result.map(d => path.relative(libPath, d) || '(root)').join(', ')}`);
-    return result;
   }
 
   /**
