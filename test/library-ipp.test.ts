@@ -5,6 +5,7 @@ import path from 'node:path';
 import test, { TestContext } from 'node:test';
 import { DependencyAnalyzer, Dependency, MacroDefinition } from '../src/DependencyAnalyzer';
 import { LibraryIndexCache } from '../src/LibraryIndexCache';
+import { isSourceIndexUsable } from '../src/LibrarySourceIndex';
 import { ArchiveCloudCacheManager } from '../src/ArchiveCloudCacheManager';
 import { Logger } from '../src/utils/Logger';
 
@@ -159,14 +160,15 @@ test('library index rejects path and source results from an obsolete analyzer', 
   const internal = cache as any;
   const cachePaths = [
     internal.getPathStatePath(internal.normalizePath(f.libraryPath)),
-    internal.getSourceIndexPath(initial.sourceHash),
+    internal.getSourceIndexPath(initial.sourceHash, internal.createMacroKey(new Map(), '')),
   ];
   for (const cachePath of cachePaths) {
     const cached = JSON.parse(await fs.readFile(cachePath, 'utf8'));
     cached.analyzerVersion = `${cached.analyzerVersion}-obsolete-fixture`;
-    if (cached.macroIndexes) {
-      for (const index of Object.values(cached.macroIndexes) as any[]) index.includeFiles = ['Stale.h'];
-      assert.equal(internal.isSourceIndexUsable(cached, initial.sourceHash), false);
+    if (cached.macroIndex) {
+      cached.macroIndex.includeFiles = ['Stale.h'];
+      assert.equal(isSourceIndexUsable(cached, 7, 'dependency-directive-tape-v7', initial.sourceHash,
+        internal.createMacroKey(new Map(), '')), false);
     } else {
       assert.equal(internal.isPathStateUsable(cached, internal.normalizePath(f.libraryPath)), false);
     }
@@ -204,12 +206,10 @@ test('archive key includes ipp content but ipp does not count as compilable sour
   // source-input/key path. Do not allow process.cwd() to add unrelated files.
   manager.collectProjectConfigFiles = async () => [];
 
-  const eligibility = await manager.getLibraryArchiveEligibility(dependency);
-  assert.equal(eligibility.eligible, false);
-  assert.equal(eligibility.sourceFileCount, 1);
-  assert.equal(eligibility.sourceFileSize, (await fs.stat(source)).size);
-  const withFragment = await manager.getLibraryArchiveEligibility({ ...dependency, includes: [source, implementation] });
-  assert.deepEqual(withFragment, eligibility);
+  assert.deepEqual(manager.collectCompiledSourceFiles(dependency.includes), [source]);
+  assert.deepEqual(manager.collectCompiledSourceFiles([source, implementation]), [source]);
+  assert.deepEqual((await manager.collectTargets([dependency])).map(target => target.archiveName), [target.archiveName]);
+  assert.deepEqual(await manager.collectTargets([{ ...dependency, includes: [implementation] }]), []);
   const first = await manager.computeInputs(target, [dependency], config);
   const unchanged = await manager.computeInputs(target, [dependency], config);
   assert.equal(manager.computeKey(first), manager.computeKey(unchanged));
@@ -251,9 +251,10 @@ test('a damaged context entry is a cache miss rather than an analysis failure', 
     return { sourceFiles: [], includeFiles: ['Expected.h'] };
   });
   const initial = await read();
-  const cachePath = (cache as any).getSourceIndexPath(initial.sourceHash);
+  const internal = cache as any;
+  const cachePath = internal.getSourceIndexPath(initial.sourceHash, internal.createMacroKey(new Map(), ''));
   const damaged = JSON.parse(await fs.readFile(cachePath, 'utf8'));
-  damaged.macroIndexes = { broken: null };
+  damaged.macroIndex = null;
   await fs.writeFile(cachePath, JSON.stringify(damaged));
   const rebuilt = await read();
   assert.equal(rebuilt.cacheHit, false);
