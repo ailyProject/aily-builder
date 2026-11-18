@@ -55,7 +55,15 @@ async function fixture(t: TestContext) {
   };
   const read = (base = macro('1'), using = cache, gate?: () => Promise<void>) =>
     using.getOrCreate('StorageFixture', library, base, () => build(base, gate));
-  const lookup = (base = macro('1'), using = cache) => using.tryGetCached('StorageFixture', library, base);
+  const lookup = async (base = macro('1'), using = cache) => {
+    const miss = new Error('The regular lookup requires a rebuild');
+    try {
+      return await using.getOrCreate('StorageFixture', library, base, async () => { throw miss; });
+    } catch (error) {
+      if (error === miss) return undefined;
+      throw error;
+    }
+  };
   const filename = (sourceHash: string, base = macro('1')) => cache.getSourceIndexPath(sourceHash, cache.createMacroKey(base, '')) as string;
   return { root, library, main, header, external, missing, secret, cache, messages, makeCache, read, lookup, filename, builds: () => builds };
 }

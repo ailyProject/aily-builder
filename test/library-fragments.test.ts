@@ -153,7 +153,7 @@ test('library index invalidates on inc-only edits, additions and deletions', asy
   assert.equal(builds, 5);
 });
 
-test('archive source hash includes inc and a small compiled library remains eligible', async t => {
+test('archive source hash and key include inc while eligibility counts only compiled sources', async t => {
   const f = await fixture(t);
   const source = await f.write('main.cpp', '#include "private/impl.inc"\nvoid entry() {}\n');
   const largeContent = `// ${'a'.repeat(310 * 1024)}\n`;
@@ -168,9 +168,8 @@ test('archive source hash includes inc and a small compiled library remains elig
   };
   const manager = archiveCache(f.root);
   manager.collectProjectConfigFiles = async () => [];
-  assert.deepEqual(manager.collectCompiledSourceFiles([source, implementation]), [source]);
-  assert.deepEqual((await manager.collectTargets([dependency])).map(target => target.archiveName), [target.archiveName]);
-  assert.deepEqual(await manager.collectTargets([{ ...dependency, includes: [implementation] }]), []);
+  const eligibility = await manager.getLibraryArchiveEligibility({ ...dependency, includes: [source, implementation] });
+  assert.deepEqual(eligibility, { eligible: false, sourceFileCount: 1, sourceFileSize: (await fs.stat(source)).size });
   const first = await manager.computeInputs(target, [dependency], config);
   assert.equal(manager.computeKey(first), manager.computeKey(await manager.computeInputs(target, [dependency], config)));
 

@@ -29,11 +29,6 @@ test('a cache hit cannot fabricate missing layout metadata proof', async t => {
   assert.ok(rebuilt.headerInputs.some(([p, id]: [string, string]) => p === f.metadata && id === required[0][1]));
   assert.equal((await f.read(required)).cacheHit, true); assert.equal(f.builds(), 2);
 });
-test('speculative cache reads decline a record without mandatory metadata facts', async t => {
-  const f = await fixture(t); await fs.writeFile(f.metadata, 'name=Package\n'); await f.read();
-  assert.equal(await f.cache.tryGetCached('Package', f.library, new Map(), 'layout-contract', { requiredInputs: f.facts() }), undefined);
-  assert.equal(f.builds(), 1);
-});
 for (const existing of [true, false]) test(`mandatory ${existing ? 'present' : 'missing'} metadata changes during publication retain final input rejection`, async t => {
   const f = await fixture(t); if (existing) await fs.writeFile(f.metadata, 'name=Package\n');
   const facts = f.facts(), original = f.cache.writeCache.bind(f.cache); let changed = false;

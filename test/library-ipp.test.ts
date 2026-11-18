@@ -206,10 +206,12 @@ test('archive key includes ipp content but ipp does not count as compilable sour
   // source-input/key path. Do not allow process.cwd() to add unrelated files.
   manager.collectProjectConfigFiles = async () => [];
 
-  assert.deepEqual(manager.collectCompiledSourceFiles(dependency.includes), [source]);
-  assert.deepEqual(manager.collectCompiledSourceFiles([source, implementation]), [source]);
-  assert.deepEqual((await manager.collectTargets([dependency])).map(target => target.archiveName), [target.archiveName]);
-  assert.deepEqual(await manager.collectTargets([{ ...dependency, includes: [implementation] }]), []);
+  const eligibility = await manager.getLibraryArchiveEligibility(dependency);
+  assert.equal(eligibility.eligible, false);
+  assert.equal(eligibility.sourceFileCount, 1);
+  assert.equal(eligibility.sourceFileSize, (await fs.stat(source)).size);
+  const withFragment = await manager.getLibraryArchiveEligibility({ ...dependency, includes: [source, implementation] });
+  assert.deepEqual(withFragment, eligibility);
   const first = await manager.computeInputs(target, [dependency], config);
   const unchanged = await manager.computeInputs(target, [dependency], config);
   assert.equal(manager.computeKey(first), manager.computeKey(unchanged));

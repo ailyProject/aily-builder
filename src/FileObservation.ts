@@ -11,13 +11,17 @@ export interface FileObservation {
   readonly errorCode?: string;
 }
 
+export function fileStatIdentity(stat: Stats): string {
+  return `${stat.dev}:${stat.ino}:${stat.size}:${stat.mtimeMs}:${stat.ctimeMs}`;
+}
+
 /** Always fresh. An I/O failure is not evidence that a candidate is absent. */
 export function readFileObservation(file: string): FileObservation {
   try {
     const stat = fs.statSync(file, { throwIfNoEntry: false });
     if (!stat) return { state: 'missing', exists: false, isFile: false, identity: undefined, stat: undefined };
     return { state: 'present', exists: true, isFile: stat.isFile(), stat,
-      identity: `${stat.dev}:${stat.ino}:${stat.size}:${stat.mtimeMs}:${stat.ctimeMs}` };
+      identity: fileStatIdentity(stat) };
   } catch (error) {
     const errorCode = (error as NodeJS.ErrnoException).code;
     return { state: errorCode === 'ENOENT' || errorCode === 'ENOTDIR' ? 'missing' : 'unavailable',

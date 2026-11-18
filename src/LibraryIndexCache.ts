@@ -83,11 +83,6 @@ export interface LibraryIndexValidationOptions {
   requiredInputs?: readonly (readonly [file: string, identity: string | null])[];
 }
 
-export interface LibraryIndexLookupOptions extends LibraryIndexValidationOptions {
-  /** Unverified metadata can only be used to decline a speculative lookup. */
-  acceptCachedIncludes?: (includeFiles: readonly string[]) => boolean;
-}
-
 function inputKey(file: string): string { return toHostPathKey(path.resolve(file)); }
 
 function mergeHeaderInputs(inputs: LibraryHeaderInputs | undefined,
@@ -154,7 +149,7 @@ export class LibraryIndexCache {
     options: LibraryIndexValidationOptions = {}
   ): Promise<LibraryIndexResult> {
     const requiredInputs = mergeHeaderInputs(undefined, options.requiredInputs);
-    const lookup = await this.lookupIndex(libraryName, libraryPath, macroDefinitions, analysisContext, false, { requiredInputs });
+    const lookup = await this.lookupIndex(libraryName, libraryPath, macroDefinitions, analysisContext, requiredInputs);
     if (lookup.result) return lookup.result;
     return this.rebuildAndStore(
       libraryName, libraryPath, lookup.normalizedLibraryPath, lookup.pathStatePath,
@@ -163,27 +158,14 @@ export class LibraryIndexCache {
     );
   }
 
-  /** Speculative read only: a miss never calls an analysis builder or publishes an index. */
-  async tryGetCached(
-    libraryName: string,
-    libraryPath: string,
-    macroDefinitions: Map<string, MacroDefinition>,
-    analysisContext: string = '',
-    options: LibraryIndexLookupOptions = {}
-  ): Promise<LibraryIndexResult | undefined> {
-    return (await this.lookupIndex(libraryName, libraryPath, macroDefinitions, analysisContext, true,
-      { ...options, requiredInputs: mergeHeaderInputs(undefined, options.requiredInputs) })).result;
-  }
-
   private async lookupIndex(
     libraryName: string,
     libraryPath: string,
     macroDefinitions: Map<string, MacroDefinition>,
     analysisContext: string,
-    cacheOnly: boolean,
-    options: LibraryIndexLookupOptions = {}
+    requiredInputs?: LibraryHeaderInputs
   ): Promise<PreparedLibraryIndexLookup> {
-    assertRequiredInputsCurrent(options.requiredInputs as LibraryHeaderInputs | undefined);
+    assertRequiredInputsCurrent(requiredInputs);
     const startedAt = Date.now();
     const normalizedLibraryPath = this.normalizePath(libraryPath);
     const pathStatePath = this.getPathStatePath(normalizedLibraryPath);
@@ -202,15 +184,11 @@ export class LibraryIndexCache {
       fastFingerprint, sourceHash, fileRecords
     };
     const macroIndex = sourceIndex?.macroIndex;
-    // This callback may reject an unverified summary; accepting it never
-    // authorizes consumption without the complete validation below.
-    if (!macroIndex || !containsRequiredInputs(macroIndex.headerInputs, options.requiredInputs)
-      || (cacheOnly && !Array.isArray(macroIndex.headerInputs))
-      || (options.acceptCachedIncludes && !options.acceptCachedIncludes([...macroIndex.includeFiles]))) return lookup;
+    if (!macroIndex || !containsRequiredInputs(macroIndex.headerInputs, requiredInputs)) return lookup;
     const restored = this.restoreIndex(macroIndex, libraryPath, files, macroDefinitions);
     if (!restored) return lookup;
 
-    if (!pathHit && !cacheOnly) {
+    if (!pathHit) {
       await this.writeCache(pathStatePath, this.createPathState(
         libraryName, normalizedLibraryPath, fastFingerprint, sourceHash, fileRecords
       ));
@@ -219,7 +197,7 @@ export class LibraryIndexCache {
       ...(pathHit ? [pathStatePath] : []), this.getSourceIndexPath(sourceHash, macroKey)
     ]);
     const currentFiles = await this.collectFiles(libraryPath);
-    assertRequiredInputsCurrent(options.requiredInputs as LibraryHeaderInputs | undefined);
+    assertRequiredInputsCurrent(requiredInputs);
     if (!this.finalInputsCurrent(libraryPath, fastFingerprint, currentFiles, restored.headerInputs, restored)) return lookup;
     this.logger.debug(`[LIB_INDEX] ${pathHit ? 'hit' : 'source hit'} ${libraryName}: ${files.length} files, ${Date.now() - startedAt}ms`);
     lookup.result = {

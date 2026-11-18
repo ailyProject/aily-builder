@@ -4,7 +4,7 @@ import os from 'node:os';
 import path from 'node:path';
 import test from 'node:test';
 import { ArchiveCloudCacheManager } from '../src/ArchiveCloudCacheManager';
-import { DEPENDENCY_ANALYZER_VERSION } from '../src/LibraryIndexCache';
+import { DEPENDENCY_ANALYZER_VERSION, dependencyInputIdentity, LIBRARY_HEADER_INPUTS_SCHEME } from '../src/LibraryIndexCache';
 import { Logger } from '../src/utils/Logger';
 
 test('library archives from an unbound analysis epoch cannot satisfy a new analysis key', async t => {
@@ -40,4 +40,26 @@ test('library archives from an unbound analysis epoch cannot satisfy a new analy
   const coreInputs = await manager.computeInputs(coreTarget, [target.dependency], {});
   assert.equal(Object.hasOwn(coreInputs.builder, 'dependencyAnalysis'), false,
     'Unaffected native core archives keep their existing cache contract');
+
+  // The wrapper can include an implementation fragment above the compiled
+  // source root. Its content must change the library archive key.
+  const fragment = path.join(root, 'internal.inc');
+  await fs.writeFile(fragment, 'int fragment() { return 1; }\n');
+  const shadow = path.join(root, 'shadow.inc');
+  const originalTime = new Date('2026-01-01T00:00:00Z');
+  await fs.utimes(fragment, originalTime, originalTime);
+  const observe = (): Array<[string, string | null]> => [
+    [fragment, dependencyInputIdentity(fragment)!], [shadow, null],
+  ];
+  const wrapper = { ...target, dependency: { ...target.dependency, path: path.join(root, 'src'),
+    headerInputsScheme: LIBRARY_HEADER_INPUTS_SCHEME, headerInputs: observe() } };
+  const prior = await manager.computeInputs(wrapper, [wrapper.dependency], {});
+  await fs.writeFile(fragment, 'int fragment() { return 2; }\n');
+  await fs.utimes(fragment, originalTime, originalTime);
+  await assert.rejects(manager.computeInputs(wrapper, [wrapper.dependency], {}), /dependency inputs changed/);
+  wrapper.dependency.headerInputs = observe();
+  const fresh = await manager.computeInputs(wrapper, [wrapper.dependency], {});
+  assert.notEqual(prior.sources.sourceHash, fresh.sources.sourceHash);
+  await fs.writeFile(shadow, '');
+  await assert.rejects(manager.computeInputs(wrapper, [wrapper.dependency], {}), /dependency inputs changed/);
 });
