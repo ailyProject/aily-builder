@@ -819,6 +819,7 @@ export class ArchiveCloudCacheManager {
 
   private async createToolchainSignature(compileConfig: any): Promise<Record<string, any>> {
     const compiler = compileConfig?.compiler || {};
+    const identity = compileConfig?.compilerIdentity || compiler;
     const cppCommand = compiler.cpp || '';
     const cCommand = compiler.c || '';
     const arCommand = compiler.ar || '';
@@ -833,9 +834,9 @@ export class ArchiveCloudCacheManager {
         platform: process.platform,
         arch: process.arch
       },
-      c: this.getCommandIdentity(cCommand),
-      cpp: this.getCommandIdentity(cppCommand),
-      ar: this.getCommandIdentity(arCommand),
+      c: this.getCommandIdentity(identity.c || cCommand),
+      cpp: this.getCommandIdentity(identity.cpp || cppCommand),
+      ar: this.getCommandIdentity(identity.ar || arCommand),
       cBinary,
       cppBinary,
       arBinary,
@@ -879,13 +880,14 @@ export class ArchiveCloudCacheManager {
   }
 
   private collectCompileRelevantToolPackages(platform: Record<string, any>, compileConfig: any): string[] {
+    const compilerIdentity = compileConfig?.compilerIdentity || compileConfig?.compiler;
     const compileText = [
       compileConfig?.args?.c,
       compileConfig?.args?.cpp,
       compileConfig?.args?.s,
-      compileConfig?.compiler?.c,
-      compileConfig?.compiler?.cpp,
-      compileConfig?.compiler?.ar
+      compilerIdentity?.c,
+      compilerIdentity?.cpp,
+      compilerIdentity?.ar
     ].filter(Boolean).join('\n').replace(/\\/g, '/');
 
     const paths: string[] = [];

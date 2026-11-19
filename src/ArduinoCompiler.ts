@@ -351,13 +351,14 @@ export class ArduinoCompiler {
   }
 
   private collectCompileRelevantToolPackages(platform: Record<string, any>, compileConfig: any): string[] {
+    const compilerIdentity = compileConfig?.compilerIdentity || compileConfig?.compiler;
     const compileText = [
       compileConfig?.args?.c,
       compileConfig?.args?.cpp,
       compileConfig?.args?.s,
-      compileConfig?.compiler?.c,
-      compileConfig?.compiler?.cpp,
-      compileConfig?.compiler?.ar
+      compilerIdentity?.c,
+      compilerIdentity?.cpp,
+      compilerIdentity?.ar
     ].filter(Boolean).join('\n').replace(/\\/g, '/');
 
     const paths: string[] = [];

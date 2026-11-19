@@ -4,6 +4,7 @@ import {
   type ArduinoPropertySource,
   type ArduinoPropertyValue
 } from './ArduinoPropertyResolver';
+import { reportToolLoadFailure, type ToolLoadFailure, type ToolLoadStage } from './ToolLoadFailure';
 
 export { ARDUINO_PROPERTY_EXPANSION_PASSES } from './ArduinoPropertyResolver';
 
@@ -38,6 +39,7 @@ export interface RecipeRunnerErrorDetails {
   signal?: NodeJS.Signals | null;
   stdout?: string;
   stderr?: string;
+  toolLoadFailure?: ToolLoadFailure;
 }
 
 /** A serializable error containing the recipe and process state at failure. */
@@ -404,6 +406,52 @@ function mergeEnvironment(
   return result;
 }
 
+function resetInheritedPyInstallerContext(env: NodeJS.ProcessEnv): void {
+  if (process.platform !== 'win32' || !getEnvironmentValue(env, '_PYI_ARCHIVE_FILE')) {
+    return;
+  }
+
+  // Recipes start independent tools, including executables inside cmd recipes.
+  // The bootloader consumes its public reset flag before starting its own child.
+  const resetVariable = 'PYINSTALLER_RESET_ENVIRONMENT';
+  for (const key of Object.keys(env)) {
+    if (key.toUpperCase() === resetVariable) {
+      delete env[key];
+    }
+  }
+  env[resetVariable] = '1';
+}
+
+function recipeToolLoadStage(recipeKey: string): ToolLoadStage {
+  if (/^recipe\.(?:hooks\.)?objcopy\./.test(recipeKey)) return 'objcopy';
+  if (/^recipe\.hooks\.(?:[^.]+\.)?prebuild\./.test(recipeKey)) return 'prebuild';
+  if (/^tools\..+\.upload\.pattern$/.test(recipeKey)) return 'upload';
+  return 'recipe';
+}
+
+function pythonDllLoadFailure(
+  recipeKey: string,
+  executable: string,
+  stderr: string
+): ToolLoadFailure | undefined {
+  const failedDll = /^\[PYI-\d+:ERROR\] Failed to load Python DLL '([^\r\n]+)'\.?[ \t]*\r?$/im.exec(stderr);
+  if (!failedDll) return undefined;
+
+  const loadDetail = /^\n[ \t]*LoadLibrary(?:Ex)?[AW]?:([^\r\n]*)/i.exec(
+    stderr.slice(failedDll.index + failedDll[0].length)
+  );
+  const explicitError = /\b(?:WinError|Win32 error(?: code)?)\s*[:=]?\s*(\d{1,10})\b/i.exec(loadDetail?.[1] ?? '');
+  const win32Error = Number(explicitError?.[1]);
+  return {
+    version: 1,
+    code: 'TOOL_LOAD_PYTHON_DLL',
+    stage: recipeToolLoadStage(recipeKey),
+    executable,
+    resource: failedDll[1],
+    ...(win32Error > 0 && win32Error <= 0xffff_ffff ? { win32Error } : {})
+  };
+}
+
 /** Executes dynamically discovered Arduino recipes serially and fail-fast. */
 export class RecipeRunner {
   private properties: Map<string, string>;
@@ -507,6 +555,7 @@ export class RecipeRunner {
       this.defaults.env,
       options.env
     );
+    resetInheritedPyInstallerContext(env);
     const signal = options.signal ?? this.defaults.signal;
     const stdoutTarget = options.stdout ?? this.defaults.stdout;
     const stderrTarget = options.stderr ?? this.defaults.stderr;
@@ -634,6 +683,11 @@ export class RecipeRunner {
           return;
         }
 
+        const toolLoadFailure = process.platform === 'win32' && !signal?.aborted
+          ? pythonDllLoadFailure(recipeKey, invocation.executable, stderr)
+          : undefined;
+        if (toolLoadFailure) reportToolLoadFailure(toolLoadFailure);
+
         reject(new RecipeRunnerError(
           `Recipe ${recipeKey} failed${exitCode == null ? '' : ` with exit code ${exitCode}`}`,
           {
@@ -647,7 +701,8 @@ export class RecipeRunner {
             exitCode,
             signal: closeSignal,
             stdout,
-            stderr
+            stderr,
+            ...(toolLoadFailure ? { toolLoadFailure } : {})
           }
         ));
       });

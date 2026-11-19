@@ -2,7 +2,7 @@ import fs from 'fs-extra';
 import path from 'path';
 import { Logger } from './utils/Logger';
 import { Dependency } from './DependencyAnalyzer';
-import { CompileConfigManager } from './CompileConfigManager';
+import { CompileConfigManager, quoteNinjaToolExecutable } from './CompileConfigManager';
 import { ArchiveCacheHit, getArchiveDependencyKey } from './ArchiveCloudCacheManager';
 import { commandHasIncludePath, dedupeCompileIncludePaths } from './utils/CompileIncludePaths';
 import { archiveObjectSources, withoutUserHeaderDepfileOption } from './VerifiedArchiveInputs';
@@ -135,12 +135,15 @@ export class NinjaGenerator {
   }
 
   private setupGlobalVariables(): void {
+    const command = (executable: string) => executable && path.isAbsolute(executable)
+      ? quoteNinjaToolExecutable(executable)
+      : executable;
     // 设置编译器路径变量
     this.ninjaFile.variables = {
-      cpp_compiler: this.compileConfig.compiler.cpp,
-      c_compiler: this.compileConfig.compiler.c,
-      ar: this.compileConfig.compiler.ar,
-      ld: this.compileConfig.compiler.ld,
+      cpp_compiler: command(this.compileConfig.compiler.cpp),
+      c_compiler: command(this.compileConfig.compiler.c),
+      ar: command(this.compileConfig.compiler.ar),
+      ld: command(this.compileConfig.compiler.ld),
       objcopy: this.compileConfig.compiler.objcopy,
       build_path: this.buildPath.replace(/\\/g, '/'),
       sketch_name: process.env['SKETCH_NAME'] || 'sketch',

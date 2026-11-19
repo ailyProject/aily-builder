@@ -19,6 +19,7 @@ import { sanitizeNonAsciiPaths } from './utils/ShortPath';
 import { isMacOSHost, isWindowsHost, toHostPathKey } from './utils/HostPlatform';
 import { detectWindowsGccDepfile } from './WindowsGccDepfile';
 import { RecipeExecutionResult, RecipeRunner, RecipeRunnerError } from './RecipeRunner';
+import { reportWindowsXtensaConfigFailure } from './XtensaCompilerRuntime';
 import {
   collectGeneratedSketchSources,
   GENERATED_SKETCH_DEPENDENCY_NAME,
@@ -1000,6 +1001,7 @@ export class NinjaCompilationPipeline {
           this.logger.info('Ninja build completed successfully');
           resolve({ success: true, warnings: warnings.length > 0 ? warnings : undefined });
         } else {
+          reportWindowsXtensaConfigFailure(`${stdout}\n${stderr}`, this.compileConfig.compiler);
           // this.logger.error(`Ninja build failed with exit code ${code}`);
           // if (stderr) {
           //   this.logger.error(`stderr: ${stderr}`);
