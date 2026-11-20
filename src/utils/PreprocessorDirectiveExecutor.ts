@@ -28,6 +28,12 @@ export interface PreprocessorIncludeEvent {
     location: DirectiveSourceLocation;
 }
 
+export interface PreprocessorMacroChangeEvent {
+    kind: 'define' | 'undef';
+    directiveIndex: number;
+    location: DirectiveSourceLocation;
+}
+
 export type PreprocessorExecutionDiagnosticCode =
     | 'indeterminate-condition'
     | 'malformed-conditional'
@@ -50,6 +56,8 @@ export interface DirectiveExecutionOptions {
     onInclude?: (includePath: string, event: PreprocessorIncludeEvent) => void;
     onPragmaOnce?: (location: DirectiveSourceLocation) => void;
     onDiagnostic?: (diagnostic: PreprocessorExecutionDiagnostic) => void;
+    /** Memory-only provenance of the actual definition selected by execution. */
+    onMacroChange?: (definition: MacroDefinition, event: PreprocessorMacroChangeEvent) => void;
     /** Returns undefined when the current include search context cannot decide. */
     hasInclude?: (
         includePath: string,
@@ -300,6 +308,18 @@ function parseSingleMacroName(argument: string): string | null {
     return match[0];
 }
 
+/** Parse one definition without executing its surrounding conditional branch. */
+export function macroDefinitionAt(tape: PreprocessorDirectiveTape, index: number): MacroDefinition | null {
+    const opcode = tape.opcodes[index] as PreprocessorDirectiveOpcode;
+    if (opcode === PreprocessorDirectiveOpcode.Define) return parseMacroDefinition(getPayload(tape, index),
+        (tape.flags[index] & PreprocessorDirectiveFlags.FunctionLikeMacro) !== 0);
+    if (opcode === PreprocessorDirectiveOpcode.Undef) {
+        const name = /^([A-Za-z_][A-Za-z0-9_]*)(?=[^\w$\\\u0080-\uFFFF]|$)/.exec(getPayload(tape, index).trim())?.[1];
+        return name ? { name, isDefined: false } : null;
+    }
+    return null;
+}
+
 function currentActive(frames: readonly ConditionalFrame[]): boolean {
     return frames.length === 0 ? true : frames[frames.length - 1].currentActive;
 }
@@ -547,6 +567,7 @@ export function executeDirectiveTape(
                 requireFallback('malformed-define', 'Unable to parse active #define', index);
             } else {
                 defines.set(macro.name, macro);
+                options.onMacroChange?.(macro, { kind: 'define', directiveIndex: index, location: getLocation(tape, index) });
             }
             continue;
         }
@@ -563,7 +584,9 @@ export function executeDirectiveTape(
                 if (payload.slice(macroName.length).trim()) {
                     report('extra-undef-tokens', 'Extra tokens after #undef macro name are ignored', index, 'warning');
                 }
-                defines.set(macroName, { name: macroName, isDefined: false });
+                const macro = { name: macroName, isDefined: false };
+                defines.set(macroName, macro);
+                options.onMacroChange?.(macro, { kind: 'undef', directiveIndex: index, location: getLocation(tape, index) });
             }
             continue;
         }

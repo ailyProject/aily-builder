@@ -1,8 +1,11 @@
 import { createHash } from 'crypto';
-import fs from 'fs-extra';
 import path from 'path';
 import type { Dependency } from './DependencyAnalyzer';
 import { toHostPathKey } from './utils/HostPlatform';
+import { assertLibraryLayoutInputsCurrent, libraryLayoutForSourceRoot,
+  type LibraryLayout, type LibraryLayoutInputs, type LibraryDirectoryShape } from './LibraryLayout';
+import type { LibraryHeaderInputs } from './LibraryIndexCache';
+import { PreprocessInputChangedError } from './DirectiveTapeSnapshot';
 
 export type LibrarySource = 'platform' | 'additional' | 'project';
 
@@ -12,6 +15,7 @@ interface LibraryCandidate {
   name: string;
   architectures: string[];
   source: LibrarySource;
+  layout: LibraryLayout;
 }
 
 const sourcePriority: Record<LibrarySource, number> = { platform: 0, additional: 1, project: 2 };
@@ -35,7 +39,10 @@ function compareText(left: string, right: string): number {
 
 export class LibrarySelection {
   private readonly candidates = new Map<string, LibraryCandidate[]>();
-  private readonly sourceDirectories = new Map<string, Dependency>();
+  private readonly ownerRoots = new Map<string, { dependency: Dependency; layout: LibraryLayout }>();
+  private readonly layouts = new Map<Dependency, LibraryLayout>();
+  private readonly metadataInputs = new Map<string, [string, string | null]>();
+  private readonly directoryShapes = new Map<string, LibraryDirectoryShape>();
   private readonly owners = new Map<string, Dependency | undefined>();
   readonly headers = new Map<string, Dependency>();
   fingerprint = '';
@@ -43,22 +50,44 @@ export class LibrarySelection {
   constructor(private readonly architecture: string) {}
 
   async add(directory: string, source: LibrarySource, headers: string[]): Promise<void> {
-    const libraryDirectory = path.basename(directory) === 'src' ? path.dirname(directory) : directory;
+    await this.addLayout(await libraryLayoutForSourceRoot(directory), source, headers);
+  }
+
+  async addLayout(layout: LibraryLayout, source: LibrarySource, headers: string[]): Promise<void> {
+    const directory = path.resolve(layout.sourceRoot);
+    layout = { ...layout, ownerRoot: path.resolve(layout.ownerRoot), sourceRoot: directory,
+      includeRoots: layout.includeRoots.map(root => path.resolve(root)),
+      metadata: layout.metadata ? { ...layout.metadata, architectures: [...layout.metadata.architectures] } : undefined,
+      metadataInputs: layout.metadataInputs?.map(([file, identity]) => [file, identity]),
+      directoryShapes: layout.directoryShapes?.map(observation => ({ ...observation })) };
+    this.observeLayoutInputs({ metadataInputs: layout.metadataInputs || [], directoryShapes: layout.directoryShapes || [] });
+    const libraryDirectory = layout.metadata?.root || (toHostPathKey(path.basename(directory)) === toHostPathKey('src') ? path.dirname(directory) : directory);
     const folder = path.basename(libraryDirectory);
-    const properties = await fs.readFile(path.join(libraryDirectory, 'library.properties'), 'utf8').catch(error => {
-      if (error.code !== 'ENOENT') throw error;
-      return '';
-    });
-    const name = properties.match(/^[ \t\uFEFF]*name[ \t]*=([^\r\n]*)/m)?.[1].trim().replace(/\s+/g, '_') || '';
-    const architectures = (properties.match(/^[ \t\uFEFF]*architectures[ \t]*=([^\r\n]*)/m)?.[1] || '')
-      .split(',').map(value => value.trim().toLowerCase()).filter(Boolean);
+    const name = layout.metadata?.name || '';
+    const architectures = layout.metadata?.architectures || [];
     const dependency: Dependency = { name: folder, path: directory, type: 'library', includes: [], others: [] };
-    const candidate = { dependency, folder, name, architectures, source };
-    this.sourceDirectories.set(libraryPathKey(directory), dependency);
+    const candidate = { dependency, folder, name, architectures, source, layout };
+    const ownerKey = libraryPathKey(layout.ownerRoot), previous = this.ownerRoots.get(ownerKey);
+    if (!previous || previous.layout.kind !== 'explicit' || layout.kind === 'explicit') this.ownerRoots.set(ownerKey, { dependency, layout });
+    this.layouts.set(dependency, layout);
+    this.owners.clear();
     for (const header of [...headers, `__LIB_${folder}`]) {
       const candidates = this.candidates.get(header) || [];
       candidates.push(candidate);
       this.candidates.set(header, candidates);
+    }
+  }
+
+  observeLayoutInputs(inputs: LibraryLayoutInputs): void {
+    for (const [file, identity] of inputs.metadataInputs) {
+      const exact = path.resolve(file), fileKey = libraryPathKey(exact), previous = this.metadataInputs.get(fileKey);
+      if (previous && previous[1] !== identity) throw new PreprocessInputChangedError(exact, 'layout-input-changed');
+      this.metadataInputs.set(fileKey, [exact, identity]);
+    }
+    for (const observation of inputs.directoryShapes) {
+      const shapeKey = libraryPathKey(observation.directory), previous = this.directoryShapes.get(shapeKey);
+      if (previous && previous.fingerprint !== observation.fingerprint) throw new PreprocessInputChangedError(observation.directory, 'layout-shape-changed');
+      this.directoryShapes.set(shapeKey, { ...observation });
     }
   }
 
@@ -77,9 +106,21 @@ export class LibrarySelection {
       this.headers.set(header, ranked[0].candidate.dependency);
       context.push([header, ranked.map(({ candidate }) => [
         libraryPathKey(candidate.dependency.path), candidate.source, candidate.folder, candidate.name, candidate.architectures,
+        candidate.layout.kind, libraryPathKey(candidate.layout.ownerRoot), candidate.layout.includeRoots.map(libraryPathKey),
+        candidate.layout.metadata?.propertiesHash,
       ])]);
     }
-    this.fingerprint = createHash('sha256').update(JSON.stringify([1, this.architecture, context])).digest('hex');
+    this.fingerprint = createHash('sha256').update(JSON.stringify([2, this.architecture, context, this.inputObservations()])).digest('hex');
+  }
+
+  inputObservations(): LibraryHeaderInputs {
+    return [...this.metadataInputs.values()].map(([file, identity]) => [file, identity]);
+  }
+
+  layoutFor(dependency: Dependency): LibraryLayout | undefined { return this.layouts.get(dependency); }
+
+  assertLayoutCurrent(): void {
+    assertLibraryLayoutInputsCurrent({ metadataInputs: this.inputObservations(), directoryShapes: [...this.directoryShapes.values()] });
   }
 
   owner(file: string): Dependency | undefined {
@@ -93,7 +134,7 @@ export class LibrarySelection {
         break;
       }
       visited.push(key);
-      owner = this.sourceDirectories.get(key);
+      owner = this.ownerRoots.get(key)?.dependency;
       if (owner) break;
       const parent = path.dirname(directory);
       if (parent === directory) break;

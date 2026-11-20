@@ -6,6 +6,7 @@ import { isWindowsHost } from './utils/HostPlatform';
 import { isPinnedArduinoToolVersion, stripToolVersion, xpackToolAlias } from './ArduinoToolResolver';
 import { Logger } from './utils/Logger';
 import { escapeQuotedDefines } from './utils/escapeQuotes';
+import { requireWindowsXtensaConfig } from './XtensaCompilerRuntime';
 
 export class CompileConfigManager {
   private logger: Logger;
@@ -32,20 +33,29 @@ export class CompileConfigManager {
         return isPinnedArduinoToolVersion(toolVersions[name] || toolVersions[xpackToolAlias(name)]);
       })
       .map(([, directory]) => directory as string);
-    const outputTool = (recipe: string) => {
-      const executable = extractCommandExecutable(recipe);
+    const resolvePinnedExecutable = (executable: string) => {
+      if (!path.isAbsolute(executable)) return undefined;
       const pinned = pinnedToolPaths.some(directory => {
         const relative = path.relative(directory, executable);
-        return path.isAbsolute(executable) && relative && relative !== '..'
+        return relative && relative !== '..'
           && !relative.startsWith('..' + path.sep) && !path.isAbsolute(relative);
       });
-      if (!pinned) return extractToolName(recipe);
+      if (!pinned) return undefined;
       const candidates = isWindowsHost() && !path.extname(executable) ? [executable, executable + '.exe'] : [executable];
       const installed = candidates.find(candidate => statSync(candidate, { throwIfNoEntry: false })?.isFile());
       if (!installed) {
         throw new Error(`Required Arduino tool executable was not found: ${executable}`);
       }
-      return `"${installed.replace(/\\/g, '/').replace(/\$/g, '$$$$')}"`;
+      return installed.replace(/\\/g, '/');
+    };
+    const outputTool = (recipe: string) => {
+      const installed = resolvePinnedExecutable(extractCommandExecutable(recipe));
+      return installed ? quoteNinjaToolExecutable(installed) : extractToolName(recipe);
+    };
+    const compilerTool = (recipe: string, fallback: string) => {
+      if (!isWindowsHost()) return fallback;
+      const executable = resolvePinnedExecutable(extractCommandExecutable(recipe));
+      return executable || fallback;
     };
 
     let flag_eep, flag_hex, bin, flag_bin, zip, flag_zip, ld, flag_ld, objcopy;
@@ -96,16 +106,31 @@ export class CompileConfigManager {
     // console.log('recipe.objcopy.bin.pattern:', arduinoConfig.platform['recipe.objcopy.bin.pattern']);
     // console.log('recipe.size.pattern:', arduinoConfig.platform['recipe.size.pattern']);
 
+    const declaredCompiler = {
+      c: arduinoConfig.platform['compiler.c.cmd'],
+      cpp: arduinoConfig.platform['compiler.cpp.cmd'],
+      ar: arduinoConfig.platform['compiler.ar.cmd']
+    };
+    const compiler = {
+      c: compilerTool(arduinoConfig.platform['recipe.c.o.pattern'], declaredCompiler.c),
+      cpp: compilerTool(arduinoConfig.platform['recipe.cpp.o.pattern'], declaredCompiler.cpp),
+      ar: compilerTool(arduinoConfig.platform['recipe.ar.pattern'], declaredCompiler.ar),
+      ld: compilerTool(arduinoConfig.platform['recipe.c.combine.pattern'], ld),
+      bin,
+      objcopy,
+      size: arduinoConfig.platform['compiler.size.cmd']
+    };
+    requireWindowsXtensaConfig(compiler);
+
     let compileConfig = {
       // path: process.env['COMPILER_PATH'],
-      compiler: {
-        c: arduinoConfig.platform['compiler.c.cmd'],
-        cpp: arduinoConfig.platform['compiler.cpp.cmd'],
-        ar: arduinoConfig.platform['compiler.ar.cmd'],
-        ld: ld,
-        bin: bin,
-        objcopy: objcopy,
-        size: arduinoConfig.platform['compiler.size.cmd']
+      compiler,
+      // Keep cache labels stable for the same tool. Binary and version
+      // probes still measure the exact executable used for the build.
+      compilerIdentity: {
+        c: compilerIdentity(compiler.c, declaredCompiler.c),
+        cpp: compilerIdentity(compiler.cpp, declaredCompiler.cpp),
+        ar: compilerIdentity(compiler.ar, declaredCompiler.ar)
       },
       args: {
         c: escapeQuotedDefines(removeCompilerPath(arduinoConfig.platform['recipe.c.o.pattern'])),
@@ -133,4 +158,14 @@ export class CompileConfigManager {
     arduinoConfig.platform['recipe.c.combine.pattern']
     return compileConfig
   }
+}
+
+function compilerIdentity(executable: string, declared: string): string {
+  if (!declared || !executable || !path.isAbsolute(executable) || !isWindowsHost()) return executable;
+  const name = (value: string) => path.basename(value).toLowerCase().replace(/\.exe$/, '');
+  return name(executable) === name(declared) ? declared : executable;
+}
+
+export function quoteNinjaToolExecutable(executable: string): string {
+  return `"${executable.replace(/\\/g, '/').replace(/\$/g, '$$$$')}"`;
 }

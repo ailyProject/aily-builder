@@ -385,6 +385,14 @@ function appendRange(source: SourceView, units: number[], start: number, end: nu
     for (let index = start; index < end; index++) units.push(source.at(index));
 }
 
+function isDiagnosticDirective(text: string): boolean {
+    const start = skipSpaces(text, 0);
+    let end = start;
+    while (isIdentifierContinue(text.charCodeAt(end))) end++;
+    const keyword = text.slice(start, end);
+    return keyword === 'error' || keyword === 'warning';
+}
+
 function collectDirective(
     source: SourceView,
     start: number,
@@ -522,7 +530,9 @@ function collectDirective(
             }
             currentLine = skipped.nextLine;
             cursor = skipped.nextIndex;
-            if (!skipped.terminated) {
+            // Diagnostic directives carry prose and add no dependency edges.
+            // The compiler still handles active #error and #warning directives.
+            if (!skipped.terminated && !isDiagnosticDirective(source.decode(units))) {
                 builder.diagnostic(
                     'unterminated-string',
                     'Unterminated string or character literal in preprocessing directive',
@@ -759,7 +769,7 @@ function recordDirective(
             const directiveIndexBefore = builder.opcodes.length;
             addConditionalAlternative(builder, PreprocessorDirectiveOpcode.Else, null, line, sourceOffset);
             if (operand.length > 0) {
-                builder.diagnostic('malformed-directive', '#else does not accept an operand', line, sourceOffset, directiveIndexBefore);
+                builder.diagnostic('malformed-directive', 'Extra tokens at end of #else', line, sourceOffset, directiveIndexBefore, 'warning');
             }
             return;
         }
@@ -767,7 +777,7 @@ function recordDirective(
             const directiveIndexBefore = builder.opcodes.length;
             addEndif(builder, line, sourceOffset);
             if (operand.length > 0) {
-                builder.diagnostic('malformed-directive', '#endif does not accept an operand', line, sourceOffset, directiveIndexBefore);
+                builder.diagnostic('malformed-directive', 'Extra tokens at end of #endif', line, sourceOffset, directiveIndexBefore, 'warning');
             }
             return;
         }

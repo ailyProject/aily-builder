@@ -97,3 +97,32 @@ test('a pinned Windows output recipe resolves an omitted .exe only in its select
   assert.equal(compiler.bin, `"${executable}.exe"`);
   assert.equal(compiler.objcopy, `"${executable}.exe"`);
 });
+
+test('Windows compile, archive and link recipes use their selected versioned executables', { skip: process.platform !== 'win32' }, t => {
+  const { directory } = fixture(t);
+  const pinned = directory('compiler@14.2.0');
+  const bin = directory('compiler@14.2.0', 'bin');
+  for (const tool of ['target-gcc', 'target-g++', 'target-gcc-ar']) {
+    fs.writeFileSync(`${bin}/${tool}.exe`, '');
+  }
+  const config = { platform: {
+    'runtime.tools.compiler.path': pinned,
+    'compiler.c.cmd': 'target-gcc',
+    'compiler.cpp.cmd': 'target-g++',
+    'compiler.ar.cmd': 'target-gcc-ar',
+    'recipe.c.o.pattern': `"${bin}/target-gcc" -c`,
+    'recipe.cpp.o.pattern': `"${bin}/target-g++" -c`,
+    'recipe.ar.pattern': `"${bin}/target-gcc-ar" rcs`,
+    'recipe.c.combine.pattern': `"${bin}/target-g++" -o firmware.elf`
+  } };
+  const manager = new CompileConfigManager(null);
+  const { compiler, compilerIdentity } = manager.parseCompileConfig(config, { compiler: '14.2.0' });
+  assert.deepEqual([compiler.c, compiler.cpp, compiler.ar, compiler.ld], [
+    `${bin}/target-gcc.exe`, `${bin}/target-g++.exe`, `${bin}/target-gcc-ar.exe`, `${bin}/target-g++.exe`
+  ]);
+  assert.deepEqual(compilerIdentity, { c: 'target-gcc', cpp: 'target-g++', ar: 'target-gcc-ar' });
+  const unpinned = manager.parseCompileConfig(config).compiler;
+  assert.deepEqual([unpinned.c, unpinned.cpp, unpinned.ar, unpinned.ld], [
+    'target-gcc', 'target-g++', 'target-gcc-ar', 'target-g++'
+  ]);
+});

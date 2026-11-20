@@ -20,6 +20,14 @@ class QuietLogger extends Logger {
   error(): void {}
 }
 
+function expandNinjaVariables(value: string, lines: string[]): string {
+  const variables = new Map(lines.flatMap(line => {
+    const match = /^(\w+) = (.*)$/.exec(line);
+    return match ? [[match[1], match[2]] as [string, string]] : [];
+  }));
+  return value.replace(/\$(\w+)/g, (original, name) => variables.get(name) ?? original);
+}
+
 async function fixture(t: TestContext) {
   const root = await fs.mkdtemp(path.join(os.tmpdir(), 'aily-library-entry-'));
   const sketch = path.join(root, 'Sketch', 'Sketch.ino');
@@ -214,7 +222,10 @@ test('compiler dependency probes inject the same include sequence that Ninja use
       args: { cpp: recipe, c: recipe, s: recipe, ld: '%OBJECT_FILE_PATHS% -o "%OBJECT_FILE_PATH%"' },
     },
   });
-  assert.match(await fs.readFile(ninja, 'utf8'), /"-I\$sketch_dir_path" "-I\$Radio_path"/);
+  const ninjaLines = (await fs.readFile(ninja, 'utf8')).split(/\r?\n/);
+  const compileLine = ninjaLines.find(line => line.includes('command = $cpp_compiler'))!;
+  const includePaths = [...expandNinjaVariables(compileLine, ninjaLines).matchAll(/"-I([^"]+)"/g)].map(match => match[1]);
+  assert.deepEqual(includePaths, [path.dirname(sketch), platformLibrary].map(value => value.replace(/\\/g, '/')));
 
   const withPhysicalInclude = await resolveArduinoSketchLibraries({
     'recipe.cpp.o.pattern': compiler.replace('%INCLUDE_PATHS%', '@recipe.rsp %INCLUDE_PATHS%'),
@@ -393,17 +404,28 @@ test('cold and cached library indexes and archives preserve Ninja input ordering
       }]]) : undefined,
     });
     const lines = (await fs.readFile(file, 'utf8')).split(/\r?\n/);
+    const archive = lines.find(line => line.startsWith('build Display.a: archive '))!;
+    const objects = new Map(lines.flatMap(line => {
+      const match = /^build (\S+): \S+ (\S+)/.exec(line);
+      return match ? [[match[1], expandNinjaVariables(match[2], lines)] as [string, string]] : [];
+    }));
+    const archiveSources = archive.slice('build Display.a: archive '.length).split(/\s+/)
+      .map(object => path.relative(sourceRoot, objects.get(object)!).replace(/\\/g, '/'));
+    const compileLine = lines.find(line => line.includes('command = $cpp_compiler'))!;
     return {
-      archive: lines.find(line => line.startsWith('build Display.a: archive ')),
+      archive,
+      archiveSources,
       link: lines.find(line => /^build [^ ]+\.elf: link /.test(line)),
-      includeOrder: lines.find(line => line.includes('"-I$Display_path" "-I$Zeta_path" "-I$Alpha_path"')),
+      includeOrder: [...expandNinjaVariables(compileLine, lines).matchAll(/"-I([^"]+)"/g)].map(match => match[1]),
     };
   };
   const cold = await readGraph('cold');
   assert.ok(f.cacheReads.length > 0 && f.cacheReads.every(read => !read.hit));
-  assert.match(cold.archive, /Mono\.cpp\.o .*Tri\.cpp\.o$/);
+  assert.deepEqual(cold.archiveSources, ['panel/Mono.cpp', 'panel3c/Tri.cpp']);
   assert.match(cold.link, /Display\.a Zeta\.a Alpha\.a/);
-  assert.ok(cold.includeOrder);
+  assert.deepEqual(cold.includeOrder, [path.dirname(process.env.SKETCH_PATH!), sourceRoot,
+    path.join(process.env.LIBRARIES_PATH!, 'Zeta/src'), path.join(process.env.LIBRARIES_PATH!, 'Alpha/src')]
+    .map(value => value.replace(/\\/g, '/')));
   const warm = await readGraph('warm');
   assert.ok(f.cacheReads.length > 0 && f.cacheReads.every(read => read.hit));
   assert.deepEqual(warm, cold);

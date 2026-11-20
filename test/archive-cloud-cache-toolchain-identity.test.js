@@ -73,6 +73,32 @@ test('archive cache binary identity changes when executable content changes', as
   assert.equal(first.size, second.size);
 });
 
+test('an absolute Windows compiler path preserves the declared cache name and fingerprints that executable', {
+  skip: process.platform !== 'win32'
+}, async t => {
+  const cacheDir = fs.mkdtempSync(path.join(os.tmpdir(), 'aily-builder-archive-cache-'));
+  t.after(() => fs.rmSync(cacheDir, { recursive: true, force: true }));
+
+  const absolute = path.join(cacheDir, 'selected compiler', 'target-gcc.exe');
+  fs.mkdirSync(path.dirname(absolute));
+  fs.writeFileSync(absolute, 'selected compiler payload');
+  const platform = { 'runtime.tools.compiler.path': path.dirname(absolute) };
+  const config = {
+    compiler: { c: absolute },
+    compilerIdentity: { c: 'target-gcc' }
+  };
+  const manager = new ArchiveCloudCacheManager(new Logger());
+  const signature = await manager.createToolchainSignature(config);
+  const executable = fs.readFileSync(absolute);
+
+  assert.equal(signature.c, 'target-gcc');
+  assert.deepEqual(signature.cBinary, {
+    sha256: crypto.createHash('sha256').update(executable).digest('hex'),
+    size: executable.length
+  });
+  assert.deepEqual(manager.collectCompileRelevantToolPackages(platform, config), []);
+});
+
 test('archive cache artifacts are isolated from build outputs', async (t) => {
   const cacheDir = fs.mkdtempSync(path.join(os.tmpdir(), 'aily-builder-archive-cache-'));
   t.after(() => fs.rmSync(cacheDir, { recursive: true, force: true }));
