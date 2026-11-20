@@ -35,6 +35,7 @@ export interface AnalysisOptions {
     onInclude?: (includePath: string, event?: PreprocessorIncludeEvent) => void;
     onPragmaOnce?: () => void;
     onDiagnostic?: (diagnostic: AnalysisDiagnostic) => void;
+    onMacroChange?: DirectiveExecutionOptions['onMacroChange'];
     hasInclude?: DirectiveExecutionOptions['hasInclude'];
     /** Reuse a macro-independent scan result in another translation-unit state. */
     tape?: PreprocessorDirectiveTape;
@@ -79,6 +80,7 @@ export function analyzeDirectiveTapeWithDefines(
         onInclude: (includePath, event) => options.onInclude?.(includePath, event),
         onPragmaOnce: () => options.onPragmaOnce?.(),
         onDiagnostic: diagnostic => options.onDiagnostic?.(diagnostic),
+        onMacroChange: options.onMacroChange,
         hasInclude: options.hasInclude
     });
     for (const diagnostic of tape.diagnostics) {

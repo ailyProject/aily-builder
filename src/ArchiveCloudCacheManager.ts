@@ -18,6 +18,8 @@ import { collectPackageIdentitiesFromPaths, extractPackageIdentityFromPath } fro
 import { getAilyBuilderCacheDirectory } from './utils/CacheDirectory';
 import { LIBRARY_FINGERPRINT_FILE_GLOBS } from './utils/LibraryFilePatterns';
 import { captureVerifiedArchiveInputs, usesVerifiedLocalArchiveCache, VerifiedArchiveInputs, VerifiedInputMemo } from './VerifiedArchiveInputs';
+import { DEPENDENCY_ANALYZER_VERSION, headerInputsCurrent, LIBRARY_HEADER_INPUTS_SCHEME } from './LibraryIndexCache';
+import { fileStatIdentity } from './FileObservation';
 
 const CACHE_SCHEMA = 'aily.archive-cache.v2';
 const INPUT_SCHEMA = 'aily.archive-build-inputs.v2';
@@ -84,6 +86,7 @@ interface ArchiveBuildInputs {
   };
   builder: {
     keyVersion: string;
+    dependencyAnalysis?: string;
   };
   board: Record<string, any>;
   toolchain: Record<string, any>;
@@ -582,6 +585,11 @@ export class ArchiveCloudCacheManager {
     const platform = compileConfig?.arduino?.platform || {};
     const verified = usesVerifiedLocalArchiveCache() && this.verifiedInputs;
     const compileArgs = this.createCompileSignature(dependencies, compileConfig);
+    const dependency = target.dependency;
+    const observedInputs = target.dependencyType === 'library' && dependency.headerInputsScheme === LIBRARY_HEADER_INPUTS_SCHEME
+      ? dependency.headerInputs : undefined;
+    const outsideRoot = (observedInputs || []).filter(([file, identity]) => identity !== null
+      && !this.isPathInside(file, dependency.path)).map(([file]) => file);
     // The verified envelope already includes every response, library input
     // and include directory. Add the ordered archive source list separately
     // so a change in which translation units are linked also changes the key.
@@ -589,9 +597,9 @@ export class ArchiveCloudCacheManager {
       ? this.sha256String(this.canonicalJson((target.dependency.includes || []).map(file =>
         verified.pathIdentity(file)
       )))
-      : await this.hashFiles(await this.collectSourceFiles(target.dependency), target.dependency.path || '');
+      : await this.hashFiles([...await this.collectSourceFiles(dependency), ...outsideRoot], dependency.path || '');
 
-    return {
+    const inputs: ArchiveBuildInputs = {
       schema: INPUT_SCHEMA,
       target: {
         kind: target.dependencyType,
@@ -599,7 +607,8 @@ export class ArchiveCloudCacheManager {
         archiveName: target.archiveName
       },
       builder: {
-        keyVersion: this.getKeyVersion()
+        keyVersion: this.getKeyVersion(),
+        ...(target.dependencyType === 'library' ? { dependencyAnalysis: DEPENDENCY_ANALYZER_VERSION } : {})
       },
       board: this.createBoardSignature(platform),
       toolchain: await this.createToolchainSignature(compileConfig),
@@ -617,6 +626,8 @@ export class ArchiveCloudCacheManager {
         })
       }
     };
+    if (!headerInputsCurrent(observedInputs)) throw new Error('Library dependency inputs changed before archive lookup');
+    return inputs;
   }
 
   private getKeyVersion(): string {
@@ -808,6 +819,7 @@ export class ArchiveCloudCacheManager {
 
   private async createToolchainSignature(compileConfig: any): Promise<Record<string, any>> {
     const compiler = compileConfig?.compiler || {};
+    const identity = compileConfig?.compilerIdentity || compiler;
     const cppCommand = compiler.cpp || '';
     const cCommand = compiler.c || '';
     const arCommand = compiler.ar || '';
@@ -822,9 +834,9 @@ export class ArchiveCloudCacheManager {
         platform: process.platform,
         arch: process.arch
       },
-      c: this.getCommandIdentity(cCommand),
-      cpp: this.getCommandIdentity(cppCommand),
-      ar: this.getCommandIdentity(arCommand),
+      c: this.getCommandIdentity(identity.c || cCommand),
+      cpp: this.getCommandIdentity(identity.cpp || cppCommand),
+      ar: this.getCommandIdentity(identity.ar || arCommand),
       cBinary,
       cppBinary,
       arBinary,
@@ -868,13 +880,14 @@ export class ArchiveCloudCacheManager {
   }
 
   private collectCompileRelevantToolPackages(platform: Record<string, any>, compileConfig: any): string[] {
+    const compilerIdentity = compileConfig?.compilerIdentity || compileConfig?.compiler;
     const compileText = [
       compileConfig?.args?.c,
       compileConfig?.args?.cpp,
       compileConfig?.args?.s,
-      compileConfig?.compiler?.c,
-      compileConfig?.compiler?.cpp,
-      compileConfig?.compiler?.ar
+      compilerIdentity?.c,
+      compilerIdentity?.cpp,
+      compilerIdentity?.ar
     ].filter(Boolean).join('\n').replace(/\\/g, '/');
 
     const paths: string[] = [];
@@ -1179,14 +1192,15 @@ export class ArchiveCloudCacheManager {
   private async hashFile(filePath: string): Promise<string> {
     const resolved = path.resolve(filePath);
     const stat = await fs.stat(resolved);
-    const cached = this.fileHashCache.get(`${resolved}:${stat.size}:${stat.mtimeMs}`);
+    const cacheKey = `${resolved}:${fileStatIdentity(stat)}`;
+    const cached = this.fileHashCache.get(cacheKey);
     if (cached) {
       return cached;
     }
 
     const buffer = await fs.readFile(resolved);
     const hash = this.sha256Buffer(buffer);
-    this.fileHashCache.set(`${resolved}:${stat.size}:${stat.mtimeMs}`, hash);
+    this.fileHashCache.set(cacheKey, hash);
     return hash;
   }
 

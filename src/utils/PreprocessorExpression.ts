@@ -133,7 +133,7 @@ function parseMacroInvocation(text: string, openParenIndex: number): MacroInvoca
 }
 
 export class MacroExpander {
-    constructor(private defines: Map<string, MacroDefinition>) {}
+    constructor(private defines: Map<string, MacroDefinition>, private definedOperators = false) {}
 
     expand(text: string): string {
         return this.expandInternal(text, new Set<string>(), 0);
@@ -166,6 +166,14 @@ export class MacroExpander {
             }
 
             const name = text.slice(i, identifierEnd);
+            if (this.definedOperators && name === 'defined') {
+                const operand = this.definedOperand(text, identifierEnd);
+                if (operand) {
+                    result += operand.value;
+                    i = operand.endIndex;
+                    continue;
+                }
+            }
             const macro = this.defines.get(name);
             if (!macro?.isDefined || disabled.has(name)) {
                 result += name;
@@ -258,6 +266,11 @@ export class MacroExpander {
         if (!trailingIdentifier) return { text: expanded, endIndex: restIndex };
 
         const functionName = trailingIdentifier[1];
+        const prefix = expanded.slice(0, trailingIdentifier.index);
+        if (this.definedOperators && functionName === 'defined') {
+            const operand = this.definedOperand(originalText, restIndex);
+            if (operand) return { text: prefix + operand.value, endIndex: operand.endIndex };
+        }
         const functionMacro = this.defines.get(functionName);
         if (!functionMacro?.isDefined || !functionMacro.functionLike || disabled.has(functionName)) {
             return { text: expanded, endIndex: restIndex };
@@ -270,11 +283,22 @@ export class MacroExpander {
         const invocation = parseMacroInvocation(originalText, openParenIndex);
         if (!invocation) return { text: expanded, endIndex: restIndex };
 
-        const prefix = expanded.slice(0, trailingIdentifier.index);
         const call = `${functionName}${originalText.slice(openParenIndex, invocation.endIndex)}`;
         return {
             text: prefix + this.expandInternal(call, disabled, depth + 1),
             endIndex: invocation.endIndex
+        };
+    }
+
+    /** GCC platform headers can generate defined through macro replacement or
+     * token pasting. Recognize it during conditional rescanning so its operand
+     * stays an identifier, including when replacement ends at the operator. */
+    private definedOperand(text: string, start: number): { value: string; endIndex: number } | undefined {
+        const match = /^\s*(?:\(\s*([A-Za-z_][A-Za-z0-9_]*)\s*\)|([A-Za-z_][A-Za-z0-9_]*))/.exec(text.slice(start));
+        if (!match) return undefined;
+        return {
+            value: this.defines.get(match[1] || match[2])?.isDefined === true ? '1' : '0',
+            endIndex: start + match[0].length
         };
     }
 
@@ -672,8 +696,6 @@ function evaluateNode(node: ExpressionNode): PPInteger | null {
 }
 
 export class ExpressionEvaluator {
-    private definedRegex = /\bdefined\b\s*\(\s*([A-Za-z_][A-Za-z0-9_]*)\s*\)|\bdefined\b\s+([A-Za-z_][A-Za-z0-9_]*)/g;
-
     constructor(private definedMacros: Map<string, MacroDefinition>) {}
 
     evaluate(conditionText: string): boolean {
@@ -686,17 +708,18 @@ export class ExpressionEvaluator {
             return { kind: 'indeterminate', reason: 'empty preprocessor expression' };
         }
 
-        let expanded = stripDirectiveComments(conditionText).replace(this.definedRegex, (_match, first, second) => {
-            return this.hasMacro(first || second) ? '1' : '0';
-        });
-        expanded = new MacroExpander(this.definedMacros).expand(expanded);
+        const expanded = new MacroExpander(this.definedMacros, true).expand(stripDirectiveComments(conditionText));
 
         if (process.env.DEBUG_EXPR) {
             console.log(`[DEBUG] condition: ${conditionText}`);
             console.log(`[DEBUG] expanded: ${expanded}`);
         }
 
-        const tree = new Parser(new Lexer(expanded).tokenize()).parse();
+        const tokens = new Lexer(expanded).tokenize();
+        // A defined operator left after conditional rescanning had no valid
+        // identifier operand. It must not become an ordinary unknown name = 0.
+        const tree = tokens.some(token => token.type === 'identifier' && token.text === 'defined')
+            ? null : new Parser(tokens).parse();
         if (!tree) {
             return {
                 kind: 'indeterminate',
