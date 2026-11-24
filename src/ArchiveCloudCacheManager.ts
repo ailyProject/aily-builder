@@ -390,13 +390,17 @@ export class ArchiveCloudCacheManager {
       return null;
     }
 
-    if (!await this.verifyLocalEntry(entryDir, key, target)) {
+    const artifact = await this.verifyLocalEntry(entryDir, key, target);
+    if (!artifact) {
       this.logger.warn(`[ARCHIVE_CLOUD_CACHE] local verify failed ${target.archiveName} ${key}`);
       return null;
     }
 
     await this.touchEntryAccess(entryDir);
-    await this.copyArchive(archivePath, buildArchivePath);
+    // Replacing an identical link input changes its mtime and forces a relink.
+    if (!await this.matchesMaterializedArchive(buildArchivePath, artifact)) {
+      await this.copyArchive(archivePath, buildArchivePath);
+    }
     this.logger.debug(`[ARCHIVE_CLOUD_CACHE] local hit ${target.archiveName} ${key}`);
     return {
       dependencyName: target.dependencyName,
@@ -967,29 +971,40 @@ export class ArchiveCloudCacheManager {
     return value.replace(/\\/g, '/');
   }
 
-  private async verifyLocalEntry(entryDir: string, key: string, target: ArchiveTarget): Promise<boolean> {
+  private async verifyLocalEntry(entryDir: string, key: string, target: ArchiveTarget): Promise<ArchiveManifest['artifact'] | null> {
     try {
       const manifestPath = path.join(entryDir, 'manifest.json');
       const archivePath = path.join(entryDir, target.archiveName);
       const manifest = await fs.readJson(manifestPath) as ArchiveManifest;
 
       if (!this.isManifestUsable(manifest, key, target)) {
-        return false;
+        return null;
       }
       if (usesVerifiedLocalArchiveCache() &&
         (manifest.inputs?.file !== 'inputs.json' || manifest.inputs.sha256 !== key ||
           await this.hashFile(path.join(entryDir, 'inputs.json')) !== key)) {
-        return false;
+        return null;
       }
 
       const stat = await fs.stat(archivePath);
       if (stat.size !== manifest.artifact.size) {
-        return false;
+        return null;
       }
 
       const artifactHash = await this.hashFile(archivePath);
-      return artifactHash === manifest.artifact.sha256;
-    } catch (error) {
+      return artifactHash === manifest.artifact.sha256 ? manifest.artifact : null;
+    } catch {
+      return null;
+    }
+  }
+
+  private async matchesMaterializedArchive(filePath: string, artifact: ArchiveManifest['artifact']): Promise<boolean> {
+    try {
+      const before = await fs.lstat(filePath);
+      if (!before.isFile() || before.nlink !== 1 || before.size !== artifact.size) return false;
+      if (await this.hashFile(filePath) !== artifact.sha256) return false;
+      return fileStatIdentity(await fs.lstat(filePath)) === fileStatIdentity(before);
+    } catch {
       return false;
     }
   }
