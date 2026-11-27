@@ -154,12 +154,29 @@ test('verified archives move across frozen roots and reject changed or uncovered
 
   const unmapped = await prepare('physical', '#define SPI_MODE 0', '#define PANEL_IO 1', '', null);
   assert.deepEqual(unmapped.verified.compilerPathMapFlags, []);
-  await fs.writeFile(path.join(unmapped.build, 'Panel.a'), 'physical-panel-archive');
+  const physicalArchive = path.join(unmapped.build, 'Panel.a');
+  const verifiedArchive = 'physical-panel-archive';
+  await fs.writeFile(physicalArchive, verifiedArchive);
   await unmapped.manager.storeArchives(unmapped.dependencies, unmapped.compileConfig, unmapped.hits, new Map([
     [key, [...unmapped.sources, unmapped.spiPath, unmapped.generatedPath]]
   ]));
+  const stableTime = new Date('2020-01-01T00:00:00Z');
+  await fs.utimes(physicalArchive, stableTime, stableTime);
+  const originalArchive = await fs.stat(physicalArchive);
   const samePath = await prepare('physical', '#define SPI_MODE 0', '#define PANEL_IO 1', '', null);
   assert.equal(samePath.hits.get(key)?.source, 'local');
+  const keptArchive = await fs.stat(physicalArchive);
+  assert.equal(keptArchive.ino, originalArchive.ino);
+  assert.equal(keptArchive.mtimeMs, originalArchive.mtimeMs);
+  assert.equal(await fs.readFile(physicalArchive, 'utf8'), verifiedArchive);
+
+  await fs.writeFile(physicalArchive, 'physical-panel-archivx');
+  await fs.utimes(physicalArchive, stableTime, stableTime);
+  const repaired = await prepare('physical', '#define SPI_MODE 0', '#define PANEL_IO 1', '', null);
+  assert.equal(repaired.hits.get(key)?.source, 'local');
+  assert.equal(await fs.readFile(physicalArchive, 'utf8'), verifiedArchive);
+  assert.ok((await fs.stat(physicalArchive)).mtimeMs > originalArchive.mtimeMs);
+
   const otherPath = await prepare('other-physical', '#define SPI_MODE 0', '#define PANEL_IO 1', '', null);
   assert.equal(otherPath.hits.size, 0);
   await fs.writeFile(path.join(otherPath.build, 'include.rsp'), '"-Igenerated" -MMD');

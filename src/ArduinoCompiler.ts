@@ -268,7 +268,7 @@ export class ArduinoCompiler {
     }
 
     // 准备构建目录（将 sketch.ino 转换为 sketch.cpp）
-    // 每次编译都需要执行，确保源文件变化能被检测到
+    // Recompute the derived source every time without touching unchanged bytes.
     await this.prepareBuildDirectory(options.buildPath);
 
     // 8. 编译pipeline
@@ -418,7 +418,8 @@ export class ArduinoCompiler {
       }
 
       // 读取原始源文件内容
-      let content = isInoSource ? await readArduinoSketch(sourcePath) : await fs.readFile(sourcePath, 'utf-8');
+      const cppBytes = isCppSource ? await fs.readFile(sourcePath) : undefined;
+      let content = cppBytes ? cppBytes.toString('utf8') : await readArduinoSketch(sourcePath);
 
       if (isInoSource) {
         // 检查是否已包含 Arduino.h
@@ -460,27 +461,30 @@ export class ArduinoCompiler {
         }
       }
 
-      if (isCppSource && forwardDeclarations.length === 0) {
+      if (cppBytes && forwardDeclarations.length === 0) {
         if (path.resolve(sourcePath) !== path.resolve(targetPath)) {
-          await fs.copyFile(sourcePath, targetPath);
+          await this.stageBuildSourceIfChanged(targetPath, cppBytes, sourcePath);
         }
-        this.logger.verbose(`Copied .cpp source to build directory: ${targetPath}`);
-        process.env['SKETCH_PATH'] = targetPath;
-        return;
+      } else {
+        const lineDirective = `# 1 "${sourcePath.replace(/\\/g, '\\\\')}"\n`;
+        await this.stageBuildSourceIfChanged(targetPath, Buffer.from(lineDirective + content));
       }
-
-      // 添加行号指令（用于更好的错误定位）
-      const lineDirective = `# 1 "${sourcePath.replace(/\\/g, '\\\\')}"\n`;
-      content = lineDirective + content;
-
-      // 写入新的 .cpp 文件
-      await fs.writeFile(targetPath, content, 'utf-8');
 
       // 更新环境变量指向新的 .cpp 文件
       process.env['SKETCH_PATH'] = targetPath;
     } catch (error) {
       throw new Error(`Failed to prepare build directory: ${error instanceof Error ? error.message : error}`);
     }
+  }
+
+  private async stageBuildSourceIfChanged(filename: string, bytes: Buffer, copyFrom?: string): Promise<void> {
+    const previous = await fs.readFile(filename).catch((error: NodeJS.ErrnoException) => {
+      if (error.code !== 'ENOENT') throw error;
+      return undefined;
+    });
+    if (previous?.equals(bytes)) return;
+    if (copyFrom) await fs.copyFile(copyFrom, filename);
+    else await fs.writeFile(filename, bytes);
   }
 
   private async runRecipeGroup(
